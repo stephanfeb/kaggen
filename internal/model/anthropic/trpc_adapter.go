@@ -3,6 +3,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -105,10 +106,24 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 						content = append(content, apiContent{Type: "text", Text: *part.Text})
 					}
 				case model.ContentTypeImage:
-					if part.Image != nil && part.Image.URL != "" {
-						// Anthropic expects base64 encoded images, but we'll pass URL for now
-						// In production, you'd want to fetch and encode the image
-						content = append(content, apiContent{Type: "text", Text: fmt.Sprintf("[Image: %s]", part.Image.URL)})
+					if part.Image != nil && len(part.Image.Data) > 0 {
+						mediaType := imageFormatToMIME(part.Image.Format)
+						content = append(content, apiContent{
+							Type: "image",
+							Source: &apiSource{
+								Type:      "base64",
+								MediaType: mediaType,
+								Data:      base64.StdEncoding.EncodeToString(part.Image.Data),
+							},
+						})
+					} else if part.Image != nil && part.Image.URL != "" {
+						content = append(content, apiContent{
+							Type: "image",
+							Source: &apiSource{
+								Type: "url",
+								URL:  part.Image.URL,
+							},
+						})
 					}
 				}
 			}
@@ -266,6 +281,22 @@ func argsToMap(args []byte) map[string]any {
 		return nil
 	}
 	return m
+}
+
+// imageFormatToMIME maps image format strings to MIME types.
+func imageFormatToMIME(format string) string {
+	switch format {
+	case "jpeg", "jpg":
+		return "image/jpeg"
+	case "png":
+		return "image/png"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	default:
+		return "image/jpeg"
+	}
 }
 
 // schemaToMap converts a tool.Schema to a map for the API.

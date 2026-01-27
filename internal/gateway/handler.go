@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -49,8 +50,19 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		"channel", msg.Channel,
 		"content_length", len(msg.Content))
 
-	// Create a user message for the runner
+	// Create a user message for the runner, attaching any uploaded files.
 	userMessage := model.NewUserMessage(msg.Content)
+	for _, att := range msg.Attachments {
+		if isImageMime(att.MimeType) {
+			if err := userMessage.AddImageFilePath(att.Path, "auto"); err != nil {
+				h.logger.Warn("failed to attach image", "path", att.Path, "error", err)
+			}
+		} else {
+			if err := userMessage.AddFilePath(att.Path); err != nil {
+				h.logger.Warn("failed to attach file", "path", att.Path, "error", err)
+			}
+		}
+	}
 
 	// Run the agent using the trpc-agent-go Runner
 	events, err := h.runner.Run(
@@ -209,6 +221,11 @@ func copyMetadata(src map[string]any) map[string]any {
 		m[k] = v
 	}
 	return m
+}
+
+// isImageMime returns true if the MIME type is a supported image format.
+func isImageMime(mime string) bool {
+	return strings.HasPrefix(mime, "image/")
 }
 
 // Close closes the handler and releases resources.

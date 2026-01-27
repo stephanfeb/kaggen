@@ -5,6 +5,16 @@ import (
 	"context"
 )
 
+// Attachment represents a file attached to a message.
+type Attachment struct {
+	// Path is the local filesystem path to the downloaded file.
+	Path string `json:"path"`
+	// MimeType is the MIME type of the file.
+	MimeType string `json:"mime_type,omitempty"`
+	// FileName is the original file name.
+	FileName string `json:"file_name,omitempty"`
+}
+
 // Message represents an incoming message from any channel.
 type Message struct {
 	// ID is a unique identifier for this message.
@@ -21,6 +31,9 @@ type Message struct {
 
 	// Channel identifies the source channel (e.g., "websocket", "telegram").
 	Channel string `json:"channel"`
+
+	// Attachments holds files attached to the message (e.g. photos, documents).
+	Attachments []Attachment `json:"attachments,omitempty"`
 
 	// Metadata contains channel-specific additional data.
 	Metadata map[string]any `json:"metadata,omitempty"`

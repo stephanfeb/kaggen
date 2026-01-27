@@ -19,7 +19,8 @@ func TestTelegramSessionID_DM(t *testing.T) {
 		},
 	}
 
-	msg := telegramUpdateToMessage(update)
+	tc := &TelegramChannel{logger: slog.Default()}
+	msg := tc.telegramUpdateToMessage(update)
 
 	if msg.SessionID != "tg-dm-42" {
 		t.Errorf("expected session ID tg-dm-42, got %s", msg.SessionID)
@@ -42,7 +43,8 @@ func TestTelegramSessionID_Group(t *testing.T) {
 		},
 	}
 
-	msg := telegramUpdateToMessage(update)
+	tc := &TelegramChannel{logger: slog.Default()}
+	msg := tc.telegramUpdateToMessage(update)
 
 	if msg.SessionID != "tg-group--100123" {
 		t.Errorf("expected session ID tg-group--100123, got %s", msg.SessionID)
@@ -62,7 +64,8 @@ func TestTelegramMessageMetadata(t *testing.T) {
 		},
 	}
 
-	msg := telegramUpdateToMessage(update)
+	tc := &TelegramChannel{logger: slog.Default()}
+	msg := tc.telegramUpdateToMessage(update)
 
 	if msg.Metadata["chat_id"] != "7" {
 		t.Errorf("expected chat_id 7, got %v", msg.Metadata["chat_id"])

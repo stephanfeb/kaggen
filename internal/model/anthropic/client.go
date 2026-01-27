@@ -51,6 +51,15 @@ type apiContent struct {
 	ToolUseID string         `json:"tool_use_id,omitempty"`
 	Content   string         `json:"content,omitempty"`
 	IsError   bool           `json:"is_error,omitempty"`
+	Source    *apiSource     `json:"source,omitempty"`
+}
+
+// apiSource represents an image source for the Anthropic Vision API.
+type apiSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 // apiRequest represents a request to the Anthropic API.

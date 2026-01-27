@@ -3,7 +3,11 @@ package channel
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -140,7 +144,7 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 				continue
 			}
 
-			msg := telegramUpdateToMessage(update)
+			msg := t.telegramUpdateToMessage(update)
 				select {
 				case t.messages <- msg:
 				case <-ctx.Done():
@@ -186,9 +190,19 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 		t.sendTyping(chatID)
 	}
 
-	// Skip sending empty or intermediate non-text responses.
-	if resp.Content == "" {
+	// Skip tool calls, tool results, and empty responses — only send
+	// user-facing text and error messages to Telegram.
+	switch resp.Type {
+	case "tool_call", "tool_result":
 		return nil
+	}
+	if resp.Content == "" && resp.Metadata["send_file"] == nil {
+		return nil
+	}
+
+	// Send file if requested.
+	if filePath, ok := resp.Metadata["send_file"].(string); ok && filePath != "" {
+		return t.sendFile(chatID, filePath, resp.Content)
 	}
 
 	var replyToID int
@@ -247,6 +261,29 @@ func (t *TelegramChannel) sendText(chatID int64, text string) {
 	}
 }
 
+// sendFile sends a file to a Telegram chat. Images are sent as photos; everything else as documents.
+func (t *TelegramChannel) sendFile(chatID int64, path, caption string) error {
+	t.chatLimiter.wait(chatID)
+
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
+		msg := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(path))
+		if caption != "" {
+			msg.Caption = caption
+		}
+		_, err := t.bot.Send(msg)
+		return err
+	default:
+		msg := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(path))
+		if caption != "" {
+			msg.Caption = caption
+		}
+		_, err := t.bot.Send(msg)
+		return err
+	}
+}
+
 // handleClear processes the /clear command by deleting the current session.
 func (t *TelegramChannel) handleClear(ctx context.Context, m *tgbotapi.Message) {
 	chatID := m.Chat.ID
@@ -276,8 +313,9 @@ func (t *TelegramChannel) handleClear(ctx context.Context, m *tgbotapi.Message) 
 	t.sendText(chatID, "Session cleared. Starting fresh!")
 }
 
-// telegramUpdateToMessage converts a Telegram update to a channel Message.
-func telegramUpdateToMessage(update tgbotapi.Update) *Message {
+// telegramUpdateToMessage converts a Telegram update to a channel Message,
+// downloading any attached photos or documents to ~/.kaggen/downloads/.
+func (t *TelegramChannel) telegramUpdateToMessage(update tgbotapi.Update) *Message {
 	m := update.Message
 	userID := fmt.Sprintf("tg-%d", m.From.ID)
 	chatID := fmt.Sprintf("%d", m.Chat.ID)
@@ -289,11 +327,17 @@ func telegramUpdateToMessage(update tgbotapi.Update) *Message {
 		sessionID = fmt.Sprintf("tg-group-%d", m.Chat.ID)
 	}
 
-	return &Message{
+	// Use Caption for media messages, Text for plain messages.
+	content := m.Text
+	if content == "" {
+		content = m.Caption
+	}
+
+	msg := &Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
 		UserID:    userID,
-		Content:   m.Text,
+		Content:   content,
 		Channel:   "telegram",
 		Metadata: map[string]any{
 			"chat_id":    chatID,
@@ -301,6 +345,93 @@ func telegramUpdateToMessage(update tgbotapi.Update) *Message {
 			"chat_type":  m.Chat.Type,
 		},
 	}
+
+	// Download attached photo (pick largest resolution).
+	if len(m.Photo) > 0 {
+		photo := m.Photo[len(m.Photo)-1]
+		if att, err := t.downloadFile(photo.FileID, "photo.jpg"); err != nil {
+			t.logger.Warn("failed to download photo", "error", err)
+		} else {
+			att.MimeType = "image/jpeg"
+			msg.Attachments = append(msg.Attachments, *att)
+		}
+	}
+
+	// Download attached document.
+	if m.Document != nil {
+		fileName := m.Document.FileName
+		if fileName == "" {
+			fileName = "document"
+		}
+		if att, err := t.downloadFile(m.Document.FileID, fileName); err != nil {
+			t.logger.Warn("failed to download document", "error", err)
+		} else {
+			att.MimeType = m.Document.MimeType
+			att.FileName = fileName
+			msg.Attachments = append(msg.Attachments, *att)
+		}
+	}
+
+	// Append attachment paths to content so the agent sees them.
+	for _, att := range msg.Attachments {
+		msg.Content += fmt.Sprintf("\n[Attached: %s]", att.Path)
+	}
+
+	return msg
+}
+
+// downloadsDir returns the path to ~/.kaggen/downloads/, creating it if needed.
+func downloadsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".kaggen", "downloads")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// downloadFile downloads a Telegram file by its fileID and saves it locally.
+func (t *TelegramChannel) downloadFile(fileID, fileName string) (*Attachment, error) {
+	file, err := t.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+	if err != nil {
+		return nil, fmt.Errorf("get file: %w", err)
+	}
+
+	url := file.Link(t.bot.Token)
+	resp, err := http.Get(url) //nolint:gosec // Telegram API URL
+	if err != nil {
+		return nil, fmt.Errorf("download file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	dir, err := downloadsDir()
+	if err != nil {
+		return nil, fmt.Errorf("create downloads dir: %w", err)
+	}
+
+	// Use file unique ID + original name to avoid collisions.
+	localName := fmt.Sprintf("%s_%s", file.FileUniqueID, fileName)
+	localPath := filepath.Join(dir, localName)
+
+	out, err := os.Create(localPath)
+	if err != nil {
+		return nil, fmt.Errorf("create local file: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return nil, fmt.Errorf("write file: %w", err)
+	}
+
+	t.logger.Info("downloaded telegram file", "path", localPath, "size", file.FileSize)
+
+	return &Attachment{
+		Path:     localPath,
+		FileName: fileName,
+	}, nil
 }
 
 // chunkText splits text into chunks of at most maxLen characters,
