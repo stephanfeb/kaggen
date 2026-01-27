@@ -72,13 +72,47 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		return fmt.Errorf("run agent: %w", err)
 	}
 
-	// Stream events back as responses
+	// Consume all events, collecting the final text content.
+	// We only send one response per message to avoid duplicates on
+	// channels like Telegram that deliver each response as a separate message.
+	var finalContent string
+	var lastResp *channel.Response
+
 	for evt := range events {
 		resp := h.eventToResponse(evt, msg)
-		if resp != nil {
+		if resp == nil {
+			continue
+		}
+
+		// For typing indicators / tool progress, send immediately
+		// (these have no user-visible content on Telegram).
+		switch resp.Type {
+		case "tool_call", "tool_result":
 			if err := respond(resp); err != nil {
 				h.logger.Warn("failed to send response", "error", err)
 			}
+			continue
+		case "error":
+			if err := respond(resp); err != nil {
+				h.logger.Warn("failed to send error response", "error", err)
+			}
+			continue
+		}
+
+		// For text/done responses, keep the latest content.
+		if resp.Content != "" {
+			finalContent = resp.Content
+			lastResp = resp
+		}
+	}
+
+	// Send the final text response once.
+	if lastResp != nil && finalContent != "" {
+		lastResp.Content = finalContent
+		lastResp.Type = "done"
+		lastResp.Done = true
+		if err := respond(lastResp); err != nil {
+			h.logger.Warn("failed to send final response", "error", err)
 		}
 	}
 
@@ -150,14 +184,12 @@ func (h *Handler) eventToResponse(evt *event.Event, msg *channel.Message) *chann
 		}
 	}
 
-	// Handle runner completion event
+	// Handle runner completion event.
+	// The final text content is already emitted by the content block above
+	// (with type "done" when evt.Done is true), so we skip runner completion
+	// events to avoid sending duplicate messages.
 	if evt.IsRunnerCompletion() {
-		resp.Type = "done"
-		resp.Done = true
-		if len(evt.Response.Choices) > 0 {
-			resp.Content = evt.Response.Choices[0].Message.Content
-		}
-		return resp
+		return nil
 	}
 
 	// Skip events without meaningful content
