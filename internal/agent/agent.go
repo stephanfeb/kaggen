@@ -31,9 +31,10 @@ type Agent struct {
 }
 
 // NewAgent creates a new Kaggen agent.
-func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, logger *slog.Logger) (*Agent, error) {
+// skillsXML is an optional XML block describing available skills (may be empty).
+func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, skillsXML string, logger *slog.Logger) (*Agent, error) {
 	// Build instruction from bootstrap files
-	instruction, err := buildInstruction(mem)
+	instruction, err := buildInstruction(mem, skillsXML)
 	if err != nil {
 		return nil, fmt.Errorf("build instruction: %w", err)
 	}
@@ -89,7 +90,7 @@ func (a *Agent) FindSubAgent(name string) agent.Agent {
 }
 
 // buildInstruction constructs the system instruction from bootstrap files.
-func buildInstruction(mem *memory.FileMemory) (string, error) {
+func buildInstruction(mem *memory.FileMemory, skillsXML string) (string, error) {
 	bootstrap, err := mem.LoadBootstrap()
 	if err != nil {
 		return "", fmt.Errorf("load bootstrap: %w", err)
@@ -102,6 +103,12 @@ func buildInstruction(mem *memory.FileMemory) (string, error) {
 		instruction += "## Context & Instructions\n\n"
 		instruction += bootstrap
 		instruction += "\n\n"
+	}
+
+	if skillsXML != "" {
+		instruction += "## Available Skills\n\n"
+		instruction += skillsXML
+		instruction += "\n\nWhen you need to use a skill, first read its SKILL.md for full instructions, then follow them.\n\n"
 	}
 
 	instruction += "## Operating Guidelines\n\n"

@@ -29,6 +29,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		config.ExpandPath("~/.kaggen"),
 		cfg.WorkspacePath(),
 		filepath.Join(cfg.WorkspacePath(), "memory"),
+		filepath.Join(cfg.WorkspacePath(), "skills"),
 		cfg.SessionsPath(),
 	}
 

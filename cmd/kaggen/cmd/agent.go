@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
+	"github.com/yourusername/kaggen/internal/skills"
 	"github.com/yourusername/kaggen/internal/tools"
 )
 
@@ -115,11 +117,25 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Load skills
+	skillLoader := skills.NewLoader(
+		filepath.Join(workspace, "skills"),
+		config.ExpandPath("~/.kaggen/skills"),
+	)
+	loadedSkills, err := skillLoader.Load()
+	if err != nil {
+		logger.Warn("failed to load skills", "error", err)
+	}
+	skillsXML := skills.FormatXML(loadedSkills)
+	if len(loadedSkills) > 0 {
+		logger.Info("skills loaded", "count", len(loadedSkills))
+	}
+
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
 
 	// Create the Kaggen agent
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, logger)
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, skillsXML, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
@@ -153,6 +169,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Workspace: %s\n", workspace)
 	if cfg.Memory.Search.Enabled {
 		fmt.Println("Memory Search: enabled")
+	}
+	if len(loadedSkills) > 0 {
+		fmt.Printf("Skills: %d loaded\n", len(loadedSkills))
 	}
 	fmt.Println()
 	fmt.Println("Type your message and press Enter. Type 'exit' or 'quit' to end.")
