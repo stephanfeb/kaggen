@@ -10,6 +10,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -24,10 +25,13 @@ type Handler struct {
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
-func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger) *Handler {
+func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, memService ...memory.Service) *Handler {
 	var opts []runner.Option
 	if sessionService != nil {
 		opts = append(opts, runner.WithSessionService(sessionService))
+	}
+	if len(memService) > 0 && memService[0] != nil {
+		opts = append(opts, runner.WithMemoryService(memService[0]))
 	}
 
 	r := runner.NewRunner(appName, ag, opts...)

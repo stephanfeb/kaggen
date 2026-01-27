@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
 	"github.com/yourusername/kaggen/internal/channel"
@@ -39,8 +40,8 @@ type Server struct {
 }
 
 // NewServer creates a new gateway server.
-func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agent, logger *slog.Logger) *Server {
-	handler := NewHandler(AppName, ag, sessionService, logger)
+func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agent, logger *slog.Logger, memService ...memory.Service) *Server {
+	handler := NewHandler(AppName, ag, sessionService, logger, memService...)
 	router := channel.NewRouter(handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Gateway.Bind, cfg.Gateway.Port)

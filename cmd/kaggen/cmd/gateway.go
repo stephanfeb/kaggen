@@ -9,9 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	tmemory "trpc.group/trpc-go/trpc-agent-go/memory"
+	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 
@@ -79,7 +82,10 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
 
-	// Initialize memory search if enabled
+	// Memory service (passed to server if available)
+	var memService tmemory.Service
+
+	// Initialize memory service if enabled
 	if cfg.Memory.Search.Enabled {
 		embedder := embedding.NewOllamaEmbedder(
 			cfg.Memory.Embedding.BaseURL,
@@ -104,9 +110,23 @@ func runGateway(cmd *cobra.Command, args []string) error {
 					logger.Warn("memory search: indexer start failed", "error", err)
 				}
 
-				memTools := tools.MemoryTools(embedder, vecIndex, indexer, workspace)
-				toolList = append(toolList, memTools...)
-				logger.Info("memory search enabled", "db", dbPath, "dimension", dim)
+				// Create memory service with auto-extraction
+				memExtractor := extractor.NewExtractor(modelAdapter)
+				svc, err := memory.NewFileMemoryService(
+					vecIndex.DB(), vecIndex, embedder, workspace, logger,
+					memory.WithExtractor(memExtractor),
+					memory.WithAsyncMemoryNum(1),
+					memory.WithMemoryQueueSize(10),
+					memory.WithMemoryJobTimeout(30*time.Second),
+				)
+				if err != nil {
+					logger.Warn("memory service: init failed", "error", err)
+				} else {
+					defer svc.Close()
+					memService = svc
+					toolList = append(toolList, svc.Tools()...)
+					logger.Info("memory service enabled", "db", dbPath, "dimension", dim)
+				}
 			}
 		}
 	}
@@ -141,8 +161,8 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 	defer sessionService.Close()
 
-	// Create gateway server
-	server := gateway.NewServer(cfg, sessionService, kaggen, logger)
+	// Create gateway server (with optional memory service)
+	server := gateway.NewServer(cfg, sessionService, kaggen, logger, memService)
 
 	// Print startup message
 	fmt.Println("Kaggen Gateway")

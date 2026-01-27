@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
@@ -85,7 +87,10 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize memory search if enabled
+	// Runner options
+	var runnerOpts []runner.Option
+
+	// Initialize memory service if enabled
 	if cfg.Memory.Search.Enabled {
 		embedder := embedding.NewOllamaEmbedder(
 			cfg.Memory.Embedding.BaseURL,
@@ -110,9 +115,23 @@ func runAgent(cmd *cobra.Command, args []string) error {
 					logger.Warn("memory search: indexer start failed", "error", err)
 				}
 
-				memTools := tools.MemoryTools(embedder, vecIndex, indexer, workspace)
-				toolList = append(toolList, memTools...)
-				logger.Info("memory search enabled", "db", dbPath, "dimension", dim)
+				// Create memory service with auto-extraction
+				memExtractor := extractor.NewExtractor(modelAdapter)
+				memService, err := memory.NewFileMemoryService(
+					vecIndex.DB(), vecIndex, embedder, workspace, logger,
+					memory.WithExtractor(memExtractor),
+					memory.WithAsyncMemoryNum(1),
+					memory.WithMemoryQueueSize(10),
+					memory.WithMemoryJobTimeout(30*time.Second),
+				)
+				if err != nil {
+					logger.Warn("memory service: init failed", "error", err)
+				} else {
+					defer memService.Close()
+					toolList = append(toolList, memService.Tools()...)
+					runnerOpts = append(runnerOpts, runner.WithMemoryService(memService))
+					logger.Info("memory service enabled", "db", dbPath, "dimension", dim)
+				}
 			}
 		}
 	}
@@ -145,7 +164,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	defer sessionService.Close()
 
 	// Create runner
-	r := runner.NewRunner("kaggen", kaggen, runner.WithSessionService(sessionService))
+	runnerOpts = append(runnerOpts, runner.WithSessionService(sessionService))
+	r := runner.NewRunner("kaggen", kaggen, runnerOpts...)
 	defer func() {
 		if closer, ok := r.(interface{ Close() error }); ok {
 			closer.Close()

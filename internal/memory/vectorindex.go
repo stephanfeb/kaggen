@@ -299,6 +299,28 @@ func (v *VectorIndex) DeleteByFile(filePath string) error {
 	return tx.Commit()
 }
 
+// DB returns the underlying database handle.
+func (v *VectorIndex) DB() *sql.DB {
+	return v.db
+}
+
+// InsertEntry adds an entry with an explicit ID to all three tables.
+// The file_path is set to "memory:" + id for entries managed by the memory service.
+func (v *VectorIndex) InsertEntry(id, content string, emb []float32) error {
+	filePath := "memory:" + id
+	chunk := MemoryChunk{
+		FilePath:  filePath,
+		Content:   content,
+		Embedding: emb,
+	}
+	return v.Insert(chunk)
+}
+
+// DeleteEntry removes a single entry by its memory ID from all tables.
+func (v *VectorIndex) DeleteEntry(id string) error {
+	return v.DeleteByFile("memory:" + id)
+}
+
 // Close closes the database connection.
 func (v *VectorIndex) Close() error {
 	return v.db.Close()
