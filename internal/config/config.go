@@ -61,8 +61,14 @@ type ChannelsConfig struct {
 
 // TelegramConfig configures the Telegram bot channel.
 type TelegramConfig struct {
-	Enabled  bool   `json:"enabled"`
-	BotToken string `json:"bot_token"`
+	Enabled          bool    `json:"enabled"`
+	BotToken         string  `json:"bot_token"`
+	AllowedUsers     []int64 `json:"allowed_users,omitempty"`
+	AllowedChats     []int64 `json:"allowed_chats,omitempty"`
+	RejectMessage    string  `json:"reject_message,omitempty"`
+	UserRateLimit    int     `json:"user_rate_limit,omitempty"`
+	UserRateWindow   int     `json:"user_rate_window,omitempty"`
+	RateLimitMessage string  `json:"rate_limit_message,omitempty"`
 }
 
 // TelegramBotToken returns the bot token from config, falling back to the

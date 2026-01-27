@@ -41,7 +41,7 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 	if cfg.Channels.Telegram.Enabled {
 		token := cfg.TelegramBotToken()
 		if token != "" {
-			tgChannel = channel.NewTelegramChannel(token, logger)
+			tgChannel = channel.NewTelegramChannel(token, &cfg.Channels.Telegram, logger)
 			router.AddChannel(tgChannel)
 		} else {
 			logger.Warn("telegram enabled but no bot token configured")

@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"github.com/yourusername/kaggen/internal/config"
 )
 
 const (
@@ -18,18 +21,48 @@ const (
 
 // TelegramChannel implements Channel for Telegram bots.
 type TelegramChannel struct {
-	token    string
-	bot      *tgbotapi.BotAPI
-	messages chan *Message
-	logger   *slog.Logger
+	token            string
+	bot              *tgbotapi.BotAPI
+	messages         chan *Message
+	logger           *slog.Logger
+	chatLimiter      *chatRateLimiter
+	userLimiter      *userRateLimiter
+	allowedUsers     map[int64]bool
+	allowedChats     map[int64]bool
+	rejectMessage    string
+	rateLimitMessage string
 }
 
-// NewTelegramChannel creates a new Telegram channel with the given bot token.
-func NewTelegramChannel(token string, logger *slog.Logger) *TelegramChannel {
+// NewTelegramChannel creates a new Telegram channel.
+func NewTelegramChannel(token string, cfg *config.TelegramConfig, logger *slog.Logger) *TelegramChannel {
+	allowedUsers := make(map[int64]bool, len(cfg.AllowedUsers))
+	for _, uid := range cfg.AllowedUsers {
+		allowedUsers[uid] = true
+	}
+	allowedChats := make(map[int64]bool, len(cfg.AllowedChats))
+	for _, cid := range cfg.AllowedChats {
+		allowedChats[cid] = true
+	}
+
+	rejectMsg := cfg.RejectMessage
+	if rejectMsg == "" {
+		rejectMsg = "Sorry, you are not authorized to use this bot."
+	}
+	rateLimitMsg := cfg.RateLimitMessage
+	if rateLimitMsg == "" {
+		rateLimitMsg = "You're sending messages too quickly. Please wait a moment."
+	}
+
 	return &TelegramChannel{
-		token:    token,
-		messages: make(chan *Message, 64),
-		logger:   logger,
+		token:            token,
+		messages:         make(chan *Message, 64),
+		logger:           logger,
+		chatLimiter:      newChatRateLimiter(),
+		userLimiter:      newUserRateLimiter(cfg.UserRateLimit, cfg.UserRateWindow),
+		allowedUsers:     allowedUsers,
+		allowedChats:     allowedChats,
+		rejectMessage:    rejectMsg,
+		rateLimitMessage: rateLimitMsg,
 	}
 }
 
@@ -50,6 +83,21 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 
 	updates := bot.GetUpdatesChan(u)
 
+	// Periodic cleanup of rate limiter state.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				t.chatLimiter.cleanup()
+				t.userLimiter.cleanup()
+			}
+		}
+	}()
+
 	go func() {
 		defer close(t.messages)
 		for {
@@ -63,6 +111,24 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 				if update.Message == nil {
 					continue
 				}
+
+				userID := update.Message.From.ID
+				chatID := update.Message.Chat.ID
+
+				if !t.isAuthorized(userID, chatID) {
+					t.logger.Warn("rejected unauthorized message",
+						"user_id", userID, "chat_id", chatID)
+					t.sendText(chatID, t.rejectMessage)
+					continue
+				}
+
+				if !t.userLimiter.allow(userID) {
+					t.logger.Warn("user rate limited",
+						"user_id", userID, "chat_id", chatID)
+					t.sendText(chatID, t.rateLimitMessage)
+					continue
+				}
+
 				msg := telegramUpdateToMessage(update)
 				select {
 				case t.messages <- msg:
@@ -104,7 +170,16 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 		return fmt.Errorf("invalid chat_id: %w", err)
 	}
 
-	// Get optional reply-to message ID
+	// Send typing indicator for non-final responses.
+	if !resp.Done {
+		t.sendTyping(chatID)
+	}
+
+	// Skip sending empty or intermediate non-text responses.
+	if resp.Content == "" {
+		return nil
+	}
+
 	var replyToID int
 	if mid, ok := resp.Metadata["message_id"].(string); ok {
 		if v, err := strconv.Atoi(mid); err == nil {
@@ -112,11 +187,13 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 		}
 	}
 
-	// Chunk long messages
-	chunks := chunkText(resp.Content, telegramMaxMessageLen)
+	formatted := formatForTelegram(resp.Content)
+	chunks := chunkText(formatted, telegramMaxMessageLen)
 	for i, chunk := range chunks {
+		t.chatLimiter.wait(chatID)
+
 		msg := tgbotapi.NewMessage(chatID, chunk)
-		// Only set reply-to on the first chunk
+		msg.ParseMode = "HTML"
 		if i == 0 && replyToID != 0 {
 			msg.ReplyToMessageID = replyToID
 		}
@@ -126,6 +203,37 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 	}
 
 	return nil
+}
+
+// isAuthorized returns true if the user or chat is allowed.
+// If both allowlists are empty, all users are allowed.
+func (t *TelegramChannel) isAuthorized(userID, chatID int64) bool {
+	if len(t.allowedUsers) == 0 && len(t.allowedChats) == 0 {
+		return true
+	}
+	return t.allowedUsers[userID] || t.allowedChats[chatID]
+}
+
+// sendTyping sends a "typing" chat action.
+func (t *TelegramChannel) sendTyping(chatID int64) {
+	if t.bot == nil {
+		return
+	}
+	action := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+	if _, err := t.bot.Request(action); err != nil {
+		t.logger.Warn("failed to send typing indicator", "error", err)
+	}
+}
+
+// sendText sends a plain text message to a chat (used for reject/rate-limit notices).
+func (t *TelegramChannel) sendText(chatID int64, text string) {
+	if t.bot == nil {
+		return
+	}
+	msg := tgbotapi.NewMessage(chatID, text)
+	if _, err := t.bot.Send(msg); err != nil {
+		t.logger.Warn("failed to send text message", "error", err)
+	}
 }
 
 // telegramUpdateToMessage converts a Telegram update to a channel Message.
@@ -169,7 +277,6 @@ func chunkText(text string, maxLen int) []string {
 			break
 		}
 
-		// Try to break at a newline within the limit
 		cutAt := maxLen
 		if idx := strings.LastIndex(text[:maxLen], "\n"); idx > 0 {
 			cutAt = idx + 1

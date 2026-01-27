@@ -57,6 +57,18 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		agent.WithRequestID(uuid.New().String()),
 	)
 	if err != nil {
+		errResp := &channel.Response{
+			ID:        uuid.New().String(),
+			MessageID: msg.ID,
+			SessionID: msg.SessionID,
+			Type:      "error",
+			Content:   "Sorry, I encountered an error processing your request. Please try again.",
+			Done:      true,
+			Metadata:  copyMetadata(msg.Metadata),
+		}
+		if sendErr := respond(errResp); sendErr != nil {
+			h.logger.Warn("failed to send error response", "error", sendErr)
+		}
 		return fmt.Errorf("run agent: %w", err)
 	}
 
