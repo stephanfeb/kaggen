@@ -10,12 +10,14 @@ require (
 )
 
 require (
+	github.com/asg017/sqlite-vec-go-bindings v0.1.6 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/mattn/go-sqlite3 v1.14.33 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	go.opentelemetry.io/otel v1.29.0 // indirect

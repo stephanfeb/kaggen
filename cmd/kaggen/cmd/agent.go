@@ -20,6 +20,7 @@ import (
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/embedding"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
@@ -78,6 +79,42 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
 
+	// Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Initialize memory search if enabled
+	if cfg.Memory.Search.Enabled {
+		embedder := embedding.NewOllamaEmbedder(
+			cfg.Memory.Embedding.BaseURL,
+			cfg.Memory.Embedding.Model,
+		)
+
+		dim := embedder.Dimension()
+		if dim == 0 {
+			logger.Warn("memory search: failed to probe embedding dimension, disabling")
+		} else {
+			dbPath := cfg.MemoryDBPath()
+			vecIndex, err := memory.NewVectorIndex(dbPath, dim)
+			if err != nil {
+				logger.Warn("memory search: failed to open vector index", "error", err)
+			} else {
+				defer vecIndex.Close()
+
+				chunkSize := cfg.Memory.Indexing.ChunkSize
+				chunkOverlap := cfg.Memory.Indexing.ChunkOverlap
+				indexer := memory.NewIndexer(vecIndex, embedder, workspace, chunkSize, chunkOverlap, logger)
+				if err := indexer.Start(ctx); err != nil {
+					logger.Warn("memory search: indexer start failed", "error", err)
+				}
+
+				memTools := tools.MemoryTools(embedder, vecIndex, indexer, workspace)
+				toolList = append(toolList, memTools...)
+				logger.Info("memory search enabled", "db", dbPath, "dimension", dim)
+			}
+		}
+	}
+
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
 
@@ -99,10 +136,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// Setup context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// Handle interrupt signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -118,6 +151,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	fmt.Println("============")
 	fmt.Printf("Session: %s\n", sessionID)
 	fmt.Printf("Workspace: %s\n", workspace)
+	if cfg.Memory.Search.Enabled {
+		fmt.Println("Memory Search: enabled")
+	}
 	fmt.Println()
 	fmt.Println("Type your message and press Enter. Type 'exit' or 'quit' to end.")
 	fmt.Println("Commands: /clear (clear session)")

@@ -12,6 +12,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/yourusername/kaggen/internal/config"
+
+	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 const (
@@ -31,10 +33,12 @@ type TelegramChannel struct {
 	allowedChats     map[int64]bool
 	rejectMessage    string
 	rateLimitMessage string
+	sessionService   trpcsession.Service
 }
 
 // NewTelegramChannel creates a new Telegram channel.
-func NewTelegramChannel(token string, cfg *config.TelegramConfig, logger *slog.Logger) *TelegramChannel {
+// sessionService is optional; when provided, the /clear command can reset sessions.
+func NewTelegramChannel(token string, cfg *config.TelegramConfig, sessionService trpcsession.Service, logger *slog.Logger) *TelegramChannel {
 	allowedUsers := make(map[int64]bool, len(cfg.AllowedUsers))
 	for _, uid := range cfg.AllowedUsers {
 		allowedUsers[uid] = true
@@ -63,6 +67,7 @@ func NewTelegramChannel(token string, cfg *config.TelegramConfig, logger *slog.L
 		allowedChats:     allowedChats,
 		rejectMessage:    rejectMsg,
 		rateLimitMessage: rateLimitMsg,
+		sessionService:   sessionService,
 	}
 }
 
@@ -129,7 +134,13 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 					continue
 				}
 
-				msg := telegramUpdateToMessage(update)
+				// Handle /clear command
+			if update.Message.IsCommand() && update.Message.Command() == "clear" {
+				t.handleClear(ctx, update.Message)
+				continue
+			}
+
+			msg := telegramUpdateToMessage(update)
 				select {
 				case t.messages <- msg:
 				case <-ctx.Done():
@@ -234,6 +245,35 @@ func (t *TelegramChannel) sendText(chatID int64, text string) {
 	if _, err := t.bot.Send(msg); err != nil {
 		t.logger.Warn("failed to send text message", "error", err)
 	}
+}
+
+// handleClear processes the /clear command by deleting the current session.
+func (t *TelegramChannel) handleClear(ctx context.Context, m *tgbotapi.Message) {
+	chatID := m.Chat.ID
+
+	if t.sessionService == nil {
+		t.sendText(chatID, "Session clearing is not available.")
+		return
+	}
+
+	var sessionID string
+	if m.Chat.Type == "private" {
+		sessionID = fmt.Sprintf("tg-dm-%d", m.From.ID)
+	} else {
+		sessionID = fmt.Sprintf("tg-group-%d", chatID)
+	}
+
+	userID := fmt.Sprintf("tg-%d", m.From.ID)
+	key := trpcsession.Key{AppName: "kaggen", UserID: userID, SessionID: sessionID}
+
+	if err := t.sessionService.DeleteSession(ctx, key); err != nil {
+		t.logger.Warn("failed to clear session", "session_id", sessionID, "error", err)
+		t.sendText(chatID, "Failed to clear session. Please try again.")
+		return
+	}
+
+	t.logger.Info("session cleared via /clear", "session_id", sessionID, "user_id", userID)
+	t.sendText(chatID, "Session cleared. Starting fresh!")
 }
 
 // telegramUpdateToMessage converts a Telegram update to a channel Message.

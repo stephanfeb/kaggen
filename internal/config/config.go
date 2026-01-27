@@ -14,6 +14,33 @@ type Config struct {
 	Gateway  GatewayConfig  `json:"gateway"`
 	Session  SessionConfig  `json:"session"`
 	Channels ChannelsConfig `json:"channels"`
+	Memory   MemoryConfig   `json:"memory"`
+}
+
+// MemoryConfig configures the semantic memory search system.
+type MemoryConfig struct {
+	Search    SearchConfig    `json:"search"`
+	Embedding EmbeddingConfig `json:"embedding"`
+	Indexing  IndexingConfig  `json:"indexing"`
+}
+
+// SearchConfig configures memory search.
+type SearchConfig struct {
+	Enabled bool   `json:"enabled"`
+	DBPath  string `json:"db_path,omitempty"` // default ~/.kaggen/memory.db
+}
+
+// EmbeddingConfig configures the embedding provider.
+type EmbeddingConfig struct {
+	Provider string `json:"provider"`           // "ollama"
+	Model    string `json:"model"`              // e.g. "nomic-embed-text"
+	BaseURL  string `json:"base_url,omitempty"` // default http://localhost:11434
+}
+
+// IndexingConfig configures memory chunk indexing.
+type IndexingConfig struct {
+	ChunkSize    int `json:"chunk_size,omitempty"`    // default 400
+	ChunkOverlap int `json:"chunk_overlap,omitempty"` // default 80
 }
 
 // AgentConfig configures the AI agent.
@@ -166,6 +193,14 @@ func (c *Config) WorkspacePath() string {
 // SessionsPath returns the path to the sessions directory.
 func (c *Config) SessionsPath() string {
 	return ExpandPath("~/.kaggen/sessions")
+}
+
+// MemoryDBPath returns the expanded path to the memory database.
+func (c *Config) MemoryDBPath() string {
+	if c.Memory.Search.DBPath != "" {
+		return ExpandPath(c.Memory.Search.DBPath)
+	}
+	return ExpandPath("~/.kaggen/memory.db")
 }
 
 // APIKey returns the Anthropic API key from environment.

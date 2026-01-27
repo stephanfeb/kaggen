@@ -16,6 +16,7 @@ import (
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/embedding"
 	"github.com/yourusername/kaggen/internal/gateway"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
@@ -54,6 +55,19 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		modelName = strings.TrimPrefix(modelName, "anthropic/")
 	}
 
+	// Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle interrupt signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("\nShutting down gateway server...")
+		cancel()
+	}()
+
 	// Create components
 	workspace := cfg.WorkspacePath()
 
@@ -62,6 +76,38 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
+
+	// Initialize memory search if enabled
+	if cfg.Memory.Search.Enabled {
+		embedder := embedding.NewOllamaEmbedder(
+			cfg.Memory.Embedding.BaseURL,
+			cfg.Memory.Embedding.Model,
+		)
+
+		dim := embedder.Dimension()
+		if dim == 0 {
+			logger.Warn("memory search: failed to probe embedding dimension, disabling")
+		} else {
+			dbPath := cfg.MemoryDBPath()
+			vecIndex, err := memory.NewVectorIndex(dbPath, dim)
+			if err != nil {
+				logger.Warn("memory search: failed to open vector index", "error", err)
+			} else {
+				defer vecIndex.Close()
+
+				chunkSize := cfg.Memory.Indexing.ChunkSize
+				chunkOverlap := cfg.Memory.Indexing.ChunkOverlap
+				indexer := memory.NewIndexer(vecIndex, embedder, workspace, chunkSize, chunkOverlap, logger)
+				if err := indexer.Start(ctx); err != nil {
+					logger.Warn("memory search: indexer start failed", "error", err)
+				}
+
+				memTools := tools.MemoryTools(embedder, vecIndex, indexer, workspace)
+				toolList = append(toolList, memTools...)
+				logger.Info("memory search enabled", "db", dbPath, "dimension", dim)
+			}
+		}
+	}
 
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
@@ -82,19 +128,6 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create gateway server
 	server := gateway.NewServer(cfg, sessionService, kaggen, logger)
 
-	// Setup context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle interrupt signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Println("\nShutting down gateway server...")
-		cancel()
-	}()
-
 	// Print startup message
 	fmt.Println("Kaggen Gateway")
 	fmt.Println("==============")
@@ -104,6 +137,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		fmt.Println("Telegram: enabled")
 	} else {
 		fmt.Println("Telegram: disabled")
+	}
+	if cfg.Memory.Search.Enabled {
+		fmt.Println("Memory Search: enabled")
+	} else {
+		fmt.Println("Memory Search: disabled")
 	}
 	fmt.Println()
 	fmt.Println("WebSocket endpoint: ws://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/ws")

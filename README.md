@@ -12,18 +12,20 @@ Named after the mantis deity of the San people, associated with creativity and t
 - **Tool execution** -- read/write files, run shell commands
 - **File-backed sessions** for conversation history across restarts
 - **Bootstrap memory** -- customizable personality, identity, and instructions via Markdown files
+- **Semantic memory search** -- vector similarity search over stored memories using sqlite-vec and Ollama embeddings
 
 ## Prerequisites
 
 - Go 1.23+
 - An [Anthropic API key](https://console.anthropic.com/)
+- [Ollama](https://ollama.com/) (optional, for memory search)
 
 ## Installation
 
 ```bash
 git clone https://github.com/yourusername/kaggen.git
 cd kaggen
-go build -o kaggen ./cmd/kaggen
+go build -tags "fts5" -o kaggen ./cmd/kaggen
 ```
 
 ## Quick Start
@@ -74,6 +76,11 @@ Configuration lives at `~/.kaggen/config.json`. It is created with defaults by `
   },
   "channels": {
     "telegram": {
+      "enabled": false
+    }
+  },
+  "memory": {
+    "search": {
       "enabled": false
     }
   }
@@ -193,6 +200,67 @@ By default, Telegram bots in groups only see messages starting with `/` or messa
 
 Sessions are stored as JSONL files under `~/.kaggen/sessions/`.
 
+## Memory Search
+
+Kaggen supports semantic memory search backed by [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector storage and [Ollama](https://ollama.com/) for local embeddings. When enabled, the agent can recall past conversations and stored knowledge using the `memory_search` tool, and persist new memories with the `memory_write` tool.
+
+### Setup
+
+1. Install and start Ollama:
+
+```bash
+# macOS
+brew install ollama
+ollama serve
+```
+
+2. Pull an embedding model:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+3. Enable memory search in `~/.kaggen/config.json`:
+
+```json
+{
+  "memory": {
+    "search": {
+      "enabled": true,
+      "db_path": "~/.kaggen/memory.db"
+    },
+    "embedding": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://localhost:11434"
+    },
+    "indexing": {
+      "chunk_size": 400,
+      "chunk_overlap": 80
+    }
+  }
+}
+```
+
+All fields except `search.enabled` have sensible defaults and can be omitted.
+
+### How it works
+
+- On startup, Kaggen indexes all Markdown files in `workspace/memory/` and `workspace/MEMORY.md` by chunking them, generating embeddings via Ollama, and storing vectors in a local SQLite database.
+- A background poller re-indexes changed files every 30 seconds.
+- The `memory_search` tool performs hybrid search (vector similarity + FTS5 keyword search merged with Reciprocal Rank Fusion) and returns the top-K matching chunks.
+- The `memory_write` tool writes to memory files and triggers immediate re-indexing.
+
+### Build note
+
+FTS5 full-text search requires the `fts5` build tag:
+
+```bash
+go build -tags "fts5" -o kaggen ./cmd/kaggen
+```
+
+Without this tag the build succeeds but FTS5 tables won't be created, and hybrid search falls back to vector-only results.
+
 ## Workspace
 
 The workspace at `~/.kaggen/workspace/` contains bootstrap Markdown files that shape the agent's personality and behavior:
@@ -220,23 +288,24 @@ internal/
     telegram.go        Telegram bot channel
   config/            Configuration loading
   gateway/           HTTP/WS gateway server + message handler
-  memory/            File-based bootstrap memory
+  embedding/         Embedding interface + Ollama client
+  memory/            File-based bootstrap memory, vector index, indexer
   model/anthropic/   Anthropic API client adapter
   session/           File-backed session service
-  tools/             Tool definitions (read, write, exec)
+  tools/             Tool definitions (read, write, exec, memory_search, memory_write)
 ```
 
 ## Development
 
 ```bash
-# Build
-go build ./...
+# Build (include fts5 tag for full-text search support)
+go build -tags "fts5" ./...
 
 # Run tests
-go test ./...
+go test -tags "fts5" ./...
 
 # Vet
-go vet ./...
+go vet -tags "fts5" ./...
 ```
 
 ## License
