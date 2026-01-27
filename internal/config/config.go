@@ -14,7 +14,48 @@ type Config struct {
 	Gateway  GatewayConfig  `json:"gateway"`
 	Session  SessionConfig  `json:"session"`
 	Channels ChannelsConfig `json:"channels"`
-	Memory   MemoryConfig   `json:"memory"`
+	Memory    MemoryConfig    `json:"memory"`
+	Proactive ProactiveConfig `json:"proactive,omitempty"`
+}
+
+// ProactiveConfig configures the proactive engine (cron, webhooks, heartbeats).
+type ProactiveConfig struct {
+	Jobs       []CronJobConfig   `json:"jobs,omitempty"`
+	Webhooks   []WebhookConfig   `json:"webhooks,omitempty"`
+	Heartbeats []HeartbeatConfig `json:"heartbeats,omitempty"`
+}
+
+// CronJobConfig configures a scheduled proactive job.
+type CronJobConfig struct {
+	Name      string         `json:"name"`
+	Schedule  string         `json:"schedule"`               // crontab e.g. "0 9 * * 1-5"
+	Prompt    string         `json:"prompt"`
+	UserID    string         `json:"user_id"`
+	SessionID string         `json:"session_id,omitempty"`   // default: "proactive-{name}"
+	Channel   string         `json:"channel"`                // "telegram" or "websocket"
+	Metadata  map[string]any `json:"metadata,omitempty"`     // e.g. {"chat_id": "123456"}
+}
+
+// WebhookConfig configures an HTTP webhook trigger.
+type WebhookConfig struct {
+	Name      string         `json:"name"`
+	Path      string         `json:"path"`                   // e.g. "/hooks/github"
+	Prompt    string         `json:"prompt"`                  // {{.Payload}} replaced with POST body
+	UserID    string         `json:"user_id"`
+	SessionID string         `json:"session_id,omitempty"`
+	Channel   string         `json:"channel"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// HeartbeatConfig configures a periodic heartbeat check.
+type HeartbeatConfig struct {
+	Name      string         `json:"name"`
+	Interval  string         `json:"interval"`               // Go duration: "5m", "1h"
+	Prompt    string         `json:"prompt"`
+	UserID    string         `json:"user_id"`
+	SessionID string         `json:"session_id,omitempty"`
+	Channel   string         `json:"channel"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 // MemoryConfig configures the semantic memory search system.

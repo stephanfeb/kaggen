@@ -143,6 +143,15 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println("Memory Search: disabled")
 	}
+	if len(cfg.Proactive.Jobs) > 0 {
+		fmt.Printf("Proactive Jobs: %d\n", len(cfg.Proactive.Jobs))
+	}
+	if len(cfg.Proactive.Webhooks) > 0 {
+		fmt.Printf("Webhooks: %d\n", len(cfg.Proactive.Webhooks))
+	}
+	if len(cfg.Proactive.Heartbeats) > 0 {
+		fmt.Printf("Heartbeats: %d\n", len(cfg.Proactive.Heartbeats))
+	}
 	fmt.Println()
 	fmt.Println("WebSocket endpoint: ws://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/ws")
 	fmt.Println("Health check: http://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/health")

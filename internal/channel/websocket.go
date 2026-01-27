@@ -39,12 +39,13 @@ var upgrader = websocket.Upgrader{
 
 // WebSocketChannel implements the Channel interface for WebSocket connections.
 type WebSocketChannel struct {
-	addr     string
-	server   *http.Server
-	messages chan *Message
-	clients  map[string]*wsClient
-	mu       sync.RWMutex
-	logger   *slog.Logger
+	addr          string
+	server        *http.Server
+	messages      chan *Message
+	clients       map[string]*wsClient
+	mu            sync.RWMutex
+	logger        *slog.Logger
+	extraHandlers map[string]http.HandlerFunc
 }
 
 // wsClient represents a connected WebSocket client.
@@ -71,11 +72,23 @@ func (w *WebSocketChannel) Name() string {
 	return "websocket"
 }
 
+// HandleFunc registers an additional HTTP handler to be served alongside
+// the WebSocket and health endpoints. Must be called before Start.
+func (w *WebSocketChannel) HandleFunc(pattern string, handler http.HandlerFunc) {
+	if w.extraHandlers == nil {
+		w.extraHandlers = make(map[string]http.HandlerFunc)
+	}
+	w.extraHandlers[pattern] = handler
+}
+
 // Start begins the WebSocket server.
 func (w *WebSocketChannel) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", w.handleWebSocket)
 	mux.HandleFunc("/health", w.handleHealth)
+	for pattern, handler := range w.extraHandlers {
+		mux.HandleFunc(pattern, handler)
+	}
 
 	w.server = &http.Server{
 		Addr:    w.addr,
