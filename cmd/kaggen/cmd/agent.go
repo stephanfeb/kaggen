@@ -1,0 +1,216 @@
+package cmd
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/google/uuid"
+	"github.com/spf13/cobra"
+
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
+
+	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
+	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/memory"
+	"github.com/yourusername/kaggen/internal/model/anthropic"
+	kaggenSession "github.com/yourusername/kaggen/internal/session"
+	"github.com/yourusername/kaggen/internal/tools"
+)
+
+var (
+	sessionID string
+	verbose   bool
+)
+
+var agentCmd = &cobra.Command{
+	Use:   "agent",
+	Short: "Start an interactive agent session",
+	Long:  `Start an interactive CLI session with the Kaggen AI agent.`,
+	RunE:  runAgent,
+}
+
+func init() {
+	agentCmd.Flags().StringVarP(&sessionID, "session", "s", "main", "Session ID to use")
+	agentCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+}
+
+func runAgent(cmd *cobra.Command, args []string) error {
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Check for API key
+	apiKey := config.APIKey()
+	if apiKey == "" {
+		return fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
+	}
+
+	// Setup logger
+	logLevel := slog.LevelInfo
+	if verbose {
+		logLevel = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+
+	// Get model name (strip provider prefix if present)
+	modelName := cfg.Agent.Model
+	if strings.HasPrefix(modelName, "anthropic/") {
+		modelName = strings.TrimPrefix(modelName, "anthropic/")
+	}
+
+	// Create components
+	workspace := cfg.WorkspacePath()
+
+	// Create Anthropic adapter (implements model.Model)
+	modelAdapter := anthropic.NewAdapter(apiKey, modelName)
+
+	// Create tools
+	toolList := tools.DefaultTools(workspace)
+
+	// Create file memory for bootstrap loading
+	fileMemory := memory.NewFileMemory(workspace)
+
+	// Create the Kaggen agent
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, logger)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	// Create file-backed session service for CLI persistence
+	sessionService := kaggenSession.NewFileService(cfg.SessionsPath())
+	defer sessionService.Close()
+
+	// Create runner
+	r := runner.NewRunner("kaggen", kaggen, runner.WithSessionService(sessionService))
+	defer func() {
+		if closer, ok := r.(interface{ Close() error }); ok {
+			closer.Close()
+		}
+	}()
+
+	// Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle interrupt signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("\nInterrupted. Goodbye!")
+		cancel()
+		os.Exit(0)
+	}()
+
+	// Print welcome message
+	fmt.Println("Kaggen Agent")
+	fmt.Println("============")
+	fmt.Printf("Session: %s\n", sessionID)
+	fmt.Printf("Workspace: %s\n", workspace)
+	fmt.Println()
+	fmt.Println("Type your message and press Enter. Type 'exit' or 'quit' to end.")
+	fmt.Println("Commands: /clear (clear session)")
+	fmt.Println()
+
+	// Interactive loop
+	reader := bufio.NewReader(os.Stdin)
+	userID := "cli-user"
+
+	for {
+		fmt.Print("You: ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read input: %w", err)
+		}
+
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
+		}
+
+		// Handle commands
+		switch strings.ToLower(input) {
+		case "exit", "quit":
+			fmt.Println("Goodbye!")
+			return nil
+		case "/clear":
+			// Delete the current session from the file backend
+			clearKey := trpcsession.Key{AppName: "kaggen", UserID: userID, SessionID: sessionID}
+			_ = sessionService.DeleteSession(ctx, clearKey)
+			fmt.Println("Session cleared.")
+			continue
+		}
+
+		// Run agent
+		fmt.Println()
+		events, err := r.Run(
+			ctx,
+			userID,
+			sessionID,
+			model.NewUserMessage(input),
+			agent.WithRequestID(uuid.New().String()),
+		)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil // Context cancelled, exit gracefully
+			}
+			fmt.Printf("Error: %v\n\n", err)
+			continue
+		}
+
+		// Process events and display response
+		var finalContent string
+		for evt := range events {
+			if evt == nil || evt.Response == nil {
+				continue
+			}
+
+			// Handle errors
+			if evt.Response.Error != nil {
+				fmt.Printf("Error: %s\n", evt.Response.Error.Message)
+				continue
+			}
+
+			// Handle tool calls (show progress)
+			if len(evt.Response.Choices) > 0 {
+				choice := evt.Response.Choices[0]
+
+				// Show tool calls
+				if len(choice.Message.ToolCalls) > 0 {
+					for _, tc := range choice.Message.ToolCalls {
+						if verbose {
+							fmt.Printf("[Tool: %s]\n", tc.Function.Name)
+						}
+					}
+				}
+
+				// Capture final content
+				if choice.Message.Content != "" {
+					finalContent = choice.Message.Content
+				}
+			}
+
+			// Handle runner completion
+			if evt.IsRunnerCompletion() && len(evt.Response.Choices) > 0 {
+				finalContent = evt.Response.Choices[0].Message.Content
+			}
+		}
+
+		if finalContent != "" {
+			fmt.Printf("Kaggen: %s\n\n", finalContent)
+		} else {
+			fmt.Println()
+		}
+	}
+}
