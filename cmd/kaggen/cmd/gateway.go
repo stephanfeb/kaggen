@@ -17,6 +17,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/skill"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/config"
@@ -25,7 +26,6 @@ import (
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
-	"github.com/yourusername/kaggen/internal/skills"
 	"github.com/yourusername/kaggen/internal/tools"
 )
 
@@ -133,25 +133,26 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Load skills
-	skillLoader := skills.NewLoader(
+	// Load skills via framework repository
+	skillsRepo, err := skill.NewFSRepository(
 		filepath.Join(workspace, "skills"),
 		config.ExpandPath("~/.kaggen/skills"),
 	)
-	loadedSkills, err := skillLoader.Load()
 	if err != nil {
 		logger.Warn("failed to load skills", "error", err)
 	}
-	skillsXML := skills.FormatXML(loadedSkills)
-	if len(loadedSkills) > 0 {
-		logger.Info("skills loaded", "count", len(loadedSkills))
+	if skillsRepo != nil {
+		summaries := skillsRepo.Summaries()
+		if len(summaries) > 0 {
+			logger.Info("skills loaded", "count", len(summaries))
+		}
 	}
 
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
 
 	// Create the Kaggen agent
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, skillsXML, logger)
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, skillsRepo, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
@@ -181,8 +182,10 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println("Memory Search: disabled")
 	}
-	if len(loadedSkills) > 0 {
-		fmt.Printf("Skills: %d loaded\n", len(loadedSkills))
+	if skillsRepo != nil {
+		if n := len(skillsRepo.Summaries()); n > 0 {
+			fmt.Printf("Skills: %d loaded\n", n)
+		}
 	}
 	if len(cfg.Proactive.Jobs) > 0 {
 		fmt.Printf("Proactive Jobs: %d\n", len(cfg.Proactive.Jobs))
