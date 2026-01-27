@@ -116,13 +116,15 @@ func runAgent(cmd *cobra.Command, args []string) error {
 				}
 
 				// Create memory service with auto-extraction
-				memExtractor := extractor.NewExtractor(modelAdapter)
+				memExtractor := extractor.NewExtractor(modelAdapter, extractor.WithPrompt(memory.ExtractorPrompt))
 				memService, err := memory.NewFileMemoryService(
 					vecIndex.DB(), vecIndex, embedder, workspace, logger,
 					memory.WithExtractor(memExtractor),
 					memory.WithAsyncMemoryNum(1),
 					memory.WithMemoryQueueSize(10),
 					memory.WithMemoryJobTimeout(30*time.Second),
+					memory.WithModel(modelAdapter),
+					memory.WithSynthesisInterval(1*time.Hour),
 				)
 				if err != nil {
 					logger.Warn("memory service: init failed", "error", err)

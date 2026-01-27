@@ -19,6 +19,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	tmodel "trpc.group/trpc-go/trpc-agent-go/model"
+
 	"github.com/yourusername/kaggen/internal/embedding"
 )
 
@@ -35,6 +37,7 @@ type FileMemoryService struct {
 	opts             serviceOpts
 	precomputedTools []tool.Tool
 	autoWorker       *autoMemoryWorker
+	synthesizer      *Synthesizer
 }
 
 // --- Constants mirroring memory/internal/memory defaults ---
@@ -89,6 +92,8 @@ type serviceOpts struct {
 	asyncMemoryNum    int
 	memoryQueueSize   int
 	memoryJobTimeout  time.Duration
+	model             tmodel.Model
+	synthesisInterval time.Duration
 }
 
 var defaultServiceOpts = serviceOpts{
@@ -143,6 +148,16 @@ func WithMemoryJobTimeout(d time.Duration) ServiceOpt {
 	return func(o *serviceOpts) { o.memoryJobTimeout = d }
 }
 
+// WithModel provides a model for background synthesis.
+func WithModel(m tmodel.Model) ServiceOpt {
+	return func(o *serviceOpts) { o.model = m }
+}
+
+// WithSynthesisInterval sets how often entity summaries are synthesized.
+func WithSynthesisInterval(d time.Duration) ServiceOpt {
+	return func(o *serviceOpts) { o.synthesisInterval = d }
+}
+
 // WithMemoryLimit sets the maximum number of memories per user.
 func WithMemoryLimit(n int) ServiceOpt {
 	return func(o *serviceOpts) { o.memoryLimit = n }
@@ -181,6 +196,9 @@ func NewFileMemoryService(
 	if err := initMemoriesTable(db); err != nil {
 		return nil, fmt.Errorf("init memories table: %w", err)
 	}
+	if err := initEntityTables(db); err != nil {
+		return nil, fmt.Errorf("init entity tables: %w", err)
+	}
 
 	svc := &FileMemoryService{
 		db:        db,
@@ -192,6 +210,16 @@ func NewFileMemoryService(
 	}
 
 	svc.precomputedTools = buildToolsList(sopts.extractor, sopts.toolCreators, sopts.enabledTools)
+
+	// Start background entity synthesis if model is provided
+	if sopts.model != nil {
+		interval := sopts.synthesisInterval
+		if interval == 0 {
+			interval = 1 * time.Hour
+		}
+		svc.synthesizer = NewSynthesizer(db, sopts.model, svc, logger, interval)
+		svc.synthesizer.Start()
+	}
 
 	if sopts.extractor != nil {
 		cfg := autoMemoryConfig{
@@ -217,7 +245,27 @@ func initMemoriesTable(db *sql.DB) error {
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	)`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Idempotent schema migration: add epistemic columns if missing.
+	migrate := []string{
+		"ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'fact'",
+		"ALTER TABLE memories ADD COLUMN confidence REAL DEFAULT 1.0",
+		"ALTER TABLE memories ADD COLUMN occurred_start TEXT",
+		"ALTER TABLE memories ADD COLUMN occurred_end TEXT",
+		"ALTER TABLE memories ADD COLUMN entities_json TEXT DEFAULT '[]'",
+	}
+	for _, stmt := range migrate {
+		// SQLite returns "duplicate column name" if already exists — ignore that.
+		if _, err := db.Exec(stmt); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("migrate: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // --- memory.Service methods ---
@@ -227,33 +275,62 @@ func (s *FileMemoryService) AddMemory(ctx context.Context, userKey memory.UserKe
 		return err
 	}
 
+	// Parse structured metadata from content prefix and topics
+	cleanContent, contentMeta := ParseStructuredContent(memoryStr)
+	semanticTopics, topicsMeta := ParseMetaTopics(topics)
+	meta := MergeMetadata(contentMeta, topicsMeta)
+
 	now := time.Now()
-	id := generateMemoryID(memoryStr, topics, userKey.AppName, userKey.UserID)
-	topicsJSON, _ := json.Marshal(topics)
+	id := generateMemoryID(cleanContent, semanticTopics, userKey.AppName, userKey.UserID)
+	topicsJSON, _ := json.Marshal(semanticTopics)
+	entitiesJSON, _ := json.Marshal(meta.Entities)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO memories (id, app_name, user_id, content, topics, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, userKey.AppName, userKey.UserID, memoryStr, string(topicsJSON), now, now,
+		`INSERT OR REPLACE INTO memories (id, app_name, user_id, content, topics, created_at, updated_at,
+		 memory_type, confidence, occurred_start, occurred_end, entities_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, userKey.AppName, userKey.UserID, cleanContent, string(topicsJSON), now, now,
+		string(meta.Type), meta.Confidence, nullStr(meta.OccurredStart), nullStr(meta.OccurredEnd), string(entitiesJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("insert memory: %w", err)
 	}
 
+	// Link entities to memory and update co-occurrence graph
+	if len(meta.Entities) > 0 {
+		if entityIDs, err := resolveEntities(ctx, s.db, meta.Entities); err != nil {
+			s.logger.Warn("entity resolution failed", "error", err)
+		} else {
+			if err := linkMemoryEntities(ctx, s.db, id, entityIDs); err != nil {
+				s.logger.Warn("entity linking failed", "error", err)
+			}
+			if err := updateCooccurrences(ctx, s.db, entityIDs); err != nil {
+				s.logger.Warn("co-occurrence update failed", "error", err)
+			}
+		}
+	}
+
 	if s.embedder != nil {
-		emb, err := s.embedder.Embed(ctx, memoryStr)
+		emb, err := s.embedder.Embed(ctx, cleanContent)
 		if err != nil {
 			s.logger.Warn("failed to embed memory", "error", err)
 		} else {
 			s.vecIndex.DeleteEntry(id)
-			if err := s.vecIndex.InsertEntry(id, memoryStr, emb); err != nil {
+			if err := s.vecIndex.InsertEntry(id, cleanContent, emb); err != nil {
 				s.logger.Warn("failed to index memory", "error", err)
 			}
 		}
 	}
 
-	s.appendToMemoryFile(memoryStr, topics)
+	s.appendToMemoryFile(cleanContent, semanticTopics)
 	return nil
+}
+
+func nullStr(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func (s *FileMemoryService) UpdateMemory(ctx context.Context, memoryKey memory.Key, memoryStr string, topics []string) error {
@@ -261,12 +338,32 @@ func (s *FileMemoryService) UpdateMemory(ctx context.Context, memoryKey memory.K
 		return err
 	}
 
+	cleanContent, contentMeta := ParseStructuredContent(memoryStr)
+	semanticTopics, topicsMeta := ParseMetaTopics(topics)
+	meta := MergeMetadata(contentMeta, topicsMeta)
+
+	// For opinions, evolve confidence smoothly against old value
+	if meta.Type == MemoryTypeOpinion {
+		var oldConf float64
+		err := s.db.QueryRowContext(ctx,
+			`SELECT confidence FROM memories WHERE id = ?`, memoryKey.MemoryID,
+		).Scan(&oldConf)
+		if err == nil {
+			meta.Confidence = EvolveConfidence(oldConf, meta.Confidence)
+		}
+	}
+
 	now := time.Now()
-	topicsJSON, _ := json.Marshal(topics)
+	topicsJSON, _ := json.Marshal(semanticTopics)
+	entitiesJSON, _ := json.Marshal(meta.Entities)
 
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE memories SET content = ?, topics = ?, updated_at = ? WHERE id = ?`,
-		memoryStr, string(topicsJSON), now, memoryKey.MemoryID,
+		`UPDATE memories SET content = ?, topics = ?, updated_at = ?,
+		 memory_type = ?, confidence = ?, occurred_start = ?, occurred_end = ?, entities_json = ?
+		 WHERE id = ?`,
+		cleanContent, string(topicsJSON), now,
+		string(meta.Type), meta.Confidence, nullStr(meta.OccurredStart), nullStr(meta.OccurredEnd), string(entitiesJSON),
+		memoryKey.MemoryID,
 	)
 	if err != nil {
 		return fmt.Errorf("update memory: %w", err)
@@ -276,13 +373,27 @@ func (s *FileMemoryService) UpdateMemory(ctx context.Context, memoryKey memory.K
 		return fmt.Errorf("memory with id %s not found", memoryKey.MemoryID)
 	}
 
+	// Re-link entities
+	if len(meta.Entities) > 0 {
+		if entityIDs, err := resolveEntities(ctx, s.db, meta.Entities); err != nil {
+			s.logger.Warn("entity resolution failed", "error", err)
+		} else {
+			if err := linkMemoryEntities(ctx, s.db, memoryKey.MemoryID, entityIDs); err != nil {
+				s.logger.Warn("entity linking failed", "error", err)
+			}
+			if err := updateCooccurrences(ctx, s.db, entityIDs); err != nil {
+				s.logger.Warn("co-occurrence update failed", "error", err)
+			}
+		}
+	}
+
 	if s.embedder != nil {
-		emb, err := s.embedder.Embed(ctx, memoryStr)
+		emb, err := s.embedder.Embed(ctx, cleanContent)
 		if err != nil {
 			s.logger.Warn("failed to embed updated memory", "error", err)
 		} else {
 			s.vecIndex.DeleteEntry(memoryKey.MemoryID)
-			if err := s.vecIndex.InsertEntry(memoryKey.MemoryID, memoryStr, emb); err != nil {
+			if err := s.vecIndex.InsertEntry(memoryKey.MemoryID, cleanContent, emb); err != nil {
 				s.logger.Warn("failed to re-index memory", "error", err)
 			}
 		}
@@ -383,25 +494,7 @@ func (s *FileMemoryService) SearchMemories(ctx context.Context, userKey memory.U
 		return nil, nil
 	}
 
-	if s.embedder != nil {
-		emb, err := s.embedder.Embed(ctx, queryStr)
-		if err != nil {
-			s.logger.Warn("embed query failed, falling back to keyword", "error", err)
-		} else {
-			results, err := s.vecIndex.HybridSearch(emb, queryStr, 25)
-			if err != nil {
-				s.logger.Warn("hybrid search failed", "error", err)
-			} else {
-				return s.searchResultsToEntries(ctx, results)
-			}
-		}
-	}
-
-	results, err := s.vecIndex.KeywordSearch(queryStr, 25)
-	if err != nil {
-		return nil, fmt.Errorf("keyword search: %w", err)
-	}
-	return s.searchResultsToEntries(ctx, results)
+	return s.fourWaySearch(ctx, userKey, queryStr, 25)
 }
 
 func (s *FileMemoryService) Tools() []tool.Tool {
@@ -416,6 +509,9 @@ func (s *FileMemoryService) EnqueueAutoMemoryJob(ctx context.Context, sess *sess
 }
 
 func (s *FileMemoryService) Close() error {
+	if s.synthesizer != nil {
+		s.synthesizer.Stop()
+	}
 	if s.autoWorker != nil {
 		s.autoWorker.Stop()
 	}
@@ -477,34 +573,6 @@ func buildToolsList(ext extractor.MemoryExtractor, creators map[string]memory.To
 		tools = append(tools, creators[name]())
 	}
 	return tools
-}
-
-func (s *FileMemoryService) searchResultsToEntries(ctx context.Context, results []SearchResult) ([]*memory.Entry, error) {
-	var entries []*memory.Entry
-	for _, r := range results {
-		if strings.HasPrefix(r.FilePath, "memory:") {
-			id := strings.TrimPrefix(r.FilePath, "memory:")
-			entry, err := s.getEntryByID(ctx, id)
-			if err != nil {
-				continue
-			}
-			entries = append(entries, entry)
-			continue
-		}
-		now := time.Now()
-		entries = append(entries, &memory.Entry{
-			ID:      fmt.Sprintf("file:%s:%d", r.FilePath, r.LineStart),
-			AppName: "kaggen",
-			UserID:  "default",
-			Memory: &memory.Memory{
-				Memory:      r.Content,
-				LastUpdated: &now,
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		})
-	}
-	return entries, nil
 }
 
 func (s *FileMemoryService) getEntryByID(ctx context.Context, id string) (*memory.Entry, error) {
