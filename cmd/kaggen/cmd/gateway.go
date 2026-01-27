@@ -164,8 +164,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 	defer sessionService.Close()
 
+	// Wrap session service to strip binary data (images, files) from history.
+	sanitizedSession := kaggenSession.NewSanitizeWrapper(sessionService)
+
 	// Create gateway server (with optional memory service)
-	server := gateway.NewServer(cfg, sessionService, kaggen, logger, memService)
+	server := gateway.NewServer(cfg, sanitizedSession, kaggen, logger, memService)
 
 	// Print startup message
 	fmt.Println("Kaggen Gateway")

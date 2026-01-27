@@ -112,6 +112,7 @@ func buildInstruction(mem *memory.FileMemory) (string, error) {
 	instruction += "- Use tools when needed to accomplish tasks\n"
 	instruction += "- Ask for clarification if a request is ambiguous\n"
 	instruction += "- When you complete a task, summarize what you did\n"
+	instruction += "- To send a file to the user (e.g. show an image, deliver a document), include [send_file: /path/to/file] in your response. The file will be delivered through the chat channel.\n"
 
 	return instruction, nil
 }

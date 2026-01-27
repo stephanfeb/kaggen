@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -123,7 +124,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 	}
 
 	// Send the final text response once.
+	// Extract [send_file: /path] directives to send files via the channel.
 	if lastResp != nil && finalContent != "" {
+		finalContent, lastResp.Metadata = extractSendFiles(finalContent, lastResp.Metadata)
 		lastResp.Content = finalContent
 		lastResp.Type = "done"
 		lastResp.Done = true
@@ -221,6 +224,22 @@ func copyMetadata(src map[string]any) map[string]any {
 		m[k] = v
 	}
 	return m
+}
+
+// sendFileRe matches [send_file: /path/to/file] directives in agent responses.
+var sendFileRe = regexp.MustCompile(`\[send_file:\s*([^\]]+)\]`)
+
+// extractSendFiles scans text for [send_file: /path] directives, removes them,
+// and sets the first match as metadata["send_file"] so the channel can deliver it.
+func extractSendFiles(text string, meta map[string]any) (string, map[string]any) {
+	matches := sendFileRe.FindStringSubmatch(text)
+	if matches == nil {
+		return text, meta
+	}
+	filePath := strings.TrimSpace(matches[1])
+	meta["send_file"] = filePath
+	text = strings.TrimSpace(sendFileRe.ReplaceAllString(text, ""))
+	return text, meta
 }
 
 // isImageMime returns true if the MIME type is a supported image format.

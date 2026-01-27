@@ -166,8 +166,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	sessionService := kaggenSession.NewFileService(cfg.SessionsPath())
 	defer sessionService.Close()
 
+	// Wrap session service to strip binary data (images, files) from history.
+	sanitizedSession := kaggenSession.NewSanitizeWrapper(sessionService)
+
 	// Create runner
-	runnerOpts = append(runnerOpts, runner.WithSessionService(sessionService))
+	runnerOpts = append(runnerOpts, runner.WithSessionService(sanitizedSession))
 	r := runner.NewRunner("kaggen", kaggen, runnerOpts...)
 	defer func() {
 		if closer, ok := r.(interface{ Close() error }); ok {
