@@ -36,7 +36,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// API Key status
-	apiKey := config.APIKey()
+	apiKey := config.AnthropicAPIKey()
 	fmt.Println("API Key:")
 	if apiKey == "" {
 		fmt.Println("  ANTHROPIC_API_KEY: NOT SET")

@@ -45,6 +45,8 @@ type TaskState struct {
 	Result    string        `json:"result,omitempty"`
 	Error     string        `json:"error,omitempty"`
 	Policy    TriggerPolicy `json:"policy"`
+	SessionID string        `json:"session_id,omitempty"`
+	UserID    string        `json:"user_id,omitempty"`
 	StartedAt time.Time    `json:"started_at"`
 	DoneAt    *time.Time   `json:"done_at,omitempty"`
 }
@@ -63,7 +65,7 @@ func NewInFlightStore() *InFlightStore {
 }
 
 // Register adds a new running task to the store.
-func (s *InFlightStore) Register(id, agentName, task string, policy TriggerPolicy) {
+func (s *InFlightStore) Register(id, agentName, task string, policy TriggerPolicy, sessionID, userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tasks[id] = &TaskState{
@@ -72,6 +74,8 @@ func (s *InFlightStore) Register(id, agentName, task string, policy TriggerPolic
 		Task:      task,
 		Status:    TaskRunning,
 		Policy:    policy,
+		SessionID: sessionID,
+		UserID:    userID,
 		StartedAt: time.Now(),
 	}
 }
@@ -193,9 +197,17 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		policy = TriggerAuto
 	}
 
+	// Extract originating session/user from the invocation context so
+	// completion events can be routed back to the correct session.
+	var sessionID, userID string
+	if inv, ok := agent.InvocationFromContext(ctx); ok && inv.Session != nil {
+		sessionID = inv.Session.ID
+		userID = inv.Session.UserID
+	}
+
 	taskID := uuid.New().String()
-	d.store.Register(taskID, req.AgentName, req.Task, policy)
-	d.logger.Info("dispatched async task", "task_id", taskID, "agent", req.AgentName, "policy", policy)
+	d.store.Register(taskID, req.AgentName, req.Task, policy, sessionID, userID)
+	d.logger.Info("dispatched async task", "task_id", taskID, "agent", req.AgentName, "policy", policy, "session_id", sessionID)
 
 	go func() {
 		invOpts := []agent.InvocationOptions{

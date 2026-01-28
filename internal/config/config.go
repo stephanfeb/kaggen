@@ -10,10 +10,10 @@ import (
 
 // Config represents the top-level configuration.
 type Config struct {
-	Agent    AgentConfig    `json:"agent"`
-	Gateway  GatewayConfig  `json:"gateway"`
-	Session  SessionConfig  `json:"session"`
-	Channels ChannelsConfig `json:"channels"`
+	Agent     AgentConfig     `json:"agent"`
+	Gateway   GatewayConfig   `json:"gateway"`
+	Session   SessionConfig   `json:"session"`
+	Channels  ChannelsConfig  `json:"channels"`
 	Memory    MemoryConfig    `json:"memory"`
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
 }
@@ -29,40 +29,40 @@ type ProactiveConfig struct {
 // CronJobConfig configures a scheduled proactive job.
 type CronJobConfig struct {
 	Name       string         `json:"name"`
-	Schedule   string         `json:"schedule"`               // crontab e.g. "0 9 * * 1-5"
+	Schedule   string         `json:"schedule"` // crontab e.g. "0 9 * * 1-5"
 	Prompt     string         `json:"prompt"`
 	UserID     string         `json:"user_id"`
-	SessionID  string         `json:"session_id,omitempty"`   // default: "proactive-{name}"
-	Channel    string         `json:"channel"`                // "telegram" or "websocket"
-	Metadata   map[string]any `json:"metadata,omitempty"`     // e.g. {"chat_id": "123456"}
-	Timeout    string         `json:"timeout,omitempty"`      // Go duration, default "5m"
-	MaxRetries int            `json:"max_retries,omitempty"`  // default 0 (no retries)
+	SessionID  string         `json:"session_id,omitempty"`  // default: "proactive-{name}"
+	Channel    string         `json:"channel"`               // "telegram" or "websocket"
+	Metadata   map[string]any `json:"metadata,omitempty"`    // e.g. {"chat_id": "123456"}
+	Timeout    string         `json:"timeout,omitempty"`     // Go duration, default "5m"
+	MaxRetries int            `json:"max_retries,omitempty"` // default 0 (no retries)
 }
 
 // WebhookConfig configures an HTTP webhook trigger.
 type WebhookConfig struct {
 	Name       string         `json:"name"`
-	Path       string         `json:"path"`                   // e.g. "/hooks/github"
-	Prompt     string         `json:"prompt"`                  // {{.Payload}} replaced with POST body
+	Path       string         `json:"path"`   // e.g. "/hooks/github"
+	Prompt     string         `json:"prompt"` // {{.Payload}} replaced with POST body
 	UserID     string         `json:"user_id"`
 	SessionID  string         `json:"session_id,omitempty"`
 	Channel    string         `json:"channel"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
-	Secret     string         `json:"secret,omitempty"`       // HMAC-SHA256 secret for signature verification
-	Timeout    string         `json:"timeout,omitempty"`      // Go duration, default "5m"
+	Secret     string         `json:"secret,omitempty"`  // HMAC-SHA256 secret for signature verification
+	Timeout    string         `json:"timeout,omitempty"` // Go duration, default "5m"
 	MaxRetries int            `json:"max_retries,omitempty"`
 }
 
 // HeartbeatConfig configures a periodic heartbeat check.
 type HeartbeatConfig struct {
 	Name       string         `json:"name"`
-	Interval   string         `json:"interval"`               // Go duration: "5m", "1h"
+	Interval   string         `json:"interval"` // Go duration: "5m", "1h"
 	Prompt     string         `json:"prompt"`
 	UserID     string         `json:"user_id"`
 	SessionID  string         `json:"session_id,omitempty"`
 	Channel    string         `json:"channel"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
-	Timeout    string         `json:"timeout,omitempty"`      // Go duration, default "2m"
+	Timeout    string         `json:"timeout,omitempty"` // Go duration, default "2m"
 	MaxRetries int            `json:"max_retries,omitempty"`
 }
 
@@ -71,6 +71,12 @@ type MemoryConfig struct {
 	Search    SearchConfig    `json:"search"`
 	Embedding EmbeddingConfig `json:"embedding"`
 	Indexing  IndexingConfig  `json:"indexing"`
+	Auto      AutoMemoryConfig `json:"auto"`
+}
+
+// AutoMemoryConfig configures auto-memory extraction behavior.
+type AutoMemoryConfig struct {
+	Timeout string `json:"timeout,omitempty"` // Go duration, default "2m"
 }
 
 // SearchConfig configures memory search.
@@ -106,11 +112,11 @@ type GatewayConfig struct {
 
 // SessionConfig configures session storage.
 type SessionConfig struct {
-	Backend  string       `json:"backend"` // "file", "redis", "postgres", "memory"
-	Redis    RedisConfig  `json:"redis,omitempty"`
-	Postgres PGConfig     `json:"postgres,omitempty"`
-	AppName  string       `json:"app_name,omitempty"` // App name for trpc backends
-	UserID   string       `json:"user_id,omitempty"`  // Default user ID for trpc backends
+	Backend  string      `json:"backend"` // "file", "redis", "postgres", "memory"
+	Redis    RedisConfig `json:"redis,omitempty"`
+	Postgres PGConfig    `json:"postgres,omitempty"`
+	AppName  string      `json:"app_name,omitempty"` // App name for trpc backends
+	UserID   string      `json:"user_id,omitempty"`  // Default user ID for trpc backends
 }
 
 // RedisConfig configures Redis session storage.
@@ -265,7 +271,11 @@ func (c *Config) BacklogDBPath() string {
 	return ExpandPath("~/.kaggen/backlog.db")
 }
 
-// APIKey returns the Anthropic API key from environment.
-func APIKey() string {
+// AnthropicAPIKey returns the Anthropic API key from environment.
+func AnthropicAPIKey() string {
 	return os.Getenv("ANTHROPIC_API_KEY")
+}
+
+func GeminiAPIKey() string {
+	return os.Getenv("GEMINI_API_KEY")
 }

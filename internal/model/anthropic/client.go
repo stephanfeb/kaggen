@@ -54,6 +54,27 @@ type apiContent struct {
 	Source    *apiSource      `json:"source,omitempty"`
 }
 
+// MarshalJSON implements custom JSON marshaling to ensure tool_use blocks always
+// include the input field, even when empty (Anthropic API requires this).
+func (c apiContent) MarshalJSON() ([]byte, error) {
+	type plain apiContent // avoid recursion
+	if c.Type == "tool_use" {
+		// Build a map manually to ensure input is always present
+		m := map[string]any{
+			"type": c.Type,
+			"id":   c.ID,
+			"name": c.Name,
+		}
+		if c.Input != nil {
+			m["input"] = c.Input
+		} else {
+			m["input"] = map[string]any{}
+		}
+		return json.Marshal(m)
+	}
+	return json.Marshal(plain(c))
+}
+
 // ContentString returns the Content field as a string.
 // For tool_result blocks, Content is a JSON string; for web_search_tool_result
 // blocks it's an array. This method handles both cases.
@@ -188,11 +209,15 @@ func (c *Client) convertMessages(messages []protocol.Message) (string, []apiMess
 				content = append(content, apiContent{Type: "text", Text: msg.Content})
 			}
 			for _, tc := range msg.ToolCalls {
+				input := tc.Input
+				if input == nil {
+					input = map[string]any{}
+				}
 				content = append(content, apiContent{
 					Type:  "tool_use",
 					ID:    tc.ID,
 					Name:  tc.Name,
-					Input: tc.Input,
+					Input: input,
 				})
 			}
 			apiMessages = append(apiMessages, apiMessage{

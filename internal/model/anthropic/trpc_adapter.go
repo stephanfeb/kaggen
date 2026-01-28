@@ -288,13 +288,14 @@ func mapStopReason(stopReason string) string {
 }
 
 // argsToMap converts JSON arguments bytes to map.
+// Always returns a non-nil map since Anthropic API requires the input field.
 func argsToMap(args []byte) map[string]any {
 	if len(args) == 0 {
-		return nil
+		return map[string]any{}
 	}
 	var m map[string]any
 	if err := json.Unmarshal(args, &m); err != nil {
-		return nil
+		return map[string]any{}
 	}
 	return m
 }

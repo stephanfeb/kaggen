@@ -28,6 +28,7 @@ import (
 	"github.com/yourusername/kaggen/internal/embedding"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
+	"github.com/yourusername/kaggen/internal/model/gemini"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 	"github.com/yourusername/kaggen/internal/tools"
 )
@@ -57,9 +58,12 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check for API key
-	apiKey := config.APIKey()
-	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
+	// Check for Gemini API key first
+	geminiKey := config.GeminiAPIKey()
+	anthropicKey := config.AnthropicAPIKey()
+
+	if geminiKey == "" && anthropicKey == "" {
+		return fmt.Errorf("neither GEMINI_API_KEY nor ANTHROPIC_API_KEY environment variable is set")
 	}
 
 	// Setup logger
@@ -69,17 +73,36 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
 
-	// Get model name (strip provider prefix if present)
-	modelName := cfg.Agent.Model
-	if strings.HasPrefix(modelName, "anthropic/") {
-		modelName = strings.TrimPrefix(modelName, "anthropic/")
-	}
+	// Get model name from config
+	configModel := cfg.Agent.Model
 
 	// Create components
 	workspace := cfg.WorkspacePath()
 
-	// Create Anthropic adapter (implements model.Model)
-	modelAdapter := anthropic.NewAdapter(apiKey, modelName)
+	// Create model adapter
+	var modelAdapter model.Model
+
+	if geminiKey != "" {
+		// Use Gemini if key is present
+		var modelName string
+		if strings.HasPrefix(configModel, "gemini/") {
+			modelName = strings.TrimPrefix(configModel, "gemini/")
+		} else {
+			// Default to Gemini 1.5 Pro if config is not explicitly gemini
+			// (e.g. default config is anthropic/claude...)
+			modelName = "gemini-3-pro-preview"
+		}
+		modelAdapter = gemini.NewAdapter(geminiKey, modelName)
+		logger.Info("Using Google Gemini model", "model", modelName)
+	} else {
+		// Fallback to Anthropic
+		modelName := configModel
+		if strings.HasPrefix(modelName, "anthropic/") {
+			modelName = strings.TrimPrefix(modelName, "anthropic/")
+		}
+		modelAdapter = anthropic.NewAdapter(anthropicKey, modelName)
+		logger.Info("Using Anthropic model", "model", modelName)
+	}
 
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
@@ -124,7 +147,13 @@ func runAgent(cmd *cobra.Command, args []string) error {
 					memory.WithExtractor(memExtractor),
 					memory.WithAsyncMemoryNum(1),
 					memory.WithMemoryQueueSize(10),
-					memory.WithMemoryJobTimeout(30*time.Second),
+					func() memory.ServiceOpt {
+						timeout := 2 * time.Minute
+						if t, err := time.ParseDuration(cfg.Memory.Auto.Timeout); err == nil && t > 0 {
+							timeout = t
+						}
+						return memory.WithMemoryJobTimeout(timeout)
+					}(),
 					memory.WithModel(modelAdapter),
 					memory.WithSynthesisInterval(1*time.Hour),
 				)

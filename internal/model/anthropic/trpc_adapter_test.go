@@ -281,15 +281,15 @@ func TestArgsToMap(t *testing.T) {
 		t.Errorf("expected key=value, got %v", m)
 	}
 
-	// Empty
+	// Empty - should return empty map (not nil) for Anthropic API compatibility
 	m = argsToMap(nil)
-	if m != nil {
-		t.Errorf("expected nil for empty args, got %v", m)
+	if m == nil || len(m) != 0 {
+		t.Errorf("expected empty map for empty args, got %v", m)
 	}
 
-	// Invalid JSON
+	// Invalid JSON - should return empty map (not nil) for Anthropic API compatibility
 	m = argsToMap([]byte(`not json`))
-	if m != nil {
-		t.Errorf("expected nil for invalid JSON, got %v", m)
+	if m == nil || len(m) != 0 {
+		t.Errorf("expected empty map for invalid JSON, got %v", m)
 	}
 }

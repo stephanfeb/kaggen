@@ -10,14 +10,15 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 
 	"github.com/spf13/cobra"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	tmemory "trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
-	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
@@ -27,6 +28,7 @@ import (
 	"github.com/yourusername/kaggen/internal/gateway"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
+	"github.com/yourusername/kaggen/internal/model/gemini"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 	"github.com/yourusername/kaggen/internal/tools"
 )
@@ -46,9 +48,12 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check for API key
-	apiKey := config.APIKey()
-	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
+	// Check for Gemini API key first
+	geminiKey := config.GeminiAPIKey()
+	anthropicKey := config.AnthropicAPIKey()
+
+	if geminiKey == "" && anthropicKey == "" {
+		return fmt.Errorf("neither GEMINI_API_KEY nor ANTHROPIC_API_KEY environment variable is set")
 	}
 
 	// Setup logger
@@ -56,11 +61,8 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		Level: slog.LevelInfo,
 	}))
 
-	// Get model name (strip provider prefix if present)
-	modelName := cfg.Agent.Model
-	if strings.HasPrefix(modelName, "anthropic/") {
-		modelName = strings.TrimPrefix(modelName, "anthropic/")
-	}
+	// Get model name from config
+	configModel := cfg.Agent.Model
 
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -78,8 +80,29 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create components
 	workspace := cfg.WorkspacePath()
 
-	// Create Anthropic adapter (implements model.Model)
-	modelAdapter := anthropic.NewAdapter(apiKey, modelName)
+	// Create model adapter
+	var modelAdapter model.Model
+
+	if geminiKey != "" {
+		// Use Gemini if key is present
+		var modelName string
+		if strings.HasPrefix(configModel, "gemini/") {
+			modelName = strings.TrimPrefix(configModel, "gemini/")
+		} else {
+			// Default to Gemini 1.5 Pro if config is not explicitly gemini
+			modelName = "gemini-3-pro-preview"
+		}
+		modelAdapter = gemini.NewAdapter(geminiKey, modelName)
+		logger.Info("Using Google Gemini model", "model", modelName)
+	} else {
+		// Fallback to Anthropic
+		modelName := configModel
+		if strings.HasPrefix(modelName, "anthropic/") {
+			modelName = strings.TrimPrefix(modelName, "anthropic/")
+		}
+		modelAdapter = anthropic.NewAdapter(anthropicKey, modelName)
+		logger.Info("Using Anthropic model", "model", modelName)
+	}
 
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
@@ -194,8 +217,10 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Wire up async completion: when a sub-agent finishes, inject the result
 	// back into the coordinator's session so it can synthesize and notify the user.
 	kaggen.SetCompletionFunc(func(taskID, result string, taskErr error, policy kaggenAgent.TriggerPolicy) {
-		if policy != kaggenAgent.TriggerAuto {
-			return // queued results are picked up on the next user message
+		// For errors, always inject immediately (even for TriggerQueue).
+		// For successful TriggerQueue results, defer to next user message.
+		if policy != kaggenAgent.TriggerAuto && taskErr == nil {
+			return
 		}
 
 		content := result
@@ -203,22 +228,24 @@ func runGateway(cmd *cobra.Command, args []string) error {
 			content = fmt.Sprintf("Error: %v", taskErr)
 		}
 
-		// Look up which task this was to find session/user info.
 		state, ok := kaggen.InFlightStore().Get(taskID)
 		if !ok {
 			logger.Warn("completion for unknown task", "task_id", taskID)
 			return
 		}
 
-		// Use a system user and the default session for completion injection.
-		// The handler's InjectCompletion will route responses through the
-		// last known responder for the session.
-		sessionID := "tg-dm-system" // default; overridden if we know the session
-		userID := "system"
-		_ = state // state.AgentName available for logging
+		// Route completion back to the originating session.
+		sid := state.SessionID
+		uid := state.UserID
+		if sid == "" {
+			sid = "tg-dm-system"
+		}
+		if uid == "" {
+			uid = "system"
+		}
 
 		if err := server.Handler().InjectCompletion(
-			context.Background(), sessionID, userID, taskID, state.AgentName, content,
+			context.Background(), sid, uid, taskID, state.AgentName, content,
 		); err != nil {
 			logger.Warn("failed to inject completion", "task_id", taskID, "error", err)
 		}
