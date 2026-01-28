@@ -17,7 +17,7 @@ import (
 const (
 	defaultAsyncMemoryNum   = 1
 	defaultMemoryQueueSize  = 10
-	defaultMemoryJobTimeout = 30 * time.Second
+	defaultMemoryJobTimeout = 90 * time.Second
 )
 
 // memoryOperator defines the storage operations the auto worker calls.

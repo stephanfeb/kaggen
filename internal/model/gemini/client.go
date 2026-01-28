@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/yourusername/kaggen/pkg/protocol"
 )
 
 const (
-	defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
+	defaultBaseURL     = "https://generativelanguage.googleapis.com/v1beta/models"
+	defaultHTTPTimeout = 120 * time.Second
 )
 
 // Client implements the Model interface for Google's Gemini API.
@@ -27,10 +29,12 @@ type Client struct {
 // NewClient creates a new Gemini API client.
 func NewClient(apiKey, model string) *Client {
 	return &Client{
-		apiKey:     apiKey,
-		baseURL:    defaultBaseURL,
-		httpClient: &http.Client{},
-		model:      model,
+		apiKey:  apiKey,
+		baseURL: defaultBaseURL,
+		httpClient: &http.Client{
+			Timeout: defaultHTTPTimeout,
+		},
+		model: model,
 	}
 }
 
