@@ -9,7 +9,7 @@ Use this skill when the user asks to convert a document between formats, generat
 
 ## Available Commands
 
-Run conversions via `skill_run` with the scripts below. All scripts accept `--help`.
+Run the bash scripts below via `skill_run`. All scripts accept `--help`.
 
 ### convert.sh — General conversion
 

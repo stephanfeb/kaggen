@@ -223,9 +223,19 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		}
 		inv := agent.NewInvocation(invOpts...)
 
+		// Set limits to prevent runaway sub-agents.
+		// MaxLLMCalls: limit total API calls to prevent infinite loops.
+		// MaxToolIterations: limit tool call cycles (model→tools→model).
+		inv.MaxLLMCalls = 10
+		inv.MaxToolIterations = 5
+
+		// Create a context with timeout to enforce hard deadline.
+		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
 		// Wrap context with the invocation so tools (e.g. memory_search)
 		// can retrieve it via agent.InvocationFromContext(ctx).
-		bgCtx := agent.NewInvocationContext(context.Background(), inv)
+		bgCtx = agent.NewInvocationContext(bgCtx, inv)
 
 		events, err := ag.Run(bgCtx, inv)
 		if err != nil {
@@ -236,22 +246,71 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 
 		// Collect the final text result from events.
 		var result string
+		var turnCount int
 		for evt := range events {
 			if evt == nil || evt.Response == nil {
 				continue
 			}
+			turnCount++
+
 			if evt.Response.Error != nil {
+				d.logger.Error("async task error",
+					"task_id", taskID,
+					"agent", req.AgentName,
+					"turn", turnCount,
+					"error", evt.Response.Error.Message)
 				d.store.Fail(taskID, evt.Response.Error.Message)
 				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", evt.Response.Error.Message), policy)
 				return
 			}
+
 			if len(evt.Response.Choices) > 0 {
 				c := evt.Response.Choices[0]
+
+				// Log tool calls
+				if len(c.Message.ToolCalls) > 0 {
+					toolNames := make([]string, len(c.Message.ToolCalls))
+					for i, tc := range c.Message.ToolCalls {
+						toolNames[i] = tc.Function.Name
+					}
+					d.logger.Info("async task tool calls",
+						"task_id", taskID,
+						"agent", req.AgentName,
+						"turn", turnCount,
+						"tools", toolNames)
+				}
+
+				// Log text content
 				if c.Message.Content != "" {
 					result = c.Message.Content
+					// Truncate for logging
+					logContent := c.Message.Content
+					if len(logContent) > 200 {
+						logContent = logContent[:200] + "..."
+					}
+					d.logger.Info("async task response",
+						"task_id", taskID,
+						"agent", req.AgentName,
+						"turn", turnCount,
+						"content_length", len(c.Message.Content),
+						"content_preview", logContent)
+				}
+
+				// Log finish reason
+				if c.FinishReason != nil {
+					d.logger.Debug("async task finish reason",
+						"task_id", taskID,
+						"agent", req.AgentName,
+						"turn", turnCount,
+						"finish_reason", *c.FinishReason)
 				}
 			}
 		}
+
+		d.logger.Info("async task event loop done",
+			"task_id", taskID,
+			"agent", req.AgentName,
+			"total_turns", turnCount)
 
 		d.store.Complete(taskID, result)
 		d.logger.Info("async task completed", "task_id", taskID, "agent", req.AgentName)

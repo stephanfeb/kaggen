@@ -9,7 +9,7 @@ Use this skill when the user asks to inspect, query, export, or manage SQLite da
 
 ## Available Commands
 
-Run operations via `skill_run` with the scripts below. All scripts accept `--help`.
+Run the bash scripts below via `skill_run`. All scripts accept `--help`.
 
 ### query.sh — Run SQL queries
 

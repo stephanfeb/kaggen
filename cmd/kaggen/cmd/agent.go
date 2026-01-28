@@ -170,14 +170,17 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load skills via framework repository
-	skillsRepo, err := skill.NewFSRepository(
+	var skillsRepo skill.Repository
+	fsRepo, err := skill.NewFSRepository(
 		filepath.Join(workspace, "skills"),
 		config.ExpandPath("~/.kaggen/skills"),
 	)
 	if err != nil {
 		logger.Warn("failed to load skills", "error", err)
 	}
-	if skillsRepo != nil {
+	if fsRepo != nil {
+		// Wrap with case-insensitive lookup to handle LLMs that capitalize skill names
+		skillsRepo = kaggenAgent.NewCaseInsensitiveRepository(fsRepo)
 		summaries := skillsRepo.Summaries()
 		if len(summaries) > 0 {
 			logger.Info("skills loaded", "count", len(summaries))

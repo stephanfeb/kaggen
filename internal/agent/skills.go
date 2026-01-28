@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -11,6 +12,46 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
+
+// CaseInsensitiveRepository wraps a skill.Repository to provide case-insensitive lookups.
+// This handles LLMs like Gemini that may capitalize skill names (e.g., "Pandoc" vs "pandoc").
+type CaseInsensitiveRepository struct {
+	inner    skill.Repository
+	nameMap  map[string]string // lowercase -> actual name
+}
+
+// NewCaseInsensitiveRepository wraps an existing repository with case-insensitive lookup.
+func NewCaseInsensitiveRepository(repo skill.Repository) *CaseInsensitiveRepository {
+	nameMap := make(map[string]string)
+	for _, s := range repo.Summaries() {
+		nameMap[strings.ToLower(s.Name)] = s.Name
+	}
+	return &CaseInsensitiveRepository{
+		inner:   repo,
+		nameMap: nameMap,
+	}
+}
+
+// Get returns a skill by name (case-insensitive).
+func (r *CaseInsensitiveRepository) Get(name string) (*skill.Skill, error) {
+	if actual, ok := r.nameMap[strings.ToLower(name)]; ok {
+		return r.inner.Get(actual)
+	}
+	return r.inner.Get(name)
+}
+
+// Summaries returns all skill summaries.
+func (r *CaseInsensitiveRepository) Summaries() []skill.Summary {
+	return r.inner.Summaries()
+}
+
+// Path returns the directory path for a skill (case-insensitive).
+func (r *CaseInsensitiveRepository) Path(name string) (string, error) {
+	if actual, ok := r.nameMap[strings.ToLower(name)]; ok {
+		return r.inner.Path(actual)
+	}
+	return r.inner.Path(name)
+}
 
 // BuildSubAgents creates a specialist sub-agent for each skill in the repository,
 // plus a general-purpose sub-agent with the provided tools. These sub-agents are
