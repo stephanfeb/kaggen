@@ -166,7 +166,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the Kaggen agent (Coordinator Team pattern).
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, logger)
+	// CLI mode doesn't use async completion injection, so pass nil.
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}

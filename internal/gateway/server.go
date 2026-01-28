@@ -146,6 +146,12 @@ func (s *Server) Stop(ctx context.Context) error {
 	return s.router.Stop(ctx)
 }
 
+// Handler returns the server's message handler, allowing external components
+// to wire up completion event injection.
+func (s *Server) Handler() *Handler {
+	return s.handler
+}
+
 // ClientCount returns the number of connected WebSocket clients.
 func (s *Server) ClientCount() int {
 	return s.wsChannel.ClientCount()

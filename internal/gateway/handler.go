@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -20,10 +21,47 @@ import (
 	"github.com/yourusername/kaggen/internal/channel"
 )
 
+// RespondFunc is a callback for sending responses through a channel.
+type RespondFunc func(*channel.Response) error
+
+// SessionResponder tracks the respond callback for active sessions so that
+// async completion events can route responses back to the originating channel.
+type SessionResponder struct {
+	mu        sync.RWMutex
+	responder map[string]RespondFunc // sessionID -> respond callback
+	metadata  map[string]map[string]any // sessionID -> original message metadata
+}
+
+// NewSessionResponder creates a new session responder registry.
+func NewSessionResponder() *SessionResponder {
+	return &SessionResponder{
+		responder: make(map[string]RespondFunc),
+		metadata:  make(map[string]map[string]any),
+	}
+}
+
+// Register stores the respond callback and metadata for a session.
+func (sr *SessionResponder) Register(sessionID string, respond RespondFunc, metadata map[string]any) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.responder[sessionID] = respond
+	sr.metadata[sessionID] = metadata
+}
+
+// Get returns the respond callback and metadata for a session.
+func (sr *SessionResponder) Get(sessionID string) (RespondFunc, map[string]any, bool) {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
+	fn, ok := sr.responder[sessionID]
+	meta := sr.metadata[sessionID]
+	return fn, meta, ok
+}
+
 // Handler processes messages from channels using the trpc-agent-go Runner.
 type Handler struct {
-	runner runner.Runner
-	logger *slog.Logger
+	runner     runner.Runner
+	logger     *slog.Logger
+	responders *SessionResponder
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
@@ -39,8 +77,9 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 	r := runner.NewRunner(appName, ag, opts...)
 
 	return &Handler{
-		runner: r,
-		logger: logger,
+		runner:     r,
+		logger:     logger,
+		responders: NewSessionResponder(),
 	}
 }
 
@@ -50,6 +89,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		"session_id", msg.SessionID,
 		"channel", msg.Channel,
 		"content_length", len(msg.Content))
+
+	// Register the respond callback so async completions can route back.
+	h.responders.Register(msg.SessionID, respond, msg.Metadata)
 
 	// Create a user message for the runner, attaching any uploaded files.
 	userMessage := model.NewUserMessage(msg.Content)
@@ -231,6 +273,40 @@ func extractSendFiles(text string, meta map[string]any) (string, map[string]any)
 // isImageMime returns true if the MIME type is a supported image format.
 func isImageMime(mime string) bool {
 	return strings.HasPrefix(mime, "image/")
+}
+
+// InjectCompletion injects a task completion event into the coordinator's
+// session, triggering a new reasoning turn. The coordinator sees the completion
+// as an internal message and can synthesize/communicate the result to the user.
+func (h *Handler) InjectCompletion(ctx context.Context, sessionID, userID, taskID, agentName, result string) error {
+	content := fmt.Sprintf("[Task Completed: %s (agent: %s)]\n\n%s", taskID, agentName, result)
+
+	respond, metadata, ok := h.responders.Get(sessionID)
+	if !ok {
+		h.logger.Warn("no responder for session, completion will not be delivered to user",
+			"session_id", sessionID, "task_id", taskID)
+		// Still run the agent so the result is recorded in session history,
+		// but discard responses.
+		respond = func(_ *channel.Response) error { return nil }
+		metadata = map[string]any{}
+	}
+
+	msg := &channel.Message{
+		ID:        uuid.New().String(),
+		SessionID: sessionID,
+		UserID:    userID,
+		Content:   content,
+		Channel:   "internal",
+		Metadata:  copyMetadata(metadata),
+	}
+
+	return h.HandleMessage(ctx, msg, respond)
+}
+
+// Responders returns the session responder registry, allowing external
+// components (e.g. async agent tools) to look up respond callbacks.
+func (h *Handler) Responders() *SessionResponder {
+	return h.responders
 }
 
 // Close closes the handler and releases resources.

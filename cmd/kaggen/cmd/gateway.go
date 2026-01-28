@@ -162,7 +162,8 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the Kaggen agent (Coordinator Team pattern).
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, logger)
+	// Pass nil for completeFn; it's wired up after the handler is created.
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
@@ -179,6 +180,39 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Create gateway server (with optional memory service)
 	server := gateway.NewServer(cfg, sanitizedSession, kaggen, logger, memService)
+
+	// Wire up async completion: when a sub-agent finishes, inject the result
+	// back into the coordinator's session so it can synthesize and notify the user.
+	kaggen.SetCompletionFunc(func(taskID, result string, taskErr error, policy kaggenAgent.TriggerPolicy) {
+		if policy != kaggenAgent.TriggerAuto {
+			return // queued results are picked up on the next user message
+		}
+
+		content := result
+		if taskErr != nil {
+			content = fmt.Sprintf("Error: %v", taskErr)
+		}
+
+		// Look up which task this was to find session/user info.
+		state, ok := kaggen.InFlightStore().Get(taskID)
+		if !ok {
+			logger.Warn("completion for unknown task", "task_id", taskID)
+			return
+		}
+
+		// Use a system user and the default session for completion injection.
+		// The handler's InjectCompletion will route responses through the
+		// last known responder for the session.
+		sessionID := "tg-dm-system" // default; overridden if we know the session
+		userID := "system"
+		_ = state // state.AgentName available for logging
+
+		if err := server.Handler().InjectCompletion(
+			context.Background(), sessionID, userID, taskID, state.AgentName, content,
+		); err != nil {
+			logger.Warn("failed to inject completion", "task_id", taskID, "error", err)
+		}
+	})
 
 	// Print startup message
 	fmt.Println("Kaggen Gateway")
