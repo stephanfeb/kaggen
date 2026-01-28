@@ -260,6 +260,11 @@ func (c *Config) ProactiveDBPath() string {
 	return ExpandPath("~/.kaggen/proactive.db")
 }
 
+// BacklogDBPath returns the expanded path to the backlog database.
+func (c *Config) BacklogDBPath() string {
+	return ExpandPath("~/.kaggen/backlog.db")
+}
+
 // APIKey returns the Anthropic API key from environment.
 func APIKey() string {
 	return os.Getenv("ANTHROPIC_API_KEY")

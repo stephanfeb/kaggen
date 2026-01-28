@@ -21,6 +21,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
+	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/embedding"
 	"github.com/yourusername/kaggen/internal/gateway"
@@ -82,6 +83,15 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
+
+	// Initialize persistent work backlog
+	backlogStore, err := backlog.NewStore(cfg.BacklogDBPath())
+	if err != nil {
+		return fmt.Errorf("open backlog store: %w", err)
+	}
+	defer backlogStore.Close()
+	toolList = append(toolList, tools.BacklogTools(backlogStore)...)
+	logger.Info("backlog store enabled", "db", cfg.BacklogDBPath())
 
 	// Memory service (passed to server if available)
 	var memService tmemory.Service
