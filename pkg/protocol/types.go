@@ -11,9 +11,10 @@ type Message struct {
 
 // ToolCall represents a request to execute a tool.
 type ToolCall struct {
-	ID    string         `json:"id"`
-	Name  string         `json:"name"`
-	Input map[string]any `json:"input"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Input          map[string]any `json:"input"`
+	ThoughtSignature string       `json:"thought_signature,omitempty"` // Gemini thought signature for function calls
 }
 
 // ToolResult represents the output of a tool execution.

@@ -20,6 +20,7 @@ import (
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
+	atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/backlog"
@@ -60,6 +61,36 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
+
+	// Initialize telemetry/tracing if enabled
+	if cfg.Telemetry.Enabled {
+		endpoint := cfg.Telemetry.JaegerEndpoint
+		if endpoint == "" {
+			endpoint = "localhost:4317"
+		}
+		serviceName := cfg.Telemetry.ServiceName
+		if serviceName == "" {
+			serviceName = "kaggen"
+		}
+		protocol := cfg.Telemetry.Protocol
+		if protocol == "" {
+			protocol = "grpc"
+		}
+
+		traceOpts := []atrace.Option{
+			atrace.WithEndpoint(endpoint),
+			atrace.WithServiceName(serviceName),
+			atrace.WithProtocol(protocol),
+		}
+
+		shutdownTrace, err := atrace.Start(context.Background(), traceOpts...)
+		if err != nil {
+			logger.Warn("failed to initialize tracing", "error", err)
+		} else {
+			defer shutdownTrace()
+			logger.Info("tracing enabled", "endpoint", endpoint, "protocol", protocol, "service", serviceName)
+		}
+	}
 
 	// Get model name from config
 	configModel := cfg.Agent.Model
@@ -149,9 +180,9 @@ func runGateway(cmd *cobra.Command, args []string) error {
 				svc, err := memory.NewFileMemoryService(
 					vecIndex.DB(), vecIndex, embedder, workspace, logger,
 					memory.WithExtractor(memExtractor),
-					memory.WithAsyncMemoryNum(1),
-					memory.WithMemoryQueueSize(10),
-					memory.WithMemoryJobTimeout(30*time.Second),
+					memory.WithAsyncMemoryNum(2),
+					memory.WithMemoryQueueSize(50),
+					memory.WithMemoryJobTimeout(120*time.Second),
 					memory.WithModel(modelAdapter),
 					memory.WithSynthesisInterval(1*time.Hour),
 				)
@@ -279,6 +310,13 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 	if len(cfg.Proactive.Heartbeats) > 0 {
 		fmt.Printf("Heartbeats: %d\n", len(cfg.Proactive.Heartbeats))
+	}
+	if cfg.Telemetry.Enabled {
+		endpoint := cfg.Telemetry.JaegerEndpoint
+		if endpoint == "" {
+			endpoint = "localhost:4317"
+		}
+		fmt.Printf("Tracing: enabled (Jaeger @ %s)\n", endpoint)
 	}
 	fmt.Println()
 	fmt.Println("WebSocket endpoint: ws://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/ws")

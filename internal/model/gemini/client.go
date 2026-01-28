@@ -44,6 +44,7 @@ type apiPart struct {
 	InlineData       *apiBlob             `json:"inlineData,omitempty"`
 	FunctionCall     *apiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *apiFunctionResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string               `json:"thoughtSignature,omitempty"` // Sibling of functionCall, not inside it
 }
 
 type apiBlob struct {
@@ -178,12 +179,17 @@ func (c *Client) convertMessages(messages []protocol.Message) (string, []apiCont
 				parts = append(parts, apiPart{Text: msg.Content})
 			}
 			for _, tc := range msg.ToolCalls {
-				parts = append(parts, apiPart{
+				p := apiPart{
 					FunctionCall: &apiFunctionCall{
 						Name: tc.Name,
 						Args: mapToRawMessage(tc.Input),
 					},
-				})
+				}
+				// Thought signature is a sibling of functionCall, not inside it
+				if tc.ThoughtSignature != "" {
+					p.ThoughtSignature = tc.ThoughtSignature
+				}
+				parts = append(parts, p)
 			}
 			apiContents = append(apiContents, apiContent{Role: "model", Parts: parts})
 
@@ -245,10 +251,12 @@ func (c *Client) convertResponse(apiResp *apiResponse) *protocol.Response {
 				_ = json.Unmarshal(part.FunctionCall.Args, &input)
 			}
 
+			// Thought signature is a sibling of functionCall in the part, not inside it
 			resp.ToolCalls = append(resp.ToolCalls, protocol.ToolCall{
-				ID:    part.FunctionCall.Name,
-				Name:  part.FunctionCall.Name,
-				Input: input,
+				ID:               part.FunctionCall.Name,
+				Name:             part.FunctionCall.Name,
+				Input:            input,
+				ThoughtSignature: part.ThoughtSignature,
 			})
 		}
 	}

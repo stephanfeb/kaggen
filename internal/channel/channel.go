@@ -126,10 +126,14 @@ func (r *Router) routeChannel(ctx context.Context, ch Channel) {
 			if !ok {
 				return
 			}
-			// Handle message and send responses back through the channel
-			r.handler.HandleMessage(ctx, msg, func(resp *Response) error {
-				return ch.Send(ctx, resp)
-			})
+			// Handle message concurrently to avoid blocking subsequent messages.
+			// Each message gets its own goroutine so slow requests (e.g., Gemini timeouts)
+			// don't block other users/conversations.
+			go func(m *Message) {
+				r.handler.HandleMessage(ctx, m, func(resp *Response) error {
+					return ch.Send(ctx, resp)
+				})
+			}(msg)
 		}
 	}
 }

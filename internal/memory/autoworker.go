@@ -148,20 +148,10 @@ func (w *autoMemoryWorker) EnqueueJob(ctx context.Context, sess *session.Session
 	if w.tryEnqueue(ctx, userKey, job) {
 		return nil
 	}
-	if ctx.Err() != nil {
-		return nil
-	}
-	// Queue full — process synchronously.
-	timeout := w.config.MemoryJobTimeout
-	if timeout <= 0 {
-		timeout = defaultMemoryJobTimeout
-	}
-	syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
-	defer cancel()
-	if err := w.createAutoMemory(syncCtx, userKey, messages); err != nil {
-		return err
-	}
-	writeLastExtractAt(sess, latestTs)
+	// Queue full — skip rather than block the response.
+	// Memory extraction is best-effort and should never block user interactions.
+	w.logger.Warn("auto_memory: queue full, skipping extraction",
+		"app", userKey.AppName, "user", userKey.UserID)
 	return nil
 }
 

@@ -147,13 +147,17 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 					thoughtSig = idParts[1]
 				}
 
-				parts = append(parts, apiPart{
+				// Thought signature is a sibling of functionCall, not inside it
+				p := apiPart{
 					FunctionCall: &apiFunctionCall{
-						Name:             tc.Function.Name,
-						Args:             json.RawMessage(tc.Function.Arguments),
-						ThoughtSignature: thoughtSig, // Use specific field
+						Name: tc.Function.Name,
+						Args: json.RawMessage(tc.Function.Arguments),
 					},
-				})
+				}
+				if thoughtSig != "" {
+					p.ThoughtSignature = thoughtSig
+				}
+				parts = append(parts, p)
 			}
 			if len(parts) > 0 {
 				apiContents = append(apiContents, apiContent{
@@ -257,12 +261,15 @@ func (a *Adapter) convertResponse(resp *apiResponse) *model.Response {
 			}
 			if part.FunctionCall != nil {
 				args, _ := json.Marshal(part.FunctionCall.Args)
+
+				// Build tool call ID - embed thought signature if present
+				tcID := uuid.New().String()
+				if part.ThoughtSignature != "" {
+					tcID = tcID + ":::" + part.ThoughtSignature
+				}
+
 				toolCalls = append(toolCalls, model.ToolCall{
-					// Gemini returns no ID for the call. We generate one?
-                    // Or should we use a UUID?
-                    // If we use UUID here, we must Ensure consistent mapping.
-                    // But here it's a NEW call from the AI.
-					ID:   uuid.New().String(), 
+					ID:   tcID,
 					Type: "function",
 					Function: model.FunctionDefinitionParam{
 						Name:      part.FunctionCall.Name,
@@ -273,27 +280,6 @@ func (a *Adapter) convertResponse(resp *apiResponse) *model.Response {
 		}
 
 		choice.Message.Content = textContent
-		
-		// Map back tool calls with ID hacks if needed
-		for i, tc := range toolCalls {
-			// Find the corresponding part
-			for _, part := range candidate.Content.Parts {
-				if part.FunctionCall != nil && part.FunctionCall.Name == tc.Function.Name {
-					// Check for thought signature (try both fields)
-					sig := part.FunctionCall.ThoughtSignature
-					if sig == "" {
-						sig = part.FunctionCall.Thought
-					}
-					
-					if sig != "" {
-						// Append thought signature to ID
-						tc.ID = tc.ID + ":::" + sig
-					}
-				}
-			}
-			toolCalls[i] = tc
-		}
-		
 		choice.Message.ToolCalls = toolCalls
 		
 		finishReason := mapFinishReason(candidate.FinishReason)
@@ -378,12 +364,8 @@ func schemaToMap(schema *tool.Schema) map[string]any {
 	if schema.Items != nil {
 		result["items"] = schemaToMap(schema.Items)
 	}
-	if schema.AdditionalProperties != nil {
-        // Gemini might not support this fully, but passing it for now.
-		result["additionalProperties"] = schema.AdditionalProperties
-	}
-	// Default is not supported in Gemini Function Declarations standardly?
-    // It's ignored usually.
+	// NOTE: Gemini does NOT support additionalProperties in tool schemas.
+	// Omitting it entirely to avoid "Unknown name" errors.
     
 	if len(schema.Enum) > 0 {
 		result["enum"] = schema.Enum

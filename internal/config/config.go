@@ -16,6 +16,15 @@ type Config struct {
 	Channels  ChannelsConfig  `json:"channels"`
 	Memory    MemoryConfig    `json:"memory"`
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
+	Telemetry TelemetryConfig `json:"telemetry,omitempty"`
+}
+
+// TelemetryConfig configures observability (tracing, metrics).
+type TelemetryConfig struct {
+	Enabled        bool   `json:"enabled"`
+	JaegerEndpoint string `json:"jaeger_endpoint,omitempty"` // OTLP endpoint, default "localhost:4317"
+	Protocol       string `json:"protocol,omitempty"`        // "grpc" (default) or "http"
+	ServiceName    string `json:"service_name,omitempty"`    // default "kaggen"
 }
 
 // ProactiveConfig configures the proactive engine (cron, webhooks, heartbeats).
