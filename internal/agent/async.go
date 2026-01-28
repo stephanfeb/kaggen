@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
@@ -153,12 +154,13 @@ type asyncDispatchResponse struct {
 
 // asyncDispatcher holds references needed to dispatch async sub-agent tasks.
 type asyncDispatcher struct {
-	agents     map[string]agent.Agent
-	store      *InFlightStore
-	completeFn CompletionFunc
-	mu         sync.RWMutex // protects completeFn
-	model      model.Model
-	logger     *slog.Logger
+	agents        map[string]agent.Agent
+	store         *InFlightStore
+	completeFn    CompletionFunc
+	mu            sync.RWMutex // protects completeFn
+	model         model.Model
+	memoryService memory.Service
+	logger        *slog.Logger
 }
 
 // SetCompletionFunc updates the completion callback. This is used to wire up
@@ -196,18 +198,22 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 	d.logger.Info("dispatched async task", "task_id", taskID, "agent", req.AgentName, "policy", policy)
 
 	go func() {
-		// Create a detached context so the sub-agent isn't cancelled when the
-		// coordinator's request context ends.
-		bgCtx := context.Background()
-
-		inv := agent.NewInvocation(
+		invOpts := []agent.InvocationOptions{
 			agent.WithInvocationAgent(ag),
 			agent.WithInvocationMessage(model.Message{
 				Role:    model.RoleUser,
 				Content: req.Task,
 			}),
 			agent.WithInvocationModel(d.model),
-		)
+		}
+		if d.memoryService != nil {
+			invOpts = append(invOpts, agent.WithInvocationMemoryService(d.memoryService))
+		}
+		inv := agent.NewInvocation(invOpts...)
+
+		// Wrap context with the invocation so tools (e.g. memory_search)
+		// can retrieve it via agent.InvocationFromContext(ctx).
+		bgCtx := agent.NewInvocationContext(context.Background(), inv)
 
 		events, err := ag.Run(bgCtx, inv)
 		if err != nil {
@@ -249,13 +255,14 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 // NewAsyncDispatchTool creates a tool that dispatches tasks to sub-agents asynchronously.
 // It returns both the tool and the dispatcher, so the caller can update the
 // completion function later via SetCompletionFunc.
-func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, logger *slog.Logger) (tool.Tool, *asyncDispatcher) {
+func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger) (tool.Tool, *asyncDispatcher) {
 	d := &asyncDispatcher{
-		agents:     agents,
-		store:      store,
-		completeFn: completeFn,
-		model:      m,
-		logger:     logger,
+		agents:        agents,
+		store:         store,
+		completeFn:    completeFn,
+		model:         m,
+		memoryService: memSvc,
+		logger:        logger,
 	}
 	t := function.NewFunctionTool(
 		d.dispatch,

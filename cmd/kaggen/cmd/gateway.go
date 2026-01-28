@@ -173,7 +173,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Create the Kaggen agent (Coordinator Team pattern).
 	// Pass nil for completeFn; it's wired up after the handler is created.
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, logger)
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, memService, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	trpcagent "trpc.group/trpc-go/trpc-agent-go/agent"
+	trpcmemory "trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -89,6 +90,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	// Runner options
 	var runnerOpts []runner.Option
+	var memService trpcmemory.Service
 
 	// Initialize memory service if enabled
 	if cfg.Memory.Search.Enabled {
@@ -117,7 +119,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 				// Create memory service with auto-extraction
 				memExtractor := extractor.NewExtractor(modelAdapter, extractor.WithPrompt(memory.ExtractorPrompt))
-				memService, err := memory.NewFileMemoryService(
+				memService, err = memory.NewFileMemoryService(
 					vecIndex.DB(), vecIndex, embedder, workspace, logger,
 					memory.WithExtractor(memExtractor),
 					memory.WithAsyncMemoryNum(1),
@@ -167,7 +169,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	// Create the Kaggen agent (Coordinator Team pattern).
 	// CLI mode doesn't use async completion injection, so pass nil.
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, logger)
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, memService, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}

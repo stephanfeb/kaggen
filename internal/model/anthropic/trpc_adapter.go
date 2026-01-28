@@ -157,13 +157,14 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 
 		case model.RoleTool:
 			// Tool results are sent as user messages with tool_result type
+			rawContent, _ := json.Marshal(msg.Content)
 			apiMessages = append(apiMessages, apiMessage{
 				Role: "user",
 				Content: []apiContent{
 					{
 						Type:      "tool_result",
 						ToolUseID: msg.ToolID,
-						Content:   msg.Content,
+						Content:   rawContent,
 					},
 				},
 			})
@@ -175,7 +176,7 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 
 	// Convert tools if present
 	if len(req.Tools) > 0 {
-		apiReq.Tools = make([]apiTool, 0, len(req.Tools))
+		apiReq.Tools = make([]any, 0, len(req.Tools)+1)
 		for _, t := range req.Tools {
 			decl := t.Declaration()
 			apiReq.Tools = append(apiReq.Tools, apiTool{
@@ -184,6 +185,12 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 				InputSchema: schemaToMap(decl.InputSchema),
 			})
 		}
+		// Add web search server tool so Claude can search the web.
+		apiReq.Tools = append(apiReq.Tools, apiServerTool{
+			Type:    "web_search_20250305",
+			Name:    "web_search",
+			MaxUses: 5,
+		})
 	}
 
 	return apiReq
@@ -232,6 +239,11 @@ func (a *Adapter) convertResponse(resp *apiResponse) *model.Response {
 						Arguments: args,
 					},
 				})
+			case "server_tool_use", "web_search_tool_result":
+				// Server-managed tool blocks (e.g. web search). These are
+				// handled automatically by the API; we just skip them in
+				// the conversion since the final text block already
+				// incorporates the search results.
 			}
 		}
 
@@ -265,6 +277,10 @@ func mapStopReason(stopReason string) string {
 	case "max_tokens":
 		return "length"
 	case "stop_sequence":
+		return "stop"
+	case "pause_turn":
+		// Server tool execution paused the turn; treat as normal stop
+		// since non-streaming responses include the final result.
 		return "stop"
 	default:
 		return stopReason

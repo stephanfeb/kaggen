@@ -10,6 +10,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	trpcmemory "trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/team"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -40,7 +41,7 @@ type Agent struct {
 //
 // completeFn is called when an async sub-agent finishes. It may be nil during
 // construction and set later via SetCompletionFunc (to break circular deps).
-func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, logger *slog.Logger) (*Agent, error) {
+func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, memSvc trpcmemory.Service, logger *slog.Logger) (*Agent, error) {
 	// Build instruction from bootstrap files.
 	instruction, err := buildInstruction(mem, subAgents)
 	if err != nil {
@@ -70,7 +71,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		completeFn = func(taskID, result string, err error, policy TriggerPolicy) {}
 	}
 
-	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, logger)
+	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger)
 	statusTool := NewTaskStatusTool(store)
 
 	// Coordinator gets direct tools + async dispatch + task status.

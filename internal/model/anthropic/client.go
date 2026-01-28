@@ -43,15 +43,30 @@ type apiMessage struct {
 
 // apiContent represents content in the Anthropic API format.
 type apiContent struct {
-	Type      string         `json:"type"`
-	Text      string         `json:"text,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
-	ToolUseID string         `json:"tool_use_id,omitempty"`
-	Content   string         `json:"content,omitempty"`
-	IsError   bool           `json:"is_error,omitempty"`
-	Source    *apiSource     `json:"source,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     map[string]any  `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+	Source    *apiSource      `json:"source,omitempty"`
+}
+
+// ContentString returns the Content field as a string.
+// For tool_result blocks, Content is a JSON string; for web_search_tool_result
+// blocks it's an array. This method handles both cases.
+func (c *apiContent) ContentString() string {
+	if len(c.Content) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(c.Content, &s); err == nil {
+		return s
+	}
+	// Not a string (e.g. array from web_search_tool_result); return raw JSON.
+	return string(c.Content)
 }
 
 // apiSource represents an image source for the Anthropic Vision API.
@@ -68,14 +83,21 @@ type apiRequest struct {
 	MaxTokens int          `json:"max_tokens"`
 	System    string       `json:"system,omitempty"`
 	Messages  []apiMessage `json:"messages"`
-	Tools     []apiTool    `json:"tools,omitempty"`
+	Tools     []any        `json:"tools,omitempty"`
 }
 
-// apiTool represents a tool definition in the Anthropic API format.
+// apiTool represents a function tool definition in the Anthropic API format.
 type apiTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"input_schema"`
+}
+
+// apiServerTool represents a server-managed tool (e.g. web_search_20250305).
+type apiServerTool struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	MaxUses int    `json:"max_uses,omitempty"`
 }
 
 // apiResponse represents a response from the Anthropic API.
@@ -111,13 +133,13 @@ func (c *Client) Generate(ctx context.Context, messages []protocol.Message, tool
 	systemPrompt, apiMessages := c.convertMessages(messages)
 
 	// Convert tools to API format
-	apiTools := make([]apiTool, len(tools))
-	for i, t := range tools {
-		apiTools[i] = apiTool{
+	var apiTools []any
+	for _, t := range tools {
+		apiTools = append(apiTools, apiTool{
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.Parameters,
-		}
+		})
 	}
 
 	// Build request
@@ -180,13 +202,14 @@ func (c *Client) convertMessages(messages []protocol.Message) (string, []apiMess
 
 		case "tool":
 			if msg.ToolResult != nil {
+				rawContent, _ := json.Marshal(msg.ToolResult.Output)
 				apiMessages = append(apiMessages, apiMessage{
 					Role: "user",
 					Content: []apiContent{
 						{
 							Type:      "tool_result",
 							ToolUseID: msg.ToolResult.ToolCallID,
-							Content:   msg.ToolResult.Output,
+							Content:   rawContent,
 							IsError:   msg.ToolResult.IsError,
 						},
 					},
