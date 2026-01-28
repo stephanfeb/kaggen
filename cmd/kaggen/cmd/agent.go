@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
-	"trpc.group/trpc-go/trpc-agent-go/agent"
+	trpcagent "trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -156,8 +156,17 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
 
-	// Create the Kaggen agent
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, skillsRepo, logger)
+	// Build specialist sub-agents from skills.
+	var subAgents []trpcagent.Agent
+	if skillsRepo != nil {
+		subAgents, err = kaggenAgent.BuildSubAgents(modelAdapter, skillsRepo, toolList, logger)
+		if err != nil {
+			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
+		}
+	}
+
+	// Create the Kaggen agent (Coordinator Team pattern).
+	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
@@ -242,7 +251,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			userID,
 			sessionID,
 			model.NewUserMessage(input),
-			agent.WithRequestID(uuid.New().String()),
+			trpcagent.WithRequestID(uuid.New().String()),
 		)
 		if err != nil {
 			if ctx.Err() != nil {
