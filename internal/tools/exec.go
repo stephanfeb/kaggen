@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultTimeout = 30 * time.Second
-	maxTimeout     = 5 * time.Minute
+	maxTimeout     = 30 * time.Minute
 )
 
 // ExecArgs defines the input arguments for the exec tool.

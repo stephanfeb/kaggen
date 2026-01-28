@@ -77,7 +77,14 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 		if tgChannel != nil {
 			chMap.channels["telegram"] = tgChannel
 		}
-		s.proactive = proactive.New(&cfg.Proactive, handler, chMap, logger)
+		var history *proactive.HistoryStore
+		historyDBPath := cfg.ProactiveDBPath()
+		if h, err := proactive.NewHistoryStore(historyDBPath); err != nil {
+			logger.Warn("proactive history: failed to open", "path", historyDBPath, "error", err)
+		} else {
+			history = h
+		}
+		s.proactive = proactive.New(&cfg.Proactive, handler, chMap, logger, history)
 
 		// Mount webhook routes on the WebSocket channel's HTTP server
 		if len(cfg.Proactive.Webhooks) > 0 {

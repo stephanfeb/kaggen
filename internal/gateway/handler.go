@@ -89,11 +89,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		return fmt.Errorf("run agent: %w", err)
 	}
 
-	// Consume all events, collecting the final text content.
-	// We only send one response per message to avoid duplicates on
-	// channels like Telegram that deliver each response as a separate message.
-	var finalContent string
-	var lastResp *channel.Response
+	// Consume all events and send each text response immediately so the
+	// user sees progress messages (e.g. "I'm building your dashboard...")
+	// as they happen rather than only the final response.
 
 	for evt := range events {
 		resp := h.eventToResponse(evt, msg)
@@ -101,8 +99,6 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 			continue
 		}
 
-		// For typing indicators / tool progress, send immediately
-		// (these have no user-visible content on Telegram).
 		switch resp.Type {
 		case "tool_call", "tool_result":
 			if err := respond(resp); err != nil {
@@ -116,22 +112,12 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 			continue
 		}
 
-		// For text/done responses, keep the latest content.
+		// Send text responses immediately.
 		if resp.Content != "" {
-			finalContent = resp.Content
-			lastResp = resp
-		}
-	}
-
-	// Send the final text response once.
-	// Extract [send_file: /path] directives to send files via the channel.
-	if lastResp != nil && finalContent != "" {
-		finalContent, lastResp.Metadata = extractSendFiles(finalContent, lastResp.Metadata)
-		lastResp.Content = finalContent
-		lastResp.Type = "done"
-		lastResp.Done = true
-		if err := respond(lastResp); err != nil {
-			h.logger.Warn("failed to send final response", "error", err)
+			resp.Content, resp.Metadata = extractSendFiles(resp.Content, resp.Metadata)
+			if err := respond(resp); err != nil {
+				h.logger.Warn("failed to send response", "error", err)
+			}
 		}
 	}
 

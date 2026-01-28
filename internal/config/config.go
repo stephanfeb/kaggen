@@ -20,42 +20,50 @@ type Config struct {
 
 // ProactiveConfig configures the proactive engine (cron, webhooks, heartbeats).
 type ProactiveConfig struct {
-	Jobs       []CronJobConfig   `json:"jobs,omitempty"`
-	Webhooks   []WebhookConfig   `json:"webhooks,omitempty"`
-	Heartbeats []HeartbeatConfig `json:"heartbeats,omitempty"`
+	Jobs          []CronJobConfig   `json:"jobs,omitempty"`
+	Webhooks      []WebhookConfig   `json:"webhooks,omitempty"`
+	Heartbeats    []HeartbeatConfig `json:"heartbeats,omitempty"`
+	HistoryDBPath string            `json:"history_db_path,omitempty"` // default ~/.kaggen/proactive.db
 }
 
 // CronJobConfig configures a scheduled proactive job.
 type CronJobConfig struct {
-	Name      string         `json:"name"`
-	Schedule  string         `json:"schedule"`               // crontab e.g. "0 9 * * 1-5"
-	Prompt    string         `json:"prompt"`
-	UserID    string         `json:"user_id"`
-	SessionID string         `json:"session_id,omitempty"`   // default: "proactive-{name}"
-	Channel   string         `json:"channel"`                // "telegram" or "websocket"
-	Metadata  map[string]any `json:"metadata,omitempty"`     // e.g. {"chat_id": "123456"}
+	Name       string         `json:"name"`
+	Schedule   string         `json:"schedule"`               // crontab e.g. "0 9 * * 1-5"
+	Prompt     string         `json:"prompt"`
+	UserID     string         `json:"user_id"`
+	SessionID  string         `json:"session_id,omitempty"`   // default: "proactive-{name}"
+	Channel    string         `json:"channel"`                // "telegram" or "websocket"
+	Metadata   map[string]any `json:"metadata,omitempty"`     // e.g. {"chat_id": "123456"}
+	Timeout    string         `json:"timeout,omitempty"`      // Go duration, default "5m"
+	MaxRetries int            `json:"max_retries,omitempty"`  // default 0 (no retries)
 }
 
 // WebhookConfig configures an HTTP webhook trigger.
 type WebhookConfig struct {
-	Name      string         `json:"name"`
-	Path      string         `json:"path"`                   // e.g. "/hooks/github"
-	Prompt    string         `json:"prompt"`                  // {{.Payload}} replaced with POST body
-	UserID    string         `json:"user_id"`
-	SessionID string         `json:"session_id,omitempty"`
-	Channel   string         `json:"channel"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Name       string         `json:"name"`
+	Path       string         `json:"path"`                   // e.g. "/hooks/github"
+	Prompt     string         `json:"prompt"`                  // {{.Payload}} replaced with POST body
+	UserID     string         `json:"user_id"`
+	SessionID  string         `json:"session_id,omitempty"`
+	Channel    string         `json:"channel"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Secret     string         `json:"secret,omitempty"`       // HMAC-SHA256 secret for signature verification
+	Timeout    string         `json:"timeout,omitempty"`      // Go duration, default "5m"
+	MaxRetries int            `json:"max_retries,omitempty"`
 }
 
 // HeartbeatConfig configures a periodic heartbeat check.
 type HeartbeatConfig struct {
-	Name      string         `json:"name"`
-	Interval  string         `json:"interval"`               // Go duration: "5m", "1h"
-	Prompt    string         `json:"prompt"`
-	UserID    string         `json:"user_id"`
-	SessionID string         `json:"session_id,omitempty"`
-	Channel   string         `json:"channel"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Name       string         `json:"name"`
+	Interval   string         `json:"interval"`               // Go duration: "5m", "1h"
+	Prompt     string         `json:"prompt"`
+	UserID     string         `json:"user_id"`
+	SessionID  string         `json:"session_id,omitempty"`
+	Channel    string         `json:"channel"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Timeout    string         `json:"timeout,omitempty"`      // Go duration, default "2m"
+	MaxRetries int            `json:"max_retries,omitempty"`
 }
 
 // MemoryConfig configures the semantic memory search system.
@@ -242,6 +250,14 @@ func (c *Config) MemoryDBPath() string {
 		return ExpandPath(c.Memory.Search.DBPath)
 	}
 	return ExpandPath("~/.kaggen/memory.db")
+}
+
+// ProactiveDBPath returns the expanded path to the proactive history database.
+func (c *Config) ProactiveDBPath() string {
+	if c.Proactive.HistoryDBPath != "" {
+		return ExpandPath(c.Proactive.HistoryDBPath)
+	}
+	return ExpandPath("~/.kaggen/proactive.db")
 }
 
 // APIKey returns the Anthropic API key from environment.

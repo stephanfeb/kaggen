@@ -262,8 +262,24 @@ func (t *TelegramChannel) sendText(chatID int64, text string) {
 }
 
 // sendFile sends a file to a Telegram chat. Images are sent as photos; everything else as documents.
+const telegramMaxCaptionLen = 1024
+
 func (t *TelegramChannel) sendFile(chatID int64, path, caption string) error {
 	t.chatLimiter.wait(chatID)
+
+	path = config.ExpandPath(path)
+
+	// Telegram captions are limited to 1024 characters. If the caption is
+	// too long, send it as a separate text message first, then send the
+	// file without a caption.
+	if len(caption) > telegramMaxCaptionLen {
+		textMsg := tgbotapi.NewMessage(chatID, caption)
+		if _, err := t.bot.Send(textMsg); err != nil {
+			t.logger.Warn("failed to send caption as message", "error", err)
+		}
+		t.chatLimiter.wait(chatID)
+		caption = ""
+	}
 
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
