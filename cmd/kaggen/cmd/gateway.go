@@ -14,12 +14,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"trpc.group/trpc-go/trpc-agent-go/agent"
 	tmemory "trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
-	"trpc.group/trpc-go/trpc-agent-go/skill"
 	atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
@@ -99,14 +97,10 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle interrupt signal
+	// Handle signals: SIGINT/SIGTERM for shutdown, SIGHUP for skill reload.
+	// SIGHUP handler is wired after factory is created below.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Println("\nShutting down gateway server...")
-		cancel()
-	}()
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	// Create components
 	workspace := cfg.WorkspacePath()
@@ -198,42 +192,23 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Load skills via framework repository
-	var skillsRepo skill.Repository
-	fsRepo, err := skill.NewFSRepository(
-		filepath.Join(workspace, "skills"),
-		config.ExpandPath("~/.kaggen/skills"),
-	)
-	if err != nil {
-		logger.Warn("failed to load skills", "error", err)
-	}
-	if fsRepo != nil {
-		// Wrap with case-insensitive lookup to handle LLMs that capitalize skill names
-		skillsRepo = kaggenAgent.NewCaseInsensitiveRepository(fsRepo)
-		summaries := skillsRepo.Summaries()
-		if len(summaries) > 0 {
-			logger.Info("skills loaded", "count", len(summaries))
-		}
-	}
-
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
 
-	// Build specialist sub-agents from skills.
-	var subAgents []agent.Agent
-	if skillsRepo != nil {
-		subAgents, err = kaggenAgent.BuildSubAgents(modelAdapter, skillsRepo, toolList, logger)
-		if err != nil {
-			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
-		}
+	// Skill directories to scan.
+	skillDirs := []string{
+		filepath.Join(workspace, "skills"),
+		config.ExpandPath("~/.kaggen/skills"),
 	}
 
-	// Create the Kaggen agent (Coordinator Team pattern).
-	// Pass nil for completeFn; it's wired up after the handler is created.
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, memService, logger)
+	// Build the initial agent via the factory/provider pattern.
+	// This enables hot-reload of skills on SIGHUP without restarting.
+	initialAgent, err := kaggenAgent.BuildInitialAgent(modelAdapter, toolList, fileMemory, skillDirs, memService, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
+	provider := kaggenAgent.NewAgentProvider(initialAgent)
+	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, skillDirs, provider, logger)
 
 	// Create session service with appropriate backend
 	sessionService, err := createSessionService(cfg)
@@ -246,11 +221,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	sanitizedSession := kaggenSession.NewSanitizeWrapper(sessionService)
 
 	// Create gateway server (with optional memory service)
-	server := gateway.NewServer(cfg, sanitizedSession, kaggen, logger, memService)
+	server := gateway.NewServer(cfg, sanitizedSession, provider, logger, memService)
 
 	// Wire up async completion: when a sub-agent finishes, inject the result
 	// back into the coordinator's session so it can synthesize and notify the user.
-	kaggen.SetCompletionFunc(func(taskID, result string, taskErr error, policy kaggenAgent.TriggerPolicy) {
+	factory.SetCompletionFunc(func(taskID, result string, taskErr error, policy kaggenAgent.TriggerPolicy) {
 		// For errors, always inject immediately (even for TriggerQueue).
 		// For successful TriggerQueue results, defer to next user message.
 		if policy != kaggenAgent.TriggerAuto && taskErr == nil {
@@ -262,7 +237,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 			content = fmt.Sprintf("Error: %v", taskErr)
 		}
 
-		state, ok := kaggen.InFlightStore().Get(taskID)
+		state, ok := provider.InFlightStore().Get(taskID)
 		if !ok {
 			logger.Warn("completion for unknown task", "task_id", taskID)
 			return
@@ -285,6 +260,22 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		}
 	})
 
+	// Start signal handler goroutine (SIGHUP reloads skills, others shut down).
+	go func() {
+		for sig := range sigCh {
+			if sig == syscall.SIGHUP {
+				logger.Info("SIGHUP received, reloading skills...")
+				if err := factory.Rebuild(); err != nil {
+					logger.Error("skill reload failed", "error", err)
+				}
+				continue
+			}
+			fmt.Println("\nShutting down gateway server...")
+			cancel()
+			return
+		}
+	}()
+
 	// Print startup message
 	fmt.Println("Kaggen Gateway")
 	fmt.Println("==============")
@@ -300,10 +291,8 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println("Memory Search: disabled")
 	}
-	if skillsRepo != nil {
-		if n := len(skillsRepo.Summaries()); n > 0 {
-			fmt.Printf("Skills: %d loaded\n", n)
-		}
+	if n := len(provider.SubAgents()); n > 0 {
+		fmt.Printf("Skills: %d sub-agents\n", n)
 	}
 	if len(cfg.Proactive.Jobs) > 0 {
 		fmt.Printf("Proactive Jobs: %d\n", len(cfg.Proactive.Jobs))

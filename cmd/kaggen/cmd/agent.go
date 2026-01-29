@@ -21,7 +21,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
-	"trpc.group/trpc-go/trpc-agent-go/skill"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/config"
@@ -169,42 +168,23 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Load skills via framework repository
-	var skillsRepo skill.Repository
-	fsRepo, err := skill.NewFSRepository(
-		filepath.Join(workspace, "skills"),
-		config.ExpandPath("~/.kaggen/skills"),
-	)
-	if err != nil {
-		logger.Warn("failed to load skills", "error", err)
-	}
-	if fsRepo != nil {
-		// Wrap with case-insensitive lookup to handle LLMs that capitalize skill names
-		skillsRepo = kaggenAgent.NewCaseInsensitiveRepository(fsRepo)
-		summaries := skillsRepo.Summaries()
-		if len(summaries) > 0 {
-			logger.Info("skills loaded", "count", len(summaries))
-		}
-	}
-
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
 
-	// Build specialist sub-agents from skills.
-	var subAgents []trpcagent.Agent
-	if skillsRepo != nil {
-		subAgents, err = kaggenAgent.BuildSubAgents(modelAdapter, skillsRepo, toolList, logger)
-		if err != nil {
-			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
-		}
+	// Skill directories to scan.
+	skillDirs := []string{
+		filepath.Join(workspace, "skills"),
+		config.ExpandPath("~/.kaggen/skills"),
 	}
 
-	// Create the Kaggen agent (Coordinator Team pattern).
-	// CLI mode doesn't use async completion injection, so pass nil.
-	kaggen, err := kaggenAgent.NewAgent(modelAdapter, toolList, fileMemory, subAgents, nil, memService, logger)
+	// Build the initial agent via the factory/provider pattern.
+	// This enables hot-reload of skills on SIGHUP without restarting.
+	initialAgent, err := kaggenAgent.BuildInitialAgent(modelAdapter, toolList, fileMemory, skillDirs, memService, logger)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
+	provider := kaggenAgent.NewAgentProvider(initialAgent)
+	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, skillDirs, provider, logger)
 
 	// Create file-backed session service for CLI persistence
 	sessionService := kaggenSession.NewFileService(cfg.SessionsPath())
@@ -213,23 +193,31 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// Wrap session service to strip binary data (images, files) from history.
 	sanitizedSession := kaggenSession.NewSanitizeWrapper(sessionService)
 
-	// Create runner
+	// Create runner (provider implements agent.Agent, enabling hot-reload)
 	runnerOpts = append(runnerOpts, runner.WithSessionService(sanitizedSession))
-	r := runner.NewRunner("kaggen", kaggen, runnerOpts...)
+	r := runner.NewRunner("kaggen", provider, runnerOpts...)
 	defer func() {
 		if closer, ok := r.(interface{ Close() error }); ok {
 			closer.Close()
 		}
 	}()
 
-	// Handle interrupt signal
+	// Handle signals: SIGINT/SIGTERM for shutdown, SIGHUP for skill reload.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
-		<-sigCh
-		fmt.Println("\nInterrupted. Goodbye!")
-		cancel()
-		os.Exit(0)
+		for sig := range sigCh {
+			if sig == syscall.SIGHUP {
+				logger.Info("SIGHUP received, reloading skills...")
+				if err := factory.Rebuild(); err != nil {
+					logger.Error("skill reload failed", "error", err)
+				}
+				continue
+			}
+			fmt.Println("\nInterrupted. Goodbye!")
+			cancel()
+			os.Exit(0)
+		}
 	}()
 
 	// Print welcome message
@@ -240,10 +228,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	if cfg.Memory.Search.Enabled {
 		fmt.Println("Memory Search: enabled")
 	}
-	if skillsRepo != nil {
-		if n := len(skillsRepo.Summaries()); n > 0 {
-			fmt.Printf("Skills: %d loaded\n", n)
-		}
+	if n := len(provider.SubAgents()); n > 0 {
+		fmt.Printf("Skills: %d sub-agents\n", n)
 	}
 	fmt.Println()
 	fmt.Println("Type your message and press Enter. Type 'exit' or 'quit' to end.")
