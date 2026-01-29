@@ -3,9 +3,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -85,12 +87,146 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		historyLimit = maxHistoryRuns[0]
 	}
 
+	// Build tool callbacks to track synchronous Team delegations in InFlightStore.
+	// This makes sync member-agent calls visible in the dashboard alongside async dispatch_task calls.
+	memberNames := make(map[string]bool, len(subAgents))
+	for _, sa := range subAgents {
+		memberNames[sa.Info().Name] = true
+	}
+
+	// Log registered member names for debugging.
+	for name := range memberNames {
+		logger.Info("registered member agent", "name", name)
+	}
+
+	// Infrastructure tools that should not create tasks (internal plumbing).
+	infraTools := map[string]bool{
+		"dispatch_task": true,
+		"task_status":   true,
+	}
+
+	callbacks := &tool.Callbacks{}
+	callbacks.RegisterBeforeTool(tool.BeforeToolCallbackStructured(
+		func(ctx context.Context, args *tool.BeforeToolArgs) (*tool.BeforeToolResult, error) {
+			isMember := memberNames[args.ToolName]
+			isInfra := infraTools[args.ToolName]
+
+			logger.Info("BeforeTool callback",
+				"tool", args.ToolName,
+				"call_id", args.ToolCallID,
+				"is_member", isMember,
+				"is_infra", isInfra,
+				"args_len", len(args.Arguments))
+
+			if isInfra {
+				return &tool.BeforeToolResult{}, nil
+			}
+
+			var sessionID, userID, invID string
+			if inv, ok := agent.InvocationFromContext(ctx); ok {
+				invID = inv.InvocationID
+				if inv.Session != nil {
+					sessionID = inv.Session.ID
+					userID = inv.Session.UserID
+				}
+			}
+
+			if isMember {
+				// Sync delegation to a sub-agent — register as its own task.
+				taskID := args.ToolCallID
+				taskDesc := string(args.Arguments)
+				var ma struct {
+					Message string `json:"message"`
+				}
+				if json.Unmarshal(args.Arguments, &ma) == nil && ma.Message != "" {
+					taskDesc = ma.Message
+				}
+				store.Register(taskID, args.ToolName, taskDesc, TriggerAuto, sessionID, userID)
+				logger.Info("sync member task registered",
+					"task_id", taskID, "agent", args.ToolName, "invocation_id", invID)
+			} else {
+				// Coordinator direct tool call — group by invocation ID.
+				coordTaskID := "coord-" + invID
+				if _, exists := store.Get(coordTaskID); !exists {
+					store.Register(coordTaskID, "coordinator", "Direct action", TriggerAuto, sessionID, userID)
+					logger.Info("coordinator task registered",
+						"task_id", coordTaskID, "invocation_id", invID)
+				}
+				store.AddEvent(coordTaskID, &TaskEvent{
+					Timestamp: time.Now(),
+					Type:      "tool_call",
+					Tools:     []string{args.ToolName},
+				})
+			}
+			return &tool.BeforeToolResult{}, nil
+		},
+	))
+	callbacks.RegisterAfterTool(tool.AfterToolCallbackStructured(
+		func(ctx context.Context, args *tool.AfterToolArgs) (*tool.AfterToolResult, error) {
+			isMember := memberNames[args.ToolName]
+			isInfra := infraTools[args.ToolName]
+
+			logger.Info("AfterTool callback",
+				"tool", args.ToolName,
+				"call_id", args.ToolCallID,
+				"is_member", isMember,
+				"is_infra", isInfra,
+				"has_error", args.Error != nil)
+
+			if isInfra {
+				return &tool.AfterToolResult{}, nil
+			}
+
+			if isMember {
+				taskID := args.ToolCallID
+				if args.Error != nil {
+					store.Fail(taskID, args.Error.Error())
+					logger.Info("sync member task failed", "task_id", taskID, "agent", args.ToolName)
+				} else {
+					result := ""
+					if args.Result != nil {
+						result = fmt.Sprintf("%v", args.Result)
+					}
+					store.Complete(taskID, result)
+					logger.Info("sync member task completed", "task_id", taskID, "agent", args.ToolName, "result_len", len(result))
+				}
+			} else {
+				// Coordinator direct tool call — add result event.
+				invID := ""
+				if inv, ok := agent.InvocationFromContext(ctx); ok {
+					invID = inv.InvocationID
+				}
+				coordTaskID := "coord-" + invID
+				resultPreview := ""
+				if args.Result != nil {
+					resultPreview = fmt.Sprintf("%v", args.Result)
+					if len(resultPreview) > 200 {
+						resultPreview = resultPreview[:200] + "..."
+					}
+				}
+				evtType := "response"
+				if args.Error != nil {
+					evtType = "error"
+					resultPreview = args.Error.Error()
+				}
+				store.AddEvent(coordTaskID, &TaskEvent{
+					Timestamp: time.Now(),
+					Type:      evtType,
+					Tools:     []string{args.ToolName},
+					Content:   resultPreview,
+				})
+			}
+			return &tool.AfterToolResult{}, nil
+		},
+	))
+
 	coordinatorOpts := []llmagent.Option{
 		llmagent.WithModel(m),
 		llmagent.WithTools(allTools),
 		llmagent.WithInstruction(instruction),
 		llmagent.WithDescription("Kaggen personal AI assistant coordinator"),
 		llmagent.WithMaxHistoryRuns(historyLimit),
+		llmagent.WithToolCallbacks(callbacks),
 	}
 
 	coordinator := llmagent.New(AgentName, coordinatorOpts...)
@@ -130,8 +266,28 @@ func (a *Agent) SetCompletionFunc(fn CompletionFunc) {
 }
 
 // Run executes the agent with the given invocation.
+// After the event stream closes, any open coordinator task is marked completed.
 func (a *Agent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
-	return a.team.Run(ctx, invocation)
+	inner, err := a.team.Run(ctx, invocation)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wrap the channel to detect when the turn ends.
+	out := make(chan *event.Event)
+	go func() {
+		defer close(out)
+		for evt := range inner {
+			out <- evt
+		}
+		// Turn finished — complete any open coordinator task for this invocation.
+		coordTaskID := "coord-" + invocation.InvocationID
+		if ts, ok := a.inFlightStore.Get(coordTaskID); ok && ts.Status == TaskRunning {
+			a.inFlightStore.Complete(coordTaskID, "Coordinator turn completed")
+			a.logger.Info("coordinator task completed", "task_id", coordTaskID)
+		}
+	}()
+	return out, nil
 }
 
 // Tools returns the list of tools available to this agent.
