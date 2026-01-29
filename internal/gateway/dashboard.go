@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -30,6 +31,7 @@ type DashboardAPI struct {
 	logStreamer     *LogStreamer
 	startTime      time.Time
 	wsClientCount  func() int
+	taskBroadcast  func(data []byte) // broadcasts to all WS clients
 }
 
 // NewDashboardAPI creates a new dashboard API.
@@ -57,6 +59,32 @@ func (d *DashboardAPI) SetClientCountFunc(fn func() int) {
 	d.wsClientCount = fn
 }
 
+// SetBroadcastFunc sets the function to broadcast data to all WS clients.
+func (d *DashboardAPI) SetBroadcastFunc(fn func(data []byte)) {
+	d.taskBroadcast = fn
+}
+
+// WireTaskEvents registers a callback on the InFlightStore that broadcasts
+// task events to all WebSocket clients for real-time dashboard updates.
+func (d *DashboardAPI) WireTaskEvents() {
+	store := d.agentProvider.InFlightStore()
+	store.SetEventCallback(func(taskID string, evt *agent.TaskEvent) {
+		if d.taskBroadcast == nil {
+			return
+		}
+		msg := map[string]any{
+			"type":    "task_event",
+			"task_id": taskID,
+			"event":   evt,
+		}
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return
+		}
+		d.taskBroadcast(data)
+	})
+}
+
 func (d *DashboardAPI) clientCount() int {
 	if d.wsClientCount == nil {
 		return 0
@@ -74,13 +102,24 @@ func (d *DashboardAPI) ServeHTML(w http.ResponseWriter, r *http.Request) {
 func (d *DashboardAPI) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(d.startTime)
 
-	// Count in-flight tasks
+	// Count in-flight tasks and aggregate metrics
 	store := d.agentProvider.InFlightStore()
 	allTasks := store.List("")
-	running := 0
+	running, completed, failed := 0, 0, 0
+	var totalTokens agent.TokenUsage
 	for _, t := range allTasks {
-		if t.Status == agent.TaskRunning {
+		switch t.Status {
+		case agent.TaskRunning:
 			running++
+		case agent.TaskCompleted:
+			completed++
+		case agent.TaskFailed:
+			failed++
+		}
+		if t.TotalTokens != nil {
+			totalTokens.Input += t.TotalTokens.Input
+			totalTokens.Output += t.TotalTokens.Output
+			totalTokens.Total += t.TotalTokens.Total
 		}
 	}
 
@@ -97,17 +136,22 @@ func (d *DashboardAPI) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	skillCount := len(d.agentProvider.SubAgents())
 
 	resp := map[string]any{
-		"status":            "healthy",
-		"uptime_seconds":    int64(uptime.Seconds()),
-		"uptime":            formatDuration(uptime),
-		"model":             d.config.Agent.Model,
-		"connected_clients": d.clientCount(),
-		"inflight_tasks":    running,
-		"total_tasks":       len(allTasks),
-		"backlog_pending":   backlogPending,
-		"skills_loaded":     skillCount,
-		"memory_enabled":    d.config.Memory.Search.Enabled,
-		"telegram_enabled":  d.config.Channels.Telegram.Enabled,
+		"status":              "healthy",
+		"uptime_seconds":      int64(uptime.Seconds()),
+		"uptime":              formatDuration(uptime),
+		"model":               d.config.Agent.Model,
+		"connected_clients":   d.clientCount(),
+		"inflight_tasks":      running,
+		"total_tasks":         len(allTasks),
+		"tasks_completed":     completed,
+		"tasks_failed":        failed,
+		"backlog_pending":     backlogPending,
+		"skills_loaded":       skillCount,
+		"memory_enabled":      d.config.Memory.Search.Enabled,
+		"telegram_enabled":    d.config.Channels.Telegram.Enabled,
+		"total_tokens_input":  totalTokens.Input,
+		"total_tokens_output": totalTokens.Output,
+		"total_tokens":        totalTokens.Total,
 	}
 	writeJSON(w, resp)
 }
@@ -180,9 +224,10 @@ func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 	appDir := filepath.Join(sessionsDir, AppName)
 
 	type sessionInfo struct {
-		UserID    string `json:"user_id"`
-		SessionID string `json:"session_id"`
-		UpdatedAt string `json:"updated_at"`
+		UserID       string `json:"user_id"`
+		SessionID    string `json:"session_id"`
+		UpdatedAt    string `json:"updated_at"`
+		MessageCount int    `json:"message_count"`
 	}
 
 	var sessions []sessionInfo
@@ -211,10 +256,14 @@ func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
+			// Count lines in events.jsonl for message count
+			eventsPath := filepath.Join(userPath, sessDir.Name(), "events.jsonl")
+			msgCount := countLines(eventsPath)
 			sessions = append(sessions, sessionInfo{
-				UserID:    userDir.Name(),
-				SessionID: sessDir.Name(),
-				UpdatedAt: info.ModTime().Format(time.RFC3339),
+				UserID:       userDir.Name(),
+				SessionID:    sessDir.Name(),
+				UpdatedAt:    info.ModTime().Format(time.RFC3339),
+				MessageCount: msgCount,
 			})
 		}
 	}
@@ -303,6 +352,20 @@ func formatDuration(d time.Duration) string {
 	}
 	parts = append(parts, fmt.Sprintf("%dm", mins))
 	return strings.Join(parts, " ")
+}
+
+func countLines(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	count := 0
+	for scanner.Scan() {
+		count++
+	}
+	return count
 }
 
 func redactNestedKey(m map[string]any, keys ...string) {

@@ -248,8 +248,10 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create gateway server (with optional memory service)
 	server := gateway.NewServer(cfg, sanitizedSession, provider, logger, dashboardAPI, memService)
 
-	// Wire client count now that we have the server.
+	// Wire client count and task broadcast now that we have the server.
 	dashboardAPI.SetClientCountFunc(server.ClientCount)
+	dashboardAPI.SetBroadcastFunc(server.Broadcast)
+	dashboardAPI.WireTaskEvents()
 
 	// Wire proactive engine to cron tools for live reload.
 	cronTS.SetEngine(server.ProactiveEngine())

@@ -168,3 +168,8 @@ func (s *Server) ProactiveEngine() *proactive.Engine {
 func (s *Server) ClientCount() int {
 	return s.wsChannel.ClientCount()
 }
+
+// Broadcast sends data to all connected WebSocket clients.
+func (s *Server) Broadcast(data []byte) {
+	s.wsChannel.Broadcast(data)
+}

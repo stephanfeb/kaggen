@@ -7,7 +7,6 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
-	localexec "trpc.group/trpc-go/trpc-agent-go/codeexecutor/local"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -77,8 +76,7 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				llmagent.WithModel(m),
 				llmagent.WithInstruction(instruction),
 				llmagent.WithDescription(summary.Description),
-				llmagent.WithCodeExecutor(localexec.New()),
-				llmagent.WithSkills(skillsRepo),
+				llmagent.WithTools(generalTools),
 			)
 
 			agents = append(agents, sa)

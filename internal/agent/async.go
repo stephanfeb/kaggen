@@ -13,6 +13,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
@@ -36,31 +37,91 @@ const (
 	TaskFailed    TaskStatus = "failed"
 )
 
+// TokenUsage tracks token consumption for a task or event.
+type TokenUsage struct {
+	Input  int `json:"input"`
+	Output int `json:"output"`
+	Total  int `json:"total"`
+}
+
+// TaskEvent records a single event during task execution.
+type TaskEvent struct {
+	Timestamp time.Time    `json:"timestamp"`
+	Type      string       `json:"type"` // "tool_call", "response", "error"
+	Turn      int          `json:"turn"`
+	Tools     []string     `json:"tools,omitempty"`
+	Content   string       `json:"content,omitempty"` // preview (200 chars max)
+	Tokens    *TokenUsage  `json:"tokens,omitempty"`
+}
+
 // TaskState tracks the state of an async sub-agent task.
 type TaskState struct {
-	ID        string        `json:"id"`
-	AgentName string        `json:"agent_name"`
-	Task      string        `json:"task"`
-	Status    TaskStatus    `json:"status"`
-	Result    string        `json:"result,omitempty"`
-	Error     string        `json:"error,omitempty"`
-	Policy    TriggerPolicy `json:"policy"`
-	SessionID string        `json:"session_id,omitempty"`
-	UserID    string        `json:"user_id,omitempty"`
-	StartedAt time.Time    `json:"started_at"`
-	DoneAt    *time.Time   `json:"done_at,omitempty"`
+	ID          string        `json:"id"`
+	AgentName   string        `json:"agent_name"`
+	Task        string        `json:"task"`
+	Status      TaskStatus    `json:"status"`
+	Result      string        `json:"result,omitempty"`
+	Error       string        `json:"error,omitempty"`
+	Policy      TriggerPolicy `json:"policy"`
+	SessionID   string        `json:"session_id,omitempty"`
+	UserID      string        `json:"user_id,omitempty"`
+	StartedAt   time.Time     `json:"started_at"`
+	DoneAt      *time.Time    `json:"done_at,omitempty"`
+	Events      []*TaskEvent  `json:"events,omitempty"`
+	TurnCount   int           `json:"turn_count"`
+	TotalTokens *TokenUsage   `json:"total_tokens,omitempty"`
 }
+
+// TaskEventCallback is called when a task event is added, enabling real-time broadcast.
+type TaskEventCallback func(taskID string, evt *TaskEvent)
 
 // InFlightStore tracks in-flight and recently completed async tasks.
 type InFlightStore struct {
-	mu    sync.RWMutex
-	tasks map[string]*TaskState
+	mu          sync.RWMutex
+	tasks       map[string]*TaskState
+	onEvent     TaskEventCallback
+	onEventLock sync.RWMutex
 }
 
 // NewInFlightStore creates a new in-flight task store.
 func NewInFlightStore() *InFlightStore {
 	return &InFlightStore{
 		tasks: make(map[string]*TaskState),
+	}
+}
+
+// SetEventCallback sets a callback invoked on every task event (for dashboard broadcast).
+func (s *InFlightStore) SetEventCallback(fn TaskEventCallback) {
+	s.onEventLock.Lock()
+	defer s.onEventLock.Unlock()
+	s.onEvent = fn
+}
+
+// AddEvent appends an event to a task's event log and updates turn count.
+func (s *InFlightStore) AddEvent(id string, evt *TaskEvent) {
+	s.mu.Lock()
+	t, ok := s.tasks[id]
+	if ok {
+		t.Events = append(t.Events, evt)
+		t.TurnCount = evt.Turn
+		// Accumulate tokens
+		if evt.Tokens != nil {
+			if t.TotalTokens == nil {
+				t.TotalTokens = &TokenUsage{}
+			}
+			t.TotalTokens.Input += evt.Tokens.Input
+			t.TotalTokens.Output += evt.Tokens.Output
+			t.TotalTokens.Total += evt.Tokens.Total
+		}
+	}
+	s.mu.Unlock()
+
+	// Fire callback outside lock
+	s.onEventLock.RLock()
+	fn := s.onEvent
+	s.onEventLock.RUnlock()
+	if fn != nil && ok {
+		fn(id, evt)
 	}
 }
 
@@ -217,6 +278,12 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 				Content: req.Task,
 			}),
 			agent.WithInvocationModel(d.model),
+			// Provide a session to prevent nil pointer in code executor
+			// (codeexecution.go accesses invocation.Session.ID).
+			agent.WithInvocationSession(&trpcsession.Session{
+				ID:     taskID,
+				UserID: sessionID,
+			}),
 		}
 		if d.memoryService != nil {
 			invOpts = append(invOpts, agent.WithInvocationMemoryService(d.memoryService))
@@ -244,35 +311,69 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 			return
 		}
 
-		// Collect the final text result from events.
+		// Collect the final text result from events and record task events.
 		var result string
 		var turnCount int
+		var consecutiveErrors int
+		const maxConsecutiveErrors = 3
 		for evt := range events {
 			if evt == nil || evt.Response == nil {
 				continue
 			}
 			turnCount++
 
+			// Capture token usage from response.
+			var tokens *TokenUsage
+			if evt.Response.Usage != nil {
+				tokens = &TokenUsage{
+					Input:  evt.Response.Usage.PromptTokens,
+					Output: evt.Response.Usage.CompletionTokens,
+					Total:  evt.Response.Usage.TotalTokens,
+				}
+			}
+
 			if evt.Response.Error != nil {
+				d.store.AddEvent(taskID, &TaskEvent{
+					Timestamp: time.Now(),
+					Type:      "error",
+					Turn:      turnCount,
+					Content:   evt.Response.Error.Message,
+					Tokens:    tokens,
+				})
 				d.logger.Error("async task error",
 					"task_id", taskID,
 					"agent", req.AgentName,
 					"turn", turnCount,
 					"error", evt.Response.Error.Message)
-				d.store.Fail(taskID, evt.Response.Error.Message)
-				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", evt.Response.Error.Message), policy)
-				return
+				consecutiveErrors++
+				if consecutiveErrors >= maxConsecutiveErrors {
+					d.logger.Warn("circuit breaker: aborting after consecutive errors",
+						"task_id", taskID, "agent", req.AgentName, "count", consecutiveErrors)
+					d.store.Fail(taskID, fmt.Sprintf("aborted after %d consecutive errors: %s", consecutiveErrors, evt.Response.Error.Message))
+					d.getCompleteFn()(taskID, "", fmt.Errorf("aborted after %d consecutive errors", consecutiveErrors), policy)
+					cancel()
+					return
+				}
+				continue
 			}
 
 			if len(evt.Response.Choices) > 0 {
+				consecutiveErrors = 0
 				c := evt.Response.Choices[0]
 
-				// Log tool calls
+				// Record and log tool calls
 				if len(c.Message.ToolCalls) > 0 {
 					toolNames := make([]string, len(c.Message.ToolCalls))
 					for i, tc := range c.Message.ToolCalls {
 						toolNames[i] = tc.Function.Name
 					}
+					d.store.AddEvent(taskID, &TaskEvent{
+						Timestamp: time.Now(),
+						Type:      "tool_call",
+						Turn:      turnCount,
+						Tools:     toolNames,
+						Tokens:    tokens,
+					})
 					d.logger.Info("async task tool calls",
 						"task_id", taskID,
 						"agent", req.AgentName,
@@ -280,23 +381,28 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 						"tools", toolNames)
 				}
 
-				// Log text content
+				// Record and log text content
 				if c.Message.Content != "" {
 					result = c.Message.Content
-					// Truncate for logging
-					logContent := c.Message.Content
-					if len(logContent) > 200 {
-						logContent = logContent[:200] + "..."
+					preview := c.Message.Content
+					if len(preview) > 200 {
+						preview = preview[:200] + "..."
 					}
+					d.store.AddEvent(taskID, &TaskEvent{
+						Timestamp: time.Now(),
+						Type:      "response",
+						Turn:      turnCount,
+						Content:   preview,
+						Tokens:    tokens,
+					})
 					d.logger.Info("async task response",
 						"task_id", taskID,
 						"agent", req.AgentName,
 						"turn", turnCount,
 						"content_length", len(c.Message.Content),
-						"content_preview", logContent)
+						"content_preview", preview)
 				}
 
-				// Log finish reason
 				if c.FinishReason != nil {
 					d.logger.Debug("async task finish reason",
 						"task_id", taskID,
@@ -311,6 +417,15 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 			"task_id", taskID,
 			"agent", req.AgentName,
 			"total_turns", turnCount)
+
+		// If the context was cancelled (timeout or circuit breaker), mark as failed.
+		if bgCtx.Err() != nil {
+			errMsg := fmt.Sprintf("timed out after %d turns", turnCount)
+			d.store.Fail(taskID, errMsg)
+			d.logger.Warn("async task timed out", "task_id", taskID, "agent", req.AgentName, "turns", turnCount)
+			d.getCompleteFn()(taskID, "", fmt.Errorf(errMsg), policy)
+			return
+		}
 
 		d.store.Complete(taskID, result)
 		d.logger.Info("async task completed", "task_id", taskID, "agent", req.AgentName)

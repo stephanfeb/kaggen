@@ -38,88 +38,36 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 0;
 }
 .sidebar-header {
   padding: 16px;
   border-bottom: 1px solid var(--border);
 }
-.sidebar-header h1 {
-  font-size: 16px;
-  color: var(--text-bright);
-  font-weight: 600;
-  letter-spacing: 1px;
-}
-.sidebar-header .subtitle {
-  font-size: 10px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
+.sidebar-header h1 { font-size: 16px; color: var(--text-bright); font-weight: 600; letter-spacing: 1px; }
+.sidebar-header .subtitle { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 .nav { list-style: none; padding: 8px 0; flex: 1; }
 .nav li {
-  padding: 8px 16px;
-  cursor: pointer;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  transition: all 0.15s;
-  font-size: 12px;
+  padding: 8px 16px; cursor: pointer; color: var(--text-muted);
+  display: flex; align-items: center; gap: 8px;
+  transition: all 0.15s; font-size: 12px;
 }
 .nav li:hover { color: var(--text); background: var(--bg-tertiary); }
-.nav li.active {
-  color: var(--text-bright);
-  background: var(--bg-tertiary);
-  border-left: 2px solid var(--accent);
-  padding-left: 14px;
-}
+.nav li.active { color: var(--text-bright); background: var(--bg-tertiary); border-left: 2px solid var(--accent); padding-left: 14px; }
 .nav li .icon { width: 16px; text-align: center; }
-.nav li .badge {
-  margin-left: auto;
-  background: var(--bg-tertiary);
-  color: var(--text-muted);
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-size: 10px;
-}
+.nav li .badge { margin-left: auto; background: var(--bg-tertiary); color: var(--text-muted); padding: 1px 6px; border-radius: 10px; font-size: 10px; }
 .nav li.active .badge { background: var(--accent); color: var(--bg); }
-.main {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px;
-}
+.main { flex: 1; overflow-y: auto; padding: 24px; }
 .panel { display: none; }
 .panel.active { display: block; }
-.panel-title {
-  font-size: 18px;
-  color: var(--text-bright);
-  margin-bottom: 16px;
-  font-weight: 600;
-}
+.panel-title { font-size: 18px; color: var(--text-bright); margin-bottom: 16px; font-weight: 600; }
 /* Cards */
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 24px;
-}
-.card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 16px;
-}
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
 .card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 .card .value { font-size: 24px; color: var(--text-bright); margin-top: 4px; font-weight: 600; }
 .card .sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-/* Status badge */
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 500;
-}
+/* Badges */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; }
 .badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
 .badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
 .badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
@@ -128,59 +76,81 @@ body {
 .badge-gray { background: rgba(139,148,158,0.15); color: var(--text-muted); }
 /* Table */
 table { width: 100%; border-collapse: collapse; }
-th {
-  text-align: left;
-  padding: 8px 12px;
-  font-size: 11px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 500;
-}
-td {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  vertical-align: top;
-}
+th { text-align: left; padding: 8px 12px; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); font-weight: 500; }
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; vertical-align: top; }
 tr:hover { background: var(--bg-secondary); }
 .truncate { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Filters */
-.filters {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-.filter-btn {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  padding: 4px 12px;
-  border-radius: 16px;
-  cursor: pointer;
-  font-size: 11px;
-  font-family: inherit;
-}
+.filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-btn { background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-muted); padding: 4px 12px; border-radius: 16px; cursor: pointer; font-size: 11px; font-family: inherit; }
 .filter-btn:hover { color: var(--text); border-color: var(--text-muted); }
 .filter-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-/* Log viewer */
-.log-viewer {
+/* Task expand */
+.task-row { cursor: pointer; }
+.task-detail { display: none; }
+.task-detail.open { display: table-row; }
+.task-detail td { padding: 0; }
+.task-detail-inner { padding: 12px 24px 16px; background: var(--bg-tertiary); border-bottom: 1px solid var(--border); }
+/* Detail sections as cards */
+.detail-section {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  height: calc(100vh - 160px);
-  overflow-y: auto;
-  font-size: 11px;
-  line-height: 1.6;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
 }
-.log-entry {
-  padding: 2px 12px;
-  border-bottom: 1px solid rgba(48,54,61,0.5);
-  display: flex;
-  gap: 8px;
+.detail-section.section-task { border-left-color: var(--accent); }
+.detail-section.section-tokens { border-left-color: var(--purple); }
+.detail-section.section-result { border-left-color: var(--green); }
+.detail-section.section-error { border-left-color: var(--red); }
+.detail-section.section-timeline { border-left-color: var(--yellow); }
+.detail-section .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 500; }
+.detail-section .text-block { color: var(--text); font-size: 12px; line-height: 1.6; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+/* Task description list formatting */
+.detail-section .task-line { margin: 2px 0; }
+.detail-section .task-line-item { padding-left: 12px; color: var(--text); }
+.detail-section .task-line-item::before { content: '\2022'; color: var(--accent); margin-right: 8px; margin-left: -12px; }
+/* Token pills */
+.token-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.token-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  padding: 4px 12px; border-radius: 16px; font-size: 12px;
 }
+.token-pill .token-label { color: var(--text-muted); font-size: 10px; text-transform: uppercase; }
+.token-pill .token-value { color: var(--text-bright); font-weight: 600; }
+.token-pill-total { border-color: var(--purple); }
+.token-pill-total .token-value { color: var(--purple); }
+/* Raw output toggle */
+.raw-toggle { margin-top: 8px; }
+.raw-toggle summary { cursor: pointer; color: var(--text-muted); font-size: 11px; padding: 4px 0; user-select: none; }
+.raw-toggle summary:hover { color: var(--text); }
+.raw-block {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 12px; margin-top: 8px; font-size: 11px; line-height: 1.5;
+  max-height: 300px; overflow-y: auto; white-space: pre-wrap; color: var(--text-muted);
+}
+/* Timeline */
+.timeline { position: relative; padding-left: 20px; }
+.timeline::before { content: ''; position: absolute; left: 6px; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.tl-event { position: relative; margin-bottom: 8px; padding-left: 12px; }
+.tl-event::before { content: ''; position: absolute; left: -17px; top: 5px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--border); background: var(--bg); }
+.tl-event.tl-tool::before { border-color: var(--accent); background: var(--accent); }
+.tl-event.tl-response::before { border-color: var(--green); background: var(--green); }
+.tl-event.tl-error::before { border-color: var(--red); background: var(--red); }
+.tl-time { font-size: 10px; color: var(--text-muted); }
+.tl-content { font-size: 12px; color: var(--text); margin-top: 2px; }
+.tl-tools { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.tl-tool-name { font-size: 10px; padding: 1px 6px; background: rgba(88,166,255,0.1); color: var(--accent); border-radius: 4px; }
+.tl-tokens { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+/* Running indicator */
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.running-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.5s infinite; margin-right: 4px; vertical-align: middle; }
+.task-progress { font-size: 11px; color: var(--text-muted); }
+/* Log viewer */
+.log-viewer { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; height: calc(100vh - 160px); overflow-y: auto; font-size: 11px; line-height: 1.6; }
+.log-entry { padding: 2px 12px; border-bottom: 1px solid rgba(48,54,61,0.5); display: flex; gap: 8px; }
 .log-entry:hover { background: var(--bg-tertiary); }
 .log-time { color: var(--text-muted); white-space: nowrap; min-width: 85px; }
 .log-level { min-width: 50px; font-weight: 600; }
@@ -190,51 +160,20 @@ tr:hover { background: var(--bg-secondary); }
 .log-level-DEBUG { color: var(--text-muted); }
 .log-msg { color: var(--text); flex: 1; }
 .log-attrs { color: var(--text-muted); }
-.log-controls {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-  align-items: center;
-}
-.log-controls .status {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-muted);
-}
+.log-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+.log-controls .status { margin-left: auto; font-size: 11px; color: var(--text-muted); }
 .log-controls .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; }
 .dot-green { background: var(--green); }
 .dot-gray { background: var(--text-muted); }
 /* Skill cards */
 .skill-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.skill-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 16px;
-}
+.skill-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
 .skill-card .name { color: var(--text-bright); font-weight: 600; margin-bottom: 4px; }
 .skill-card .desc { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
 /* Config viewer */
-.config-viewer {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 16px;
-  overflow-x: auto;
-}
-.config-viewer pre {
-  color: var(--text);
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-/* Empty state */
-.empty {
-  text-align: center;
-  padding: 48px;
-  color: var(--text-muted);
-}
+.config-viewer { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; overflow-x: auto; }
+.config-viewer pre { color: var(--text); font-family: inherit; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.empty { text-align: center; padding: 48px; color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -254,15 +193,11 @@ tr:hover { background: var(--bg-secondary); }
       <li data-panel="config"><span class="icon">&#9998;</span> Config</li>
     </ul>
   </nav>
-
   <main class="main">
-    <!-- Overview -->
     <div class="panel active" id="panel-overview">
       <div class="panel-title">Overview</div>
       <div class="card-grid" id="overview-cards"></div>
     </div>
-
-    <!-- Tasks -->
     <div class="panel" id="panel-tasks">
       <div class="panel-title">Async Tasks</div>
       <div class="filters" id="task-filters">
@@ -273,8 +208,6 @@ tr:hover { background: var(--bg-secondary); }
       </div>
       <div id="task-table"></div>
     </div>
-
-    <!-- Backlog -->
     <div class="panel" id="panel-backlog">
       <div class="panel-title">Backlog</div>
       <div class="filters" id="backlog-filters">
@@ -286,20 +219,14 @@ tr:hover { background: var(--bg-secondary); }
       </div>
       <div id="backlog-table"></div>
     </div>
-
-    <!-- Skills -->
     <div class="panel" id="panel-skills">
       <div class="panel-title">Loaded Skills</div>
       <div class="skill-list" id="skill-list"></div>
     </div>
-
-    <!-- Sessions -->
     <div class="panel" id="panel-sessions">
       <div class="panel-title">Sessions</div>
       <div id="session-table"></div>
     </div>
-
-    <!-- Logs -->
     <div class="panel" id="panel-logs">
       <div class="panel-title">Log Stream</div>
       <div class="log-controls">
@@ -316,8 +243,6 @@ tr:hover { background: var(--bg-secondary); }
       </div>
       <div class="log-viewer" id="log-viewer"></div>
     </div>
-
-    <!-- Config -->
     <div class="panel" id="panel-config">
       <div class="panel-title">Configuration</div>
       <div class="config-viewer"><pre id="config-content">Loading...</pre></div>
@@ -330,11 +255,15 @@ const API = '';
 let currentPanel = 'overview';
 let refreshTimer = null;
 let sseConnection = null;
+let taskWS = null;
 let logPaused = false;
 let logEntries = [];
 let logLevels = new Set(['INFO', 'WARN', 'ERROR']);
 let taskStatusFilter = '';
 let backlogStatusFilter = '';
+let expandedTasks = new Set();
+let openDetails = new Set();
+let taskDataCache = [];
 
 // --- Navigation ---
 document.getElementById('nav').addEventListener('click', e => {
@@ -350,8 +279,7 @@ document.getElementById('nav').addEventListener('click', e => {
   stopRefresh();
   loadPanel(panel);
   startRefresh(panel);
-  if (panel === 'logs') connectSSE();
-  else disconnectSSE();
+  if (panel === 'logs') connectSSE(); else disconnectSSE();
 });
 
 // --- Data Loading ---
@@ -368,7 +296,6 @@ async function loadPanel(panel) {
     case 'skills': return loadSkills();
     case 'sessions': return loadSessions();
     case 'config': return loadConfig();
-    case 'logs': return; // SSE handles this
   }
 }
 
@@ -382,6 +309,24 @@ function stopRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
 }
 
+// --- WebSocket for real-time task updates ---
+function connectTaskWS() {
+  if (taskWS) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  taskWS = new WebSocket(`${proto}//${location.host}/ws?session=dashboard`);
+  taskWS.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'task_event' && currentPanel === 'tasks') {
+        loadTasks(); // Refresh task list on event
+      }
+    } catch {}
+  };
+  taskWS.onclose = () => { taskWS = null; setTimeout(connectTaskWS, 3000); };
+  taskWS.onerror = () => { taskWS.close(); };
+}
+connectTaskWS();
+
 // --- Overview ---
 async function loadOverview() {
   const d = await fetchJSON('/api/overview');
@@ -391,8 +336,13 @@ async function loadOverview() {
     { label: 'Model', value: shortModel(d.model) },
     { label: 'WS Clients', value: d.connected_clients },
     { label: 'Running Tasks', value: d.inflight_tasks },
+    { label: 'Completed', value: d.tasks_completed || 0, cls: 'badge-green' },
+    { label: 'Failed', value: d.tasks_failed || 0, cls: d.tasks_failed > 0 ? 'badge-red' : 'badge-gray' },
     { label: 'Backlog Pending', value: d.backlog_pending },
     { label: 'Skills', value: d.skills_loaded },
+    { label: 'Tokens (In)', value: fmtNum(d.total_tokens_input || 0) },
+    { label: 'Tokens (Out)', value: fmtNum(d.total_tokens_output || 0) },
+    { label: 'Tokens (Total)', value: fmtNum(d.total_tokens || 0) },
     { label: 'Memory', value: d.memory_enabled ? 'Enabled' : 'Disabled' },
     { label: 'Telegram', value: d.telegram_enabled ? 'Enabled' : 'Disabled' },
   ];
@@ -401,8 +351,6 @@ async function loadOverview() {
       c.cls ? `<span class="badge ${c.cls}">${c.value}</span>` : c.value
     }</div></div>`
   ).join('');
-
-  // Update sidebar badges
   document.getElementById('badge-tasks').textContent = d.inflight_tasks || d.total_tasks || 0;
   document.getElementById('badge-backlog').textContent = d.backlog_pending || 0;
   document.getElementById('badge-skills').textContent = d.skills_loaded || 0;
@@ -412,6 +360,12 @@ function shortModel(m) {
   if (!m) return '?';
   const parts = m.split('/');
   return parts[parts.length - 1].replace(/-\d{8}$/, '');
+}
+
+function fmtNum(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
 }
 
 // --- Tasks ---
@@ -427,20 +381,183 @@ document.getElementById('task-filters').addEventListener('click', e => {
 async function loadTasks() {
   const url = taskStatusFilter ? `/api/tasks?status=${taskStatusFilter}` : '/api/tasks';
   const tasks = await fetchJSON(url);
+  taskDataCache = tasks || [];
   if (!tasks || tasks.length === 0) {
     document.getElementById('task-table').innerHTML = '<div class="empty">No tasks</div>';
     return;
   }
+
+  // Snapshot open <details> before re-render
+  document.querySelectorAll('.task-detail-inner details[open]').forEach(el => {
+    const id = el.dataset.taskId;
+    if (id) openDetails.add(id);
+  });
+
   document.getElementById('task-table').innerHTML = `<table>
-    <tr><th>Agent</th><th>Task</th><th>Status</th><th>Started</th><th>Duration</th></tr>
-    ${tasks.map(t => `<tr>
-      <td>${esc(t.agent_name)}</td>
-      <td class="truncate" title="${esc(t.task)}">${esc(t.task)}</td>
-      <td>${statusBadge(t.status)}</td>
-      <td>${timeAgo(t.started_at)}</td>
-      <td>${duration(t.started_at, t.done_at)}</td>
-    </tr>`).join('')}
+    <tr><th>Agent</th><th>Task</th><th>Status</th><th>Turns</th><th>Tokens</th><th>Started</th><th>Duration</th></tr>
+    ${tasks.map(t => taskRow(t)).join('')}
   </table>`;
+
+  // Restore open <details> after re-render
+  openDetails.forEach(id => {
+    const el = document.querySelector(`details[data-task-id="${id}"]`);
+    if (el) el.open = true;
+  });
+
+  // Attach click handlers
+  document.querySelectorAll('.task-row').forEach(row => {
+    row.addEventListener('click', () => toggleTaskDetail(row.dataset.taskId));
+  });
+
+  // Track details toggle state
+  document.querySelectorAll('.task-detail-inner details').forEach(el => {
+    el.addEventListener('toggle', () => {
+      if (el.open) openDetails.add(el.dataset.taskId);
+      else openDetails.delete(el.dataset.taskId);
+    });
+  });
+}
+
+function taskRow(t) {
+  const expanded = expandedTasks.has(t.id);
+  const progressInfo = t.status === 'running' ? renderProgress(t) : '';
+  const tokenStr = t.total_tokens ? fmtNum(t.total_tokens.total) : '-';
+  return `<tr class="task-row" data-task-id="${esc(t.id)}">
+    <td>${esc(t.agent_name)}</td>
+    <td class="truncate" title="${esc(t.task)}">${esc(t.task)}${progressInfo}</td>
+    <td>${taskStatusBadge(t)}</td>
+    <td>${t.turn_count || 0}</td>
+    <td>${tokenStr}</td>
+    <td>${timeAgo(t.started_at)}</td>
+    <td>${duration(t.started_at, t.done_at)}</td>
+  </tr>
+  <tr class="task-detail ${expanded ? 'open' : ''}" id="detail-${t.id}">
+    <td colspan="7">${renderTaskDetail(t)}</td>
+  </tr>`;
+}
+
+function renderProgress(t) {
+  if (!t.events || t.events.length === 0) return '';
+  const last = t.events[t.events.length - 1];
+  let info = `Turn ${t.turn_count}`;
+  if (last.type === 'tool_call' && last.tools) {
+    info += ` \u2014 ${last.tools.join(', ')}`;
+  }
+  return `<div class="task-progress"><span class="running-dot"></span>${esc(info)}</div>`;
+}
+
+function taskStatusBadge(t) {
+  if (t.status === 'running') {
+    return `<span class="badge badge-blue"><span class="running-dot" style="width:6px;height:6px;margin-right:3px"></span>running</span>`;
+  }
+  return statusBadge(t.status);
+}
+
+function renderTaskDetail(t) {
+  let html = '<div class="task-detail-inner">';
+
+  // Task description (with basic list formatting)
+  html += `<div class="detail-section section-task"><div class="section-title">Task</div><div class="text-block">${formatTaskDesc(t.task)}</div></div>`;
+
+  // Token summary as pills
+  if (t.total_tokens) {
+    html += `<div class="detail-section section-tokens"><div class="section-title">Token Usage</div>
+      <div class="token-pills">
+        <span class="token-pill"><span class="token-label">Input</span><span class="token-value">${fmtNum(t.total_tokens.input)}</span></span>
+        <span class="token-pill"><span class="token-label">Output</span><span class="token-value">${fmtNum(t.total_tokens.output)}</span></span>
+        <span class="token-pill token-pill-total"><span class="token-label">Total</span><span class="token-value">${fmtNum(t.total_tokens.total)}</span></span>
+      </div></div>`;
+  }
+
+  // Result (with XML collapsing)
+  if (t.result) {
+    html += `<div class="detail-section section-result"><div class="section-title">Result</div>${formatResult(t.result, t.id)}</div>`;
+  }
+  if (t.error) {
+    html += `<div class="detail-section section-error"><div class="section-title">Error</div><div class="text-block" style="color:var(--red)">${esc(t.error)}</div></div>`;
+  }
+
+  // Event timeline (skip if only 1 event that duplicates the result)
+  if (t.events && t.events.length > 0) {
+    const showTimeline = t.events.length > 1 || !t.result;
+    if (showTimeline) {
+      html += `<div class="detail-section section-timeline"><div class="section-title">Event Timeline (${t.events.length} events)</div><div class="timeline">`;
+      for (const evt of t.events) {
+        const cls = evt.type === 'tool_call' ? 'tl-tool' : evt.type === 'error' ? 'tl-error' : 'tl-response';
+        const ts = new Date(evt.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        html += `<div class="tl-event ${cls}">`;
+        html += `<div class="tl-time">Turn ${evt.turn} \u00b7 ${ts}</div>`;
+        if (evt.type === 'tool_call' && evt.tools) {
+          html += `<div class="tl-tools">${evt.tools.map(n => `<span class="tl-tool-name">${esc(n)}</span>`).join('')}</div>`;
+        }
+        if (evt.content) {
+          html += `<div class="tl-content">${esc(stripXml(evt.content))}</div>`;
+        }
+        if (evt.tokens) {
+          html += `<div class="tl-tokens">${fmtNum(evt.tokens.input)} in / ${fmtNum(evt.tokens.output)} out</div>`;
+        }
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// Format result text: separate prose from XML tool-call output
+function formatResult(text, taskId) {
+  const dtAttr = taskId ? ` data-task-id="${esc(taskId)}"` : '';
+  const xmlIdx = text.indexOf('<function_calls>');
+  if (xmlIdx === -1) {
+    if (text.length <= 600) return `<div class="text-block">${esc(text)}</div>`;
+    return `<div class="text-block">${esc(text.substring(0, 600))}...</div>
+      <details class="raw-toggle"${dtAttr}><summary>Show full result (${fmtNum(text.length)} chars)</summary>
+      <pre class="raw-block">${esc(text)}</pre></details>`;
+  }
+  const prose = text.substring(0, xmlIdx).trim();
+  const xml = text.substring(xmlIdx);
+  let html = '';
+  if (prose) html += `<div class="text-block">${esc(prose)}</div>`;
+  html += `<details class="raw-toggle"${dtAttr}><summary>Raw tool output (${fmtNum(xml.length)} chars)</summary><pre class="raw-block">${esc(xml)}</pre></details>`;
+  return html;
+}
+
+// Format task description with basic list detection
+function formatTaskDesc(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  return lines.map(line => {
+    const trimmed = line.trim();
+    if (/^[-\u2013\u2022]\s/.test(trimmed)) {
+      return `<div class="task-line task-line-item">${esc(trimmed.substring(2).trim())}</div>`;
+    }
+    if (/^\d+\.\s/.test(trimmed)) {
+      return `<div class="task-line task-line-item">${esc(trimmed)}</div>`;
+    }
+    return `<div class="task-line">${esc(line)}</div>`;
+  }).join('');
+}
+
+// Strip XML tool-call markup from text for clean previews
+function stripXml(text) {
+  const idx = text.indexOf('<function_calls>');
+  if (idx === -1) return text;
+  const before = text.substring(0, idx).trim();
+  return before || '(tool call output)';
+}
+
+function toggleTaskDetail(taskId) {
+  const detail = document.getElementById('detail-' + taskId);
+  if (!detail) return;
+  if (expandedTasks.has(taskId)) {
+    expandedTasks.delete(taskId);
+    detail.classList.remove('open');
+  } else {
+    expandedTasks.add(taskId);
+    detail.classList.add('open');
+  }
 }
 
 // --- Backlog ---
@@ -492,10 +609,11 @@ async function loadSessions() {
     return;
   }
   document.getElementById('session-table').innerHTML = `<table>
-    <tr><th>Session ID</th><th>User ID</th><th>Last Updated</th></tr>
+    <tr><th>Session ID</th><th>User ID</th><th>Messages</th><th>Last Updated</th></tr>
     ${sessions.map(s => `<tr>
       <td>${esc(s.session_id)}</td>
       <td>${esc(s.user_id)}</td>
+      <td>${s.message_count || 0}</td>
       <td>${timeAgo(s.updated_at)}</td>
     </tr>`).join('')}
   </table>`;
@@ -519,12 +637,8 @@ function connectSSE() {
       if (!logPaused) renderLogEntry(entry);
     } catch {}
   };
-  es.onopen = () => {
-    document.getElementById('sse-status').innerHTML = '<span class="dot dot-green"></span> Connected';
-  };
-  es.onerror = () => {
-    document.getElementById('sse-status').innerHTML = '<span class="dot dot-gray"></span> Reconnecting...';
-  };
+  es.onopen = () => { document.getElementById('sse-status').innerHTML = '<span class="dot dot-green"></span> Connected'; };
+  es.onerror = () => { document.getElementById('sse-status').innerHTML = '<span class="dot dot-gray"></span> Reconnecting...'; };
   sseConnection = es;
 }
 
@@ -541,11 +655,9 @@ function renderLogEntry(entry) {
   const attrs = entry.attrs ? ' ' + Object.entries(entry.attrs).map(([k,v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' ') : '';
   div.innerHTML = `<span class="log-time">${ts}</span><span class="log-level log-level-${entry.level}">${entry.level}</span><span class="log-msg">${esc(entry.message)}</span><span class="log-attrs">${esc(attrs)}</span>`;
   viewer.appendChild(div);
-  // Auto-scroll
   viewer.scrollTop = viewer.scrollHeight;
 }
 
-// Log level filters
 document.getElementById('log-level-filters').addEventListener('click', e => {
   const btn = e.target.closest('.filter-btn');
   if (!btn) return;
@@ -553,16 +665,11 @@ document.getElementById('log-level-filters').addEventListener('click', e => {
   if (level === 'all') {
     const isActive = btn.classList.contains('active');
     document.querySelectorAll('#log-level-filters .filter-btn').forEach(b => {
-      if (isActive) b.classList.remove('active');
-      else b.classList.add('active');
+      if (isActive) b.classList.remove('active'); else b.classList.add('active');
     });
-  } else {
-    btn.classList.toggle('active');
-  }
+  } else { btn.classList.toggle('active'); }
   logLevels = new Set();
-  document.querySelectorAll('#log-level-filters .filter-btn.active').forEach(b => {
-    logLevels.add(b.dataset.level);
-  });
+  document.querySelectorAll('#log-level-filters .filter-btn.active').forEach(b => logLevels.add(b.dataset.level));
   rerenderLogs();
 });
 
@@ -591,11 +698,7 @@ function esc(s) {
 }
 
 function statusBadge(status) {
-  const map = {
-    running: 'badge-blue', completed: 'badge-green', failed: 'badge-red',
-    pending: 'badge-gray', in_progress: 'badge-blue', blocked: 'badge-yellow',
-    healthy: 'badge-green',
-  };
+  const map = { running: 'badge-blue', completed: 'badge-green', failed: 'badge-red', pending: 'badge-gray', in_progress: 'badge-blue', blocked: 'badge-yellow', healthy: 'badge-green' };
   return `<span class="badge ${map[status] || 'badge-gray'}">${esc(status)}</span>`;
 }
 
