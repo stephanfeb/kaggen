@@ -110,6 +110,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
+	_, cronTools := tools.NewCronToolSet(cfg)
+	toolList = append(toolList, cronTools...)
 
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())

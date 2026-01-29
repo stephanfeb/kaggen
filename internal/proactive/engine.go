@@ -55,8 +55,10 @@ type Engine struct {
 	history  *HistoryStore
 	metrics  Metrics
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	parentCtx context.Context    // stored for Reload
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	mu        sync.Mutex // serializes Start/Stop/Reload
 }
 
 // New creates a new proactive engine. history may be nil to disable tracking.
@@ -84,6 +86,13 @@ func (e *Engine) GetMetrics() Metrics {
 
 // Start registers all jobs and begins the scheduler.
 func (e *Engine) Start(ctx context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.startLocked(ctx)
+}
+
+func (e *Engine) startLocked(ctx context.Context) error {
+	e.parentCtx = ctx
 	ctx, e.cancel = context.WithCancel(ctx)
 
 	// Register cron jobs
@@ -172,8 +181,18 @@ func (e *Engine) Mux() *http.ServeMux {
 
 // Stop shuts down the engine, waiting for running jobs to complete.
 func (e *Engine) Stop() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopLocked()
+	if e.history != nil {
+		e.history.Close()
+	}
+}
+
+func (e *Engine) stopLocked() {
 	if e.cancel != nil {
 		e.cancel()
+		e.cancel = nil
 	}
 	stopCtx := e.cron.Stop()
 	<-stopCtx.Done()
@@ -185,10 +204,19 @@ func (e *Engine) Stop() {
 	case <-time.After(ShutdownGracePeriod):
 		e.logger.Warn("proactive engine: forced shutdown after grace period")
 	}
+}
 
-	if e.history != nil {
-		e.history.Close()
-	}
+// Reload stops the current scheduler, replaces the config, and starts fresh.
+func (e *Engine) Reload(cfg *config.ProactiveConfig) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.stopLocked()
+
+	e.cfg = cfg
+	e.cron = cron.New()
+
+	return e.startLocked(e.parentCtx)
 }
 
 // executeWithRetry wraps execute with exponential backoff retries.

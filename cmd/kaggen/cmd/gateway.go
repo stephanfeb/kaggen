@@ -145,6 +145,8 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 	defer backlogStore.Close()
 	toolList = append(toolList, tools.BacklogTools(backlogStore)...)
+	cronTS, cronTools := tools.NewCronToolSet(cfg)
+	toolList = append(toolList, cronTools...)
 	logger.Info("backlog store enabled", "db", cfg.BacklogDBPath())
 
 	// Memory service (passed to server if available)
@@ -228,6 +230,9 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Create gateway server (with optional memory service)
 	server := gateway.NewServer(cfg, sanitizedSession, provider, logger, memService)
+
+	// Wire proactive engine to cron tools for live reload.
+	cronTS.SetEngine(server.ProactiveEngine())
 
 	// Wire up async completion: when a sub-agent finishes, inject the result
 	// back into the coordinator's session so it can synthesize and notify the user.

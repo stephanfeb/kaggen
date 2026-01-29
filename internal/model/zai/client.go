@@ -104,8 +104,11 @@ type apiUsage struct {
 }
 
 type apiErrorResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Error struct {
+		Code    any    `json:"code"`    // int or string depending on error
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
 }
 
 // sendAPIRequest sends a chat completion request and returns the parsed response.
@@ -138,10 +141,10 @@ func (c *Client) sendAPIRequest(ctx context.Context, req *apiRequest) (*apiRespo
 
 	if resp.StatusCode != http.StatusOK {
 		var apiErr apiErrorResponse
-		if err := json.Unmarshal(body, &apiErr); err != nil {
-			return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error.Message != "" {
+			return nil, fmt.Errorf("API error (status %d): [%v] %s", resp.StatusCode, apiErr.Error.Code, apiErr.Error.Message)
 		}
-		return nil, fmt.Errorf("API error %d: %s", apiErr.Code, apiErr.Message)
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	var apiResp apiResponse

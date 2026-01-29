@@ -152,6 +152,11 @@ func (s *Server) Handler() *Handler {
 	return s.handler
 }
 
+// ProactiveEngine returns the proactive engine, or nil if not configured.
+func (s *Server) ProactiveEngine() *proactive.Engine {
+	return s.proactive
+}
+
 // ClientCount returns the number of connected WebSocket clients.
 func (s *Server) ClientCount() int {
 	return s.wsChannel.ClientCount()
