@@ -29,6 +29,7 @@ import (
 	"github.com/yourusername/kaggen/internal/model/anthropic"
 	"github.com/yourusername/kaggen/internal/model/gemini"
 	"github.com/yourusername/kaggen/internal/model/zai"
+	kaggenModel "github.com/yourusername/kaggen/internal/model"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 	"github.com/yourusername/kaggen/internal/tools"
 )
@@ -107,6 +108,14 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		modelAdapter = anthropic.NewAdapter(anthropicKey, modelName)
 		logger.Info("Using Anthropic model", "model", modelName)
 	}
+
+	// Apply concurrency limit to LLM API calls.
+	maxConc := cfg.Agent.MaxConcurrentLLM
+	if maxConc == 0 {
+		maxConc = 4
+	}
+	modelAdapter = kaggenModel.NewRateLimitedModel(modelAdapter, maxConc)
+	logger.Info("LLM concurrency limit", "max", maxConc)
 
 	// Create tools
 	toolList := tools.DefaultTools(workspace)

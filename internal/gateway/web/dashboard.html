@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kaggen Dashboard</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --text-bright: #f0f6fc;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --orange: #db6d28;
+  --purple: #bc8cff;
+  --sidebar-width: 200px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+}
+.container { display: flex; height: 100vh; }
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-header h1 {
+  font-size: 16px;
+  color: var(--text-bright);
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.sidebar-header .subtitle {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.nav { list-style: none; padding: 8px 0; flex: 1; }
+.nav li {
+  padding: 8px 16px;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s;
+  font-size: 12px;
+}
+.nav li:hover { color: var(--text); background: var(--bg-tertiary); }
+.nav li.active {
+  color: var(--text-bright);
+  background: var(--bg-tertiary);
+  border-left: 2px solid var(--accent);
+  padding-left: 14px;
+}
+.nav li .icon { width: 16px; text-align: center; }
+.nav li .badge {
+  margin-left: auto;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+}
+.nav li.active .badge { background: var(--accent); color: var(--bg); }
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+.panel { display: none; }
+.panel.active { display: block; }
+.panel-title {
+  font-size: 18px;
+  color: var(--text-bright);
+  margin-bottom: 16px;
+  font-weight: 600;
+}
+/* Cards */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+.card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.card .value { font-size: 24px; color: var(--text-bright); margin-top: 4px; font-weight: 600; }
+.card .sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+/* Status badge */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
+.badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+.badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+.badge-purple { background: rgba(188,140,255,0.15); color: var(--purple); }
+.badge-gray { background: rgba(139,148,158,0.15); color: var(--text-muted); }
+/* Table */
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  vertical-align: top;
+}
+tr:hover { background: var(--bg-secondary); }
+.truncate { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Filters */
+.filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.filter-btn {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 4px 12px;
+  border-radius: 16px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.filter-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.filter-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* Log viewer */
+.log-viewer {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  height: calc(100vh - 160px);
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.log-entry {
+  padding: 2px 12px;
+  border-bottom: 1px solid rgba(48,54,61,0.5);
+  display: flex;
+  gap: 8px;
+}
+.log-entry:hover { background: var(--bg-tertiary); }
+.log-time { color: var(--text-muted); white-space: nowrap; min-width: 85px; }
+.log-level { min-width: 50px; font-weight: 600; }
+.log-level-INFO { color: var(--accent); }
+.log-level-WARN { color: var(--yellow); }
+.log-level-ERROR { color: var(--red); }
+.log-level-DEBUG { color: var(--text-muted); }
+.log-msg { color: var(--text); flex: 1; }
+.log-attrs { color: var(--text-muted); }
+.log-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+.log-controls .status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.log-controls .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; }
+.dot-green { background: var(--green); }
+.dot-gray { background: var(--text-muted); }
+/* Skill cards */
+.skill-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.skill-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+.skill-card .name { color: var(--text-bright); font-weight: 600; margin-bottom: 4px; }
+.skill-card .desc { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+/* Config viewer */
+.config-viewer {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  overflow-x: auto;
+}
+.config-viewer pre {
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+/* Empty state */
+.empty {
+  text-align: center;
+  padding: 48px;
+  color: var(--text-muted);
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <nav class="sidebar">
+    <div class="sidebar-header">
+      <h1>KAGGEN</h1>
+      <div class="subtitle">Agent Dashboard</div>
+    </div>
+    <ul class="nav" id="nav">
+      <li data-panel="overview" class="active"><span class="icon">&#9632;</span> Overview</li>
+      <li data-panel="tasks"><span class="icon">&#9654;</span> Tasks <span class="badge" id="badge-tasks">0</span></li>
+      <li data-panel="backlog"><span class="icon">&#9776;</span> Backlog <span class="badge" id="badge-backlog">0</span></li>
+      <li data-panel="skills"><span class="icon">&#9881;</span> Skills <span class="badge" id="badge-skills">0</span></li>
+      <li data-panel="sessions"><span class="icon">&#9700;</span> Sessions</li>
+      <li data-panel="logs"><span class="icon">&#9656;</span> Logs</li>
+      <li data-panel="config"><span class="icon">&#9998;</span> Config</li>
+    </ul>
+  </nav>
+
+  <main class="main">
+    <!-- Overview -->
+    <div class="panel active" id="panel-overview">
+      <div class="panel-title">Overview</div>
+      <div class="card-grid" id="overview-cards"></div>
+    </div>
+
+    <!-- Tasks -->
+    <div class="panel" id="panel-tasks">
+      <div class="panel-title">Async Tasks</div>
+      <div class="filters" id="task-filters">
+        <button class="filter-btn active" data-status="">All</button>
+        <button class="filter-btn" data-status="running">Running</button>
+        <button class="filter-btn" data-status="completed">Completed</button>
+        <button class="filter-btn" data-status="failed">Failed</button>
+      </div>
+      <div id="task-table"></div>
+    </div>
+
+    <!-- Backlog -->
+    <div class="panel" id="panel-backlog">
+      <div class="panel-title">Backlog</div>
+      <div class="filters" id="backlog-filters">
+        <button class="filter-btn active" data-status="">All</button>
+        <button class="filter-btn" data-status="pending">Pending</button>
+        <button class="filter-btn" data-status="in_progress">In Progress</button>
+        <button class="filter-btn" data-status="completed">Completed</button>
+        <button class="filter-btn" data-status="blocked">Blocked</button>
+      </div>
+      <div id="backlog-table"></div>
+    </div>
+
+    <!-- Skills -->
+    <div class="panel" id="panel-skills">
+      <div class="panel-title">Loaded Skills</div>
+      <div class="skill-list" id="skill-list"></div>
+    </div>
+
+    <!-- Sessions -->
+    <div class="panel" id="panel-sessions">
+      <div class="panel-title">Sessions</div>
+      <div id="session-table"></div>
+    </div>
+
+    <!-- Logs -->
+    <div class="panel" id="panel-logs">
+      <div class="panel-title">Log Stream</div>
+      <div class="log-controls">
+        <div class="filters" id="log-level-filters">
+          <button class="filter-btn active" data-level="all">All</button>
+          <button class="filter-btn active" data-level="INFO">Info</button>
+          <button class="filter-btn active" data-level="WARN">Warn</button>
+          <button class="filter-btn active" data-level="ERROR">Error</button>
+          <button class="filter-btn" data-level="DEBUG">Debug</button>
+        </div>
+        <button class="filter-btn" id="log-pause">Pause</button>
+        <button class="filter-btn" id="log-clear">Clear</button>
+        <div class="status" id="sse-status"><span class="dot dot-gray"></span> Disconnected</div>
+      </div>
+      <div class="log-viewer" id="log-viewer"></div>
+    </div>
+
+    <!-- Config -->
+    <div class="panel" id="panel-config">
+      <div class="panel-title">Configuration</div>
+      <div class="config-viewer"><pre id="config-content">Loading...</pre></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const API = '';
+let currentPanel = 'overview';
+let refreshTimer = null;
+let sseConnection = null;
+let logPaused = false;
+let logEntries = [];
+let logLevels = new Set(['INFO', 'WARN', 'ERROR']);
+let taskStatusFilter = '';
+let backlogStatusFilter = '';
+
+// --- Navigation ---
+document.getElementById('nav').addEventListener('click', e => {
+  const li = e.target.closest('li');
+  if (!li) return;
+  const panel = li.dataset.panel;
+  if (panel === currentPanel) return;
+  document.querySelector('.nav li.active').classList.remove('active');
+  li.classList.add('active');
+  document.querySelector('.panel.active').classList.remove('active');
+  document.getElementById('panel-' + panel).classList.add('active');
+  currentPanel = panel;
+  stopRefresh();
+  loadPanel(panel);
+  startRefresh(panel);
+  if (panel === 'logs') connectSSE();
+  else disconnectSSE();
+});
+
+// --- Data Loading ---
+async function fetchJSON(url) {
+  const r = await fetch(API + url);
+  return r.json();
+}
+
+async function loadPanel(panel) {
+  switch (panel) {
+    case 'overview': return loadOverview();
+    case 'tasks': return loadTasks();
+    case 'backlog': return loadBacklog();
+    case 'skills': return loadSkills();
+    case 'sessions': return loadSessions();
+    case 'config': return loadConfig();
+    case 'logs': return; // SSE handles this
+  }
+}
+
+function startRefresh(panel) {
+  const intervals = { overview: 5000, tasks: 3000, backlog: 5000, sessions: 10000 };
+  const ms = intervals[panel];
+  if (ms) refreshTimer = setInterval(() => loadPanel(panel), ms);
+}
+
+function stopRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+// --- Overview ---
+async function loadOverview() {
+  const d = await fetchJSON('/api/overview');
+  const cards = [
+    { label: 'Status', value: d.status, cls: 'badge-green' },
+    { label: 'Uptime', value: d.uptime },
+    { label: 'Model', value: shortModel(d.model) },
+    { label: 'WS Clients', value: d.connected_clients },
+    { label: 'Running Tasks', value: d.inflight_tasks },
+    { label: 'Backlog Pending', value: d.backlog_pending },
+    { label: 'Skills', value: d.skills_loaded },
+    { label: 'Memory', value: d.memory_enabled ? 'Enabled' : 'Disabled' },
+    { label: 'Telegram', value: d.telegram_enabled ? 'Enabled' : 'Disabled' },
+  ];
+  document.getElementById('overview-cards').innerHTML = cards.map(c =>
+    `<div class="card"><div class="label">${c.label}</div><div class="value">${
+      c.cls ? `<span class="badge ${c.cls}">${c.value}</span>` : c.value
+    }</div></div>`
+  ).join('');
+
+  // Update sidebar badges
+  document.getElementById('badge-tasks').textContent = d.inflight_tasks || d.total_tasks || 0;
+  document.getElementById('badge-backlog').textContent = d.backlog_pending || 0;
+  document.getElementById('badge-skills').textContent = d.skills_loaded || 0;
+}
+
+function shortModel(m) {
+  if (!m) return '?';
+  const parts = m.split('/');
+  return parts[parts.length - 1].replace(/-\d{8}$/, '');
+}
+
+// --- Tasks ---
+document.getElementById('task-filters').addEventListener('click', e => {
+  const btn = e.target.closest('.filter-btn');
+  if (!btn) return;
+  document.querySelector('#task-filters .filter-btn.active').classList.remove('active');
+  btn.classList.add('active');
+  taskStatusFilter = btn.dataset.status;
+  loadTasks();
+});
+
+async function loadTasks() {
+  const url = taskStatusFilter ? `/api/tasks?status=${taskStatusFilter}` : '/api/tasks';
+  const tasks = await fetchJSON(url);
+  if (!tasks || tasks.length === 0) {
+    document.getElementById('task-table').innerHTML = '<div class="empty">No tasks</div>';
+    return;
+  }
+  document.getElementById('task-table').innerHTML = `<table>
+    <tr><th>Agent</th><th>Task</th><th>Status</th><th>Started</th><th>Duration</th></tr>
+    ${tasks.map(t => `<tr>
+      <td>${esc(t.agent_name)}</td>
+      <td class="truncate" title="${esc(t.task)}">${esc(t.task)}</td>
+      <td>${statusBadge(t.status)}</td>
+      <td>${timeAgo(t.started_at)}</td>
+      <td>${duration(t.started_at, t.done_at)}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+// --- Backlog ---
+document.getElementById('backlog-filters').addEventListener('click', e => {
+  const btn = e.target.closest('.filter-btn');
+  if (!btn) return;
+  document.querySelector('#backlog-filters .filter-btn.active').classList.remove('active');
+  btn.classList.add('active');
+  backlogStatusFilter = btn.dataset.status;
+  loadBacklog();
+});
+
+async function loadBacklog() {
+  const url = backlogStatusFilter ? `/api/backlog?status=${backlogStatusFilter}` : '/api/backlog';
+  const items = await fetchJSON(url);
+  if (!items || items.length === 0) {
+    document.getElementById('backlog-table').innerHTML = '<div class="empty">No items</div>';
+    return;
+  }
+  document.getElementById('backlog-table').innerHTML = `<table>
+    <tr><th>Title</th><th>Priority</th><th>Status</th><th>Source</th><th>Created</th></tr>
+    ${items.map(i => `<tr>
+      <td class="truncate" title="${esc(i.description)}">${esc(i.title)}</td>
+      <td>${priorityBadge(i.priority)}</td>
+      <td>${statusBadge(i.status)}</td>
+      <td>${esc(i.source)}</td>
+      <td>${timeAgo(i.created_at)}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+// --- Skills ---
+async function loadSkills() {
+  const skills = await fetchJSON('/api/skills');
+  if (!skills || skills.length === 0) {
+    document.getElementById('skill-list').innerHTML = '<div class="empty">No skills loaded</div>';
+    return;
+  }
+  document.getElementById('skill-list').innerHTML = skills.map(s =>
+    `<div class="skill-card"><div class="name">${esc(s.name)}</div><div class="desc">${esc(s.description)}</div></div>`
+  ).join('');
+}
+
+// --- Sessions ---
+async function loadSessions() {
+  const sessions = await fetchJSON('/api/sessions');
+  if (!sessions || sessions.length === 0) {
+    document.getElementById('session-table').innerHTML = '<div class="empty">No sessions</div>';
+    return;
+  }
+  document.getElementById('session-table').innerHTML = `<table>
+    <tr><th>Session ID</th><th>User ID</th><th>Last Updated</th></tr>
+    ${sessions.map(s => `<tr>
+      <td>${esc(s.session_id)}</td>
+      <td>${esc(s.user_id)}</td>
+      <td>${timeAgo(s.updated_at)}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+// --- Config ---
+async function loadConfig() {
+  const config = await fetchJSON('/api/config');
+  document.getElementById('config-content').textContent = JSON.stringify(config, null, 2);
+}
+
+// --- Logs (SSE) ---
+function connectSSE() {
+  if (sseConnection) return;
+  const es = new EventSource('/api/logs');
+  es.onmessage = e => {
+    try {
+      const entry = JSON.parse(e.data);
+      logEntries.push(entry);
+      if (logEntries.length > 2000) logEntries = logEntries.slice(-1500);
+      if (!logPaused) renderLogEntry(entry);
+    } catch {}
+  };
+  es.onopen = () => {
+    document.getElementById('sse-status').innerHTML = '<span class="dot dot-green"></span> Connected';
+  };
+  es.onerror = () => {
+    document.getElementById('sse-status').innerHTML = '<span class="dot dot-gray"></span> Reconnecting...';
+  };
+  sseConnection = es;
+}
+
+function disconnectSSE() {
+  if (sseConnection) { sseConnection.close(); sseConnection = null; }
+}
+
+function renderLogEntry(entry) {
+  if (!logLevels.has(entry.level) && !logLevels.has('all')) return;
+  const viewer = document.getElementById('log-viewer');
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  const ts = new Date(entry.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const attrs = entry.attrs ? ' ' + Object.entries(entry.attrs).map(([k,v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' ') : '';
+  div.innerHTML = `<span class="log-time">${ts}</span><span class="log-level log-level-${entry.level}">${entry.level}</span><span class="log-msg">${esc(entry.message)}</span><span class="log-attrs">${esc(attrs)}</span>`;
+  viewer.appendChild(div);
+  // Auto-scroll
+  viewer.scrollTop = viewer.scrollHeight;
+}
+
+// Log level filters
+document.getElementById('log-level-filters').addEventListener('click', e => {
+  const btn = e.target.closest('.filter-btn');
+  if (!btn) return;
+  const level = btn.dataset.level;
+  if (level === 'all') {
+    const isActive = btn.classList.contains('active');
+    document.querySelectorAll('#log-level-filters .filter-btn').forEach(b => {
+      if (isActive) b.classList.remove('active');
+      else b.classList.add('active');
+    });
+  } else {
+    btn.classList.toggle('active');
+  }
+  logLevels = new Set();
+  document.querySelectorAll('#log-level-filters .filter-btn.active').forEach(b => {
+    logLevels.add(b.dataset.level);
+  });
+  rerenderLogs();
+});
+
+document.getElementById('log-pause').addEventListener('click', function() {
+  logPaused = !logPaused;
+  this.textContent = logPaused ? 'Resume' : 'Pause';
+  if (!logPaused) rerenderLogs();
+});
+
+document.getElementById('log-clear').addEventListener('click', () => {
+  logEntries = [];
+  document.getElementById('log-viewer').innerHTML = '';
+});
+
+function rerenderLogs() {
+  document.getElementById('log-viewer').innerHTML = '';
+  logEntries.forEach(e => renderLogEntry(e));
+}
+
+// --- Helpers ---
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function statusBadge(status) {
+  const map = {
+    running: 'badge-blue', completed: 'badge-green', failed: 'badge-red',
+    pending: 'badge-gray', in_progress: 'badge-blue', blocked: 'badge-yellow',
+    healthy: 'badge-green',
+  };
+  return `<span class="badge ${map[status] || 'badge-gray'}">${esc(status)}</span>`;
+}
+
+function priorityBadge(p) {
+  const map = { high: 'badge-red', normal: 'badge-blue', low: 'badge-gray' };
+  return `<span class="badge ${map[p] || 'badge-gray'}">${esc(p)}</span>`;
+}
+
+function timeAgo(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+function duration(start, end) {
+  if (!start) return '-';
+  const s = new Date(start);
+  const e = end ? new Date(end) : new Date();
+  const ms = e - s;
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
+  return Math.floor(secs/3600) + 'h ' + Math.floor((secs%3600)/60) + 'm';
+}
+
+// --- Init ---
+loadPanel('overview');
+startRefresh('overview');
+</script>
+</body>
+</html>

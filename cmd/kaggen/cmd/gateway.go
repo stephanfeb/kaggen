@@ -29,6 +29,7 @@ import (
 	"github.com/yourusername/kaggen/internal/model/anthropic"
 	"github.com/yourusername/kaggen/internal/model/gemini"
 	"github.com/yourusername/kaggen/internal/model/zai"
+	kaggenModel "github.com/yourusername/kaggen/internal/model"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 	"github.com/yourusername/kaggen/internal/tools"
 )
@@ -135,6 +136,14 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		logger.Info("Using Anthropic model", "model", modelName)
 	}
 
+	// Apply concurrency limit to LLM API calls.
+	maxConc := cfg.Agent.MaxConcurrentLLM
+	if maxConc == 0 {
+		maxConc = 4
+	}
+	modelAdapter = kaggenModel.NewRateLimitedModel(modelAdapter, maxConc)
+	logger.Info("LLM concurrency limit", "max", maxConc)
+
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
 
@@ -228,8 +237,19 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Wrap session service to strip binary data (images, files) from history.
 	sanitizedSession := kaggenSession.NewSanitizeWrapper(sessionService)
 
+	// Create log streamer for dashboard SSE logs.
+	logStreamer := gateway.NewLogStreamer()
+	wrappedHandler := gateway.NewStreamerHandler(logStreamer, logger.Handler())
+	logger = slog.New(wrappedHandler)
+
+	// Create dashboard API (client count wired after server creation).
+	dashboardAPI := gateway.NewDashboardAPI(provider, backlogStore, sanitizedSession, cfg, logStreamer, nil)
+
 	// Create gateway server (with optional memory service)
-	server := gateway.NewServer(cfg, sanitizedSession, provider, logger, memService)
+	server := gateway.NewServer(cfg, sanitizedSession, provider, logger, dashboardAPI, memService)
+
+	// Wire client count now that we have the server.
+	dashboardAPI.SetClientCountFunc(server.ClientCount)
 
 	// Wire proactive engine to cron tools for live reload.
 	cronTS.SetEngine(server.ProactiveEngine())
@@ -322,6 +342,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Tracing: enabled (Jaeger @ %s)\n", endpoint)
 	}
 	fmt.Println()
+	fmt.Println("Dashboard: http://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/")
 	fmt.Println("WebSocket endpoint: ws://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/ws")
 	fmt.Println("Health check: http://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/health")
 	fmt.Println()

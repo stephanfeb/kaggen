@@ -274,6 +274,119 @@ func TestMapStopReason(t *testing.T) {
 	}
 }
 
+func TestSanitizeMessages_NormalConversation(t *testing.T) {
+	msgs := []apiMessage{
+		{Role: "user", Content: []apiContent{{Type: "text", Text: "hello"}}},
+		{Role: "assistant", Content: []apiContent{
+			{Type: "tool_use", ID: "t1", Name: "foo", Input: map[string]any{}},
+		}},
+		{Role: "user", Content: []apiContent{
+			{Type: "tool_result", ToolUseID: "t1", Content: []byte(`"ok"`)},
+		}},
+	}
+	result := sanitizeMessages(msgs)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+}
+
+func TestSanitizeMessages_OrphanedToolUse(t *testing.T) {
+	msgs := []apiMessage{
+		{Role: "user", Content: []apiContent{{Type: "text", Text: "hello"}}},
+		{Role: "assistant", Content: []apiContent{
+			{Type: "text", Text: "thinking"},
+			{Type: "tool_use", ID: "t1", Name: "foo", Input: map[string]any{}},
+		}},
+		// no tool_result for t1
+	}
+	result := sanitizeMessages(msgs)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	// assistant message should only have text, no tool_use
+	if len(result[1].Content) != 1 || result[1].Content[0].Type != "text" {
+		t.Errorf("expected only text content in assistant message, got %v", result[1].Content)
+	}
+}
+
+func TestSanitizeMessages_OrphanedToolResult(t *testing.T) {
+	msgs := []apiMessage{
+		{Role: "user", Content: []apiContent{
+			{Type: "tool_result", ToolUseID: "t_missing", Content: []byte(`"ok"`)},
+		}},
+		{Role: "assistant", Content: []apiContent{{Type: "text", Text: "done"}}},
+	}
+	result := sanitizeMessages(msgs)
+	// orphaned tool_result message gets dropped entirely, leaving assistant
+	// but assistant is not user role, so it also gets dropped
+	// only messages starting with user role survive
+	if len(result) != 0 {
+		// The tool_result message is dropped (orphaned), leaving only assistant,
+		// which is then dropped because first message must be user role.
+		t.Fatalf("expected 0 messages, got %d", len(result))
+	}
+}
+
+func TestSanitizeMessages_LeadingAssistant(t *testing.T) {
+	msgs := []apiMessage{
+		{Role: "assistant", Content: []apiContent{{Type: "text", Text: "hi"}}},
+		{Role: "user", Content: []apiContent{{Type: "text", Text: "hello"}}},
+	}
+	result := sanitizeMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result))
+	}
+	if result[0].Role != "user" {
+		t.Errorf("expected first message to be user, got %s", result[0].Role)
+	}
+}
+
+func TestSanitizeMessages_ToolResultAfterTruncatedToolUse(t *testing.T) {
+	// Reproduces: messages.0 has tool_result but the tool_use was in a
+	// preceding assistant message that got truncated away.
+	msgs := []apiMessage{
+		{Role: "user", Content: []apiContent{
+			{Type: "tool_result", ToolUseID: "toolu_01HUTv2NiU4rfzYYNz94XpHL", Content: []byte(`"done"`)},
+		}},
+		{Role: "assistant", Content: []apiContent{{Type: "text", Text: "great"}}},
+		{Role: "user", Content: []apiContent{{Type: "text", Text: "thanks"}}},
+	}
+	result := sanitizeMessages(msgs)
+	// The tool_result is orphaned (no preceding tool_use). After stripping it,
+	// the assistant message becomes first and gets dropped, leaving just "thanks".
+	if len(result) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result))
+	}
+	if result[0].Content[0].Text != "thanks" {
+		t.Errorf("expected 'thanks', got %s", result[0].Content[0].Text)
+	}
+}
+
+func TestSanitizeMessages_NonAdjacentPair(t *testing.T) {
+	// tool_use and tool_result both exist but are not adjacent (another message between them).
+	msgs := []apiMessage{
+		{Role: "user", Content: []apiContent{{Type: "text", Text: "hello"}}},
+		{Role: "assistant", Content: []apiContent{
+			{Type: "tool_use", ID: "t1", Name: "foo", Input: map[string]any{}},
+		}},
+		{Role: "user", Content: []apiContent{{Type: "text", Text: "interrupt"}}},
+		{Role: "user", Content: []apiContent{
+			{Type: "tool_result", ToolUseID: "t1", Content: []byte(`"ok"`)},
+		}},
+	}
+	result := sanitizeMessages(msgs)
+	// tool_use at [1] expects result at [2], but [2] is text. Both get stripped.
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].Content[0].Text != "hello" {
+		t.Errorf("expected 'hello', got %s", result[0].Content[0].Text)
+	}
+	if result[1].Content[0].Text != "interrupt" {
+		t.Errorf("expected 'interrupt', got %s", result[1].Content[0].Text)
+	}
+}
+
 func TestArgsToMap(t *testing.T) {
 	// Valid JSON
 	m := argsToMap([]byte(`{"key": "value"}`))

@@ -172,7 +172,7 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 	}
 
 	apiReq.System = systemPrompt
-	apiReq.Messages = apiMessages
+	apiReq.Messages = sanitizeMessages(apiMessages)
 
 	// Convert tools if present
 	if len(req.Tools) > 0 {
@@ -313,6 +313,83 @@ func imageFormatToMIME(format string) string {
 		return "image/gif"
 	default:
 		return "image/jpeg"
+	}
+}
+
+// sanitizeMessages ensures the message list satisfies Anthropic's tool pairing
+// constraints:
+//   - Every tool_result must reference a tool_use in the immediately preceding
+//     assistant message.
+//   - Every tool_use must have a corresponding tool_result in the immediately
+//     following user message.
+//   - The first message must have role "user".
+//
+// Because removing one message can orphan others, we loop until stable.
+func sanitizeMessages(msgs []apiMessage) []apiMessage {
+	for {
+		changed := false
+
+		// 1. Drop leading non-user messages.
+		for len(msgs) > 0 && msgs[0].Role != "user" {
+			msgs = msgs[1:]
+			changed = true
+		}
+
+		if len(msgs) == 0 {
+			return nil
+		}
+
+		// 2. Build a set of tool_use IDs per message index and a reverse map
+		//    from tool_use ID to the message index that contains it.
+		toolUseMsg := make(map[string]int)    // tool_use ID → msg index
+		toolResultMsg := make(map[string]int)  // tool_use ID (from result) → msg index
+		for i, msg := range msgs {
+			for _, c := range msg.Content {
+				switch c.Type {
+				case "tool_use":
+					toolUseMsg[c.ID] = i
+				case "tool_result":
+					toolResultMsg[c.ToolUseID] = i
+				}
+			}
+		}
+
+		// 3. Strip orphaned content blocks.
+		var result []apiMessage
+		for i, msg := range msgs {
+			var filtered []apiContent
+			for _, c := range msg.Content {
+				switch c.Type {
+				case "tool_use":
+					// The tool_result must exist and be in the very next message.
+					resIdx, hasResult := toolResultMsg[c.ID]
+					if !hasResult || resIdx != i+1 {
+						changed = true
+						continue
+					}
+				case "tool_result":
+					// The tool_use must exist and be in the immediately preceding message.
+					useIdx, hasUse := toolUseMsg[c.ToolUseID]
+					if !hasUse || useIdx != i-1 {
+						changed = true
+						continue
+					}
+				}
+				filtered = append(filtered, c)
+			}
+			if len(filtered) > 0 {
+				msg.Content = filtered
+				result = append(result, msg)
+			} else {
+				changed = true
+			}
+		}
+
+		msgs = result
+
+		if !changed {
+			return msgs
+		}
 	}
 }
 

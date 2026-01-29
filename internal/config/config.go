@@ -109,9 +109,10 @@ type IndexingConfig struct {
 
 // AgentConfig configures the AI agent.
 type AgentConfig struct {
-	Model          string `json:"model"`            // e.g., "anthropic/claude-sonnet-4-20250514"
-	Workspace      string `json:"workspace"`        // e.g., "~/.kaggen/workspace"
-	MaxHistoryRuns int    `json:"max_history_runs"` // Max conversation messages to keep in context (0 = unlimited, default 40)
+	Model             string `json:"model"`               // e.g., "anthropic/claude-sonnet-4-20250514"
+	Workspace         string `json:"workspace"`           // e.g., "~/.kaggen/workspace"
+	MaxHistoryRuns    int    `json:"max_history_runs"`    // Max conversation messages to keep in context (0 = unlimited, default 40)
+	MaxConcurrentLLM  int    `json:"max_concurrent_llm"`  // Max concurrent LLM API calls (0 = unlimited, default 4)
 }
 
 // GatewayConfig configures the gateway server.

@@ -30,17 +30,18 @@ func (m *channelMap) Channel(name string) channel.Channel {
 
 // Server is the gateway server that routes messages between channels and the agent.
 type Server struct {
-	config    *config.Config
-	router    *channel.Router
-	handler   *Handler
-	wsChannel *channel.WebSocketChannel
-	tgChannel *channel.TelegramChannel
-	proactive *proactive.Engine
-	logger    *slog.Logger
+	config      *config.Config
+	router      *channel.Router
+	handler     *Handler
+	wsChannel   *channel.WebSocketChannel
+	tgChannel   *channel.TelegramChannel
+	proactive   *proactive.Engine
+	dashboard  *DashboardAPI
+	logger     *slog.Logger
 }
 
 // NewServer creates a new gateway server.
-func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agent, logger *slog.Logger, memService ...memory.Service) *Server {
+func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agent, logger *slog.Logger, dashboard *DashboardAPI, memService ...memory.Service) *Server {
 	handler := NewHandler(AppName, ag, sessionService, logger, memService...)
 	router := channel.NewRouter(handler)
 
@@ -60,13 +61,19 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 		}
 	}
 
+	// Register dashboard routes if provided.
+	if dashboard != nil {
+		dashboard.RegisterRoutes(wsChannel.HandleFunc)
+	}
+
 	s := &Server{
-		config:    cfg,
-		router:    router,
-		handler:   handler,
-		wsChannel: wsChannel,
-		tgChannel: tgChannel,
-		logger:    logger,
+		config:      cfg,
+		router:      router,
+		handler:     handler,
+		wsChannel:   wsChannel,
+		tgChannel:   tgChannel,
+		dashboard:   dashboard,
+		logger:      logger,
 	}
 
 	// Build channel map and create proactive engine if configured
