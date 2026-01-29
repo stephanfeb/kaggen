@@ -41,7 +41,7 @@ type Agent struct {
 //
 // completeFn is called when an async sub-agent finishes. It may be nil during
 // construction and set later via SetCompletionFunc (to break circular deps).
-func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, memSvc trpcmemory.Service, logger *slog.Logger) (*Agent, error) {
+func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, memSvc trpcmemory.Service, logger *slog.Logger, maxHistoryRuns ...int) (*Agent, error) {
 	// Build instruction from bootstrap files.
 	instruction, err := buildInstruction(mem, subAgents)
 	if err != nil {
@@ -79,12 +79,21 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	allTools = append(allTools, tools...)
 	allTools = append(allTools, dispatchTool, statusTool)
 
-	coordinator := llmagent.New(AgentName,
+	// Default to 40 history messages if not specified (prevents unbounded context growth).
+	historyLimit := 40
+	if len(maxHistoryRuns) > 0 && maxHistoryRuns[0] > 0 {
+		historyLimit = maxHistoryRuns[0]
+	}
+
+	coordinatorOpts := []llmagent.Option{
 		llmagent.WithModel(m),
 		llmagent.WithTools(allTools),
 		llmagent.WithInstruction(instruction),
 		llmagent.WithDescription("Kaggen personal AI assistant coordinator"),
-	)
+		llmagent.WithMaxHistoryRuns(historyLimit),
+	}
+
+	coordinator := llmagent.New(AgentName, coordinatorOpts...)
 
 	t, err := team.New(
 		coordinator,

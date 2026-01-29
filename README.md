@@ -1,6 +1,6 @@
 # Kaggen
 
-Kaggen is a personal AI assistant platform powered by Claude. It provides an interactive CLI agent, a WebSocket gateway, and a Telegram bot interface -- all with persistent conversation sessions and tool execution capabilities.
+Kaggen is a personal AI assistant platform with multi-model support (Anthropic Claude, Google Gemini, ZAI GLM). It provides an interactive CLI agent, a WebSocket gateway, and a Telegram bot interface -- all with persistent conversation sessions and tool execution capabilities.
 
 Named after the mantis deity of the San people, associated with creativity and trickster wisdom.
 
@@ -17,7 +17,7 @@ Named after the mantis deity of the San people, associated with creativity and t
 ## Prerequisites
 
 - Go 1.23+
-- An [Anthropic API key](https://console.anthropic.com/)
+- At least one LLM API key (see [Supported Models](#supported-models))
 - [Ollama](https://ollama.com/) (optional, for memory search)
 
 ## Installation
@@ -31,7 +31,7 @@ go build -tags "fts5" -o kaggen ./cmd/kaggen
 ## Quick Start
 
 ```bash
-# Set your API key
+# Set an API key (at least one required -- see Supported Models below)
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Initialize the workspace (creates config and bootstrap files)
@@ -87,11 +87,35 @@ Configuration lives at `~/.kaggen/config.json`. It is created with defaults by `
 }
 ```
 
+### Supported Models
+
+Kaggen supports three LLM providers. Set the corresponding environment variable and Kaggen will use that provider automatically. When multiple keys are set, priority is **ZAI > Gemini > Anthropic**.
+
+| Provider | Env Variable | Config model prefix | Default model |
+|----------|-------------|---------------------|---------------|
+| [ZAI (GLM)](https://docs.z.ai/) | `ZAI_API_KEY` | `zai/` | `glm-4.7` |
+| [Google Gemini](https://ai.google.dev/) | `GEMINI_API_KEY` | `gemini/` | `gemini-3-pro-preview` |
+| [Anthropic Claude](https://console.anthropic.com/) | `ANTHROPIC_API_KEY` | `anthropic/` | `claude-sonnet-4-20250514` |
+
+To select a specific model, set `agent.model` in `~/.kaggen/config.json`:
+
+```json
+{
+  "agent": {
+    "model": "zai/glm-4.7"
+  }
+}
+```
+
+The prefix determines which provider is used regardless of which API keys are set.
+
 ### Environment variables
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | **Required.** Your Anthropic API key. |
+| `ZAI_API_KEY` | ZAI (GLM) API key. Highest priority when multiple keys are set. |
+| `GEMINI_API_KEY` | Google Gemini API key. |
+| `ANTHROPIC_API_KEY` | Anthropic API key. |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (alternative to config file). |
 
 ## Telegram Bot Setup
@@ -290,7 +314,9 @@ internal/
   gateway/           HTTP/WS gateway server + message handler
   embedding/         Embedding interface + Ollama client
   memory/            File-based bootstrap memory, vector index, indexer
-  model/anthropic/   Anthropic API client adapter
+  model/anthropic/   Anthropic Claude adapter
+  model/gemini/      Google Gemini adapter
+  model/zai/         ZAI GLM adapter
   session/           File-backed session service
   tools/             Tool definitions (read, write, exec, memory_search, memory_write)
 ```

@@ -109,8 +109,9 @@ type IndexingConfig struct {
 
 // AgentConfig configures the AI agent.
 type AgentConfig struct {
-	Model     string `json:"model"`     // e.g., "anthropic/claude-sonnet-4-20250514"
-	Workspace string `json:"workspace"` // e.g., "~/.kaggen/workspace"
+	Model          string `json:"model"`            // e.g., "anthropic/claude-sonnet-4-20250514"
+	Workspace      string `json:"workspace"`        // e.g., "~/.kaggen/workspace"
+	MaxHistoryRuns int    `json:"max_history_runs"` // Max conversation messages to keep in context (0 = unlimited, default 40)
 }
 
 // GatewayConfig configures the gateway server.
@@ -287,4 +288,8 @@ func AnthropicAPIKey() string {
 
 func GeminiAPIKey() string {
 	return os.Getenv("GEMINI_API_KEY")
+}
+
+func ZaiAPIKey() string {
+	return os.Getenv("ZAI_API_KEY")
 }

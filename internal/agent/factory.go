@@ -25,6 +25,7 @@ func BuildInitialAgent(
 	skillDirs []string,
 	memService trpcmemory.Service,
 	logger *slog.Logger,
+	maxHistoryRuns ...int,
 ) (*Agent, error) {
 	skillsRepo := loadSkills(skillDirs, logger)
 
@@ -40,7 +41,7 @@ func BuildInitialAgent(
 		}
 	}
 
-	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, logger)
+	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, logger, maxHistoryRuns...)
 }
 
 // loadSkills creates a case-insensitive skill repository from the given directories.
@@ -74,15 +75,16 @@ func loadSkills(dirs []string, logger *slog.Logger) skill.Repository {
 // On Rebuild(), it creates a fresh skills repository, builds new sub-agents, constructs
 // a new Agent (Team), and atomically swaps it into the AgentProvider.
 type AgentFactory struct {
-	model      model.Model
-	tools      []tool.Tool
-	fileMemory *memory.FileMemory
-	memService trpcmemory.Service
-	skillDirs  []string
-	completeFn CompletionFunc
-	provider   *AgentProvider
-	logger     *slog.Logger
-	mu         sync.Mutex // serializes rebuilds
+	model          model.Model
+	tools          []tool.Tool
+	fileMemory     *memory.FileMemory
+	memService     trpcmemory.Service
+	skillDirs      []string
+	completeFn     CompletionFunc
+	provider       *AgentProvider
+	logger         *slog.Logger
+	maxHistoryRuns int
+	mu             sync.Mutex // serializes rebuilds
 }
 
 // NewAgentFactory creates a factory with the given stable dependencies.
@@ -95,15 +97,21 @@ func NewAgentFactory(
 	skillDirs []string,
 	provider *AgentProvider,
 	logger *slog.Logger,
+	maxHistoryRuns ...int,
 ) *AgentFactory {
+	hist := 0
+	if len(maxHistoryRuns) > 0 {
+		hist = maxHistoryRuns[0]
+	}
 	return &AgentFactory{
-		model:      m,
-		tools:      tools,
-		fileMemory: fileMemory,
-		memService: memService,
-		skillDirs:  skillDirs,
-		provider:   provider,
-		logger:     logger,
+		model:          m,
+		tools:          tools,
+		fileMemory:     fileMemory,
+		memService:     memService,
+		skillDirs:      skillDirs,
+		provider:       provider,
+		logger:         logger,
+		maxHistoryRuns: hist,
 	}
 }
 
@@ -146,7 +154,7 @@ func (f *AgentFactory) Rebuild() error {
 	f.logger.Info("skills reloaded", "count", skillCount, "sub_agents", len(subAgents))
 
 	// Build new agent.
-	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.logger)
+	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.logger, f.maxHistoryRuns)
 	if err != nil {
 		return fmt.Errorf("rebuild agent: %w", err)
 	}

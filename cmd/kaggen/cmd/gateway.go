@@ -28,6 +28,7 @@ import (
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
 	"github.com/yourusername/kaggen/internal/model/gemini"
+	"github.com/yourusername/kaggen/internal/model/zai"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 	"github.com/yourusername/kaggen/internal/tools"
 )
@@ -47,12 +48,13 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check for API key
-	// Check for Gemini API key first
+	// Check for API keys (priority: ZAI > Gemini > Anthropic)
+	zaiKey := config.ZaiAPIKey()
 	geminiKey := config.GeminiAPIKey()
 	anthropicKey := config.AnthropicAPIKey()
 
-	if geminiKey == "" && anthropicKey == "" {
-		return fmt.Errorf("neither GEMINI_API_KEY nor ANTHROPIC_API_KEY environment variable is set")
+	if zaiKey == "" && geminiKey == "" && anthropicKey == "" {
+		return fmt.Errorf("none of ZAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY environment variables are set")
 	}
 
 	// Setup logger
@@ -108,19 +110,23 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create model adapter
 	var modelAdapter model.Model
 
-	if geminiKey != "" {
-		// Use Gemini if key is present
+	if zaiKey != "" {
+		modelName := "glm-4.7"
+		if strings.HasPrefix(configModel, "zai/") {
+			modelName = strings.TrimPrefix(configModel, "zai/")
+		}
+		modelAdapter = zai.NewAdapter(zaiKey, modelName)
+		logger.Info("Using ZAI model", "model", modelName)
+	} else if geminiKey != "" {
 		var modelName string
 		if strings.HasPrefix(configModel, "gemini/") {
 			modelName = strings.TrimPrefix(configModel, "gemini/")
 		} else {
-			// Default to Gemini 1.5 Pro if config is not explicitly gemini
 			modelName = "gemini-3-pro-preview"
 		}
 		modelAdapter = gemini.NewAdapter(geminiKey, modelName)
 		logger.Info("Using Google Gemini model", "model", modelName)
 	} else {
-		// Fallback to Anthropic
 		modelName := configModel
 		if strings.HasPrefix(modelName, "anthropic/") {
 			modelName = strings.TrimPrefix(modelName, "anthropic/")
@@ -203,12 +209,12 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Build the initial agent via the factory/provider pattern.
 	// This enables hot-reload of skills on SIGHUP without restarting.
-	initialAgent, err := kaggenAgent.BuildInitialAgent(modelAdapter, toolList, fileMemory, skillDirs, memService, logger)
+	initialAgent, err := kaggenAgent.BuildInitialAgent(modelAdapter, toolList, fileMemory, skillDirs, memService, logger, cfg.Agent.MaxHistoryRuns)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
 	provider := kaggenAgent.NewAgentProvider(initialAgent)
-	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, skillDirs, provider, logger)
+	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, skillDirs, provider, logger, cfg.Agent.MaxHistoryRuns)
 
 	// Create session service with appropriate backend
 	sessionService, err := createSessionService(cfg)
