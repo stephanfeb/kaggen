@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -57,6 +58,8 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 			llmagent.WithTools(tools),
 			llmagent.WithInstruction("You are a general-purpose assistant. Use the available tools to complete tasks."),
 			llmagent.WithDescription("General-purpose agent with standard tools."),
+			llmagent.WithMaxLLMCalls(25),
+			llmagent.WithMaxToolIterations(15),
 		)
 		subAgents = []agent.Agent{gp}
 	}
@@ -105,6 +108,11 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		"task_status":   true,
 	}
 
+	// Per-invocation counters for coordinator tool calls (used for turn numbering).
+	var coordMu sync.Mutex
+	coordCallCount := make(map[string]int)    // invID -> call count
+	coordToolNames := make(map[string][]string) // invID -> unique tool names used
+
 	callbacks := &tool.Callbacks{}
 	callbacks.RegisterBeforeTool(tool.BeforeToolCallbackStructured(
 		func(ctx context.Context, args *tool.BeforeToolArgs) (*tool.BeforeToolResult, error) {
@@ -147,14 +155,36 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 			} else {
 				// Coordinator direct tool call — group by invocation ID.
 				coordTaskID := "coord-" + invID
+
+				coordMu.Lock()
+				coordCallCount[invID]++
+				callNum := coordCallCount[invID]
+				// Track unique tool names for task description.
+				seen := false
+				for _, n := range coordToolNames[invID] {
+					if n == args.ToolName {
+						seen = true
+						break
+					}
+				}
+				if !seen {
+					coordToolNames[invID] = append(coordToolNames[invID], args.ToolName)
+				}
+				// Build description from tools used so far.
+				desc := "Coordinator: " + strings.Join(coordToolNames[invID], ", ")
+				coordMu.Unlock()
+
 				if _, exists := store.Get(coordTaskID); !exists {
-					store.Register(coordTaskID, "coordinator", "Direct action", TriggerAuto, sessionID, userID)
+					store.Register(coordTaskID, "coordinator", desc, TriggerAuto, sessionID, userID)
 					logger.Info("coordinator task registered",
 						"task_id", coordTaskID, "invocation_id", invID)
+				} else {
+					store.UpdateTask(coordTaskID, desc)
 				}
 				store.AddEvent(coordTaskID, &TaskEvent{
 					Timestamp: time.Now(),
 					Type:      "tool_call",
+					Turn:      callNum,
 					Tools:     []string{args.ToolName},
 				})
 			}
@@ -183,10 +213,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 					store.Fail(taskID, args.Error.Error())
 					logger.Info("sync member task failed", "task_id", taskID, "agent", args.ToolName)
 				} else {
-					result := ""
-					if args.Result != nil {
-						result = fmt.Sprintf("%v", args.Result)
-					}
+					result := resultToString(args.Result)
 					store.Complete(taskID, result)
 					logger.Info("sync member task completed", "task_id", taskID, "agent", args.ToolName, "result_len", len(result))
 				}
@@ -197,12 +224,14 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 					invID = inv.InvocationID
 				}
 				coordTaskID := "coord-" + invID
-				resultPreview := ""
-				if args.Result != nil {
-					resultPreview = fmt.Sprintf("%v", args.Result)
-					if len(resultPreview) > 200 {
-						resultPreview = resultPreview[:200] + "..."
-					}
+
+				coordMu.Lock()
+				callNum := coordCallCount[invID]
+				coordMu.Unlock()
+
+				resultPreview := resultToString(args.Result)
+				if len(resultPreview) > 200 {
+					resultPreview = resultPreview[:200] + "..."
 				}
 				evtType := "response"
 				if args.Error != nil {
@@ -212,6 +241,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				store.AddEvent(coordTaskID, &TaskEvent{
 					Timestamp: time.Now(),
 					Type:      evtType,
+					Turn:      callNum,
 					Tools:     []string{args.ToolName},
 					Content:   resultPreview,
 				})
@@ -283,8 +313,24 @@ func (a *Agent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *
 		// Turn finished — complete any open coordinator task for this invocation.
 		coordTaskID := "coord-" + invocation.InvocationID
 		if ts, ok := a.inFlightStore.Get(coordTaskID); ok && ts.Status == TaskRunning {
-			a.inFlightStore.Complete(coordTaskID, "Coordinator turn completed")
-			a.logger.Info("coordinator task completed", "task_id", coordTaskID)
+			// Build a summary from the events: count tool calls and list unique tools.
+			var toolSet []string
+			seen := make(map[string]bool)
+			calls := 0
+			for _, evt := range ts.Events {
+				if evt.Type == "tool_call" {
+					calls++
+					for _, t := range evt.Tools {
+						if !seen[t] {
+							seen[t] = true
+							toolSet = append(toolSet, t)
+						}
+					}
+				}
+			}
+			summary := fmt.Sprintf("Completed %d tool call(s): %s", calls, strings.Join(toolSet, ", "))
+			a.inFlightStore.Complete(coordTaskID, summary)
+			a.logger.Info("coordinator task completed", "task_id", coordTaskID, "summary", summary)
 		}
 	}()
 	return out, nil
@@ -369,4 +415,27 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	}
 
 	return instruction, nil
+}
+
+// resultToString extracts a readable string from a tool result.
+// The Result field is `any` — it may be a string, a struct with a String() method,
+// or an arbitrary type. This avoids the `&{...}` output from fmt.Sprintf("%v").
+func resultToString(r any) string {
+	if r == nil {
+		return ""
+	}
+	switch v := r.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	case error:
+		return v.Error()
+	default:
+		// Try JSON marshaling for structured results.
+		if b, err := json.Marshal(v); err == nil {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", v)
+	}
 }

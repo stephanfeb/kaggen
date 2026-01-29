@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
@@ -138,6 +139,15 @@ func (s *InFlightStore) Register(id, agentName, task string, policy TriggerPolic
 		SessionID: sessionID,
 		UserID:    userID,
 		StartedAt: time.Now(),
+	}
+}
+
+// UpdateTask updates the task description (used to enrich coordinator task names).
+func (s *InFlightStore) UpdateTask(id, task string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.tasks[id]; ok {
+		t.Task = task
 	}
 }
 
@@ -290,14 +300,26 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		}
 		inv := agent.NewInvocation(invOpts...)
 
-		// Set limits to prevent runaway sub-agents.
-		// MaxLLMCalls: limit total API calls to prevent infinite loops.
-		// MaxToolIterations: limit tool call cycles (model→tools→model).
-		inv.MaxLLMCalls = 10
-		inv.MaxToolIterations = 5
+		// Seed the session with the user message event so that
+		// ApplyEventFiltering (called inside UpdateUserSession) finds
+		// at least one user message and does not wipe all events.
+		// Without this, every call to UpdateUserSession clears
+		// session.Events because the filtering requires a user message.
+		userEvt := event.NewResponseEvent(inv.InvocationID, "user", &model.Response{
+			Choices: []model.Choice{{
+				Index:   0,
+				Message: model.Message{Role: model.RoleUser, Content: req.Task},
+			}},
+		})
+		inv.Session.UpdateUserSession(userEvt)
+
+		// NOTE: Safety limits (MaxLLMCalls, MaxToolIterations) are set at agent
+		// construction time via llmagent.WithMaxLLMCalls/WithMaxToolIterations.
+		// Setting them here on the invocation has no effect because
+		// llmagent.setupInvocation() overwrites them with the agent's options.
 
 		// Create a context with timeout to enforce hard deadline.
-		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
 		// Wrap context with the invocation so tools (e.g. memory_search)
@@ -317,7 +339,25 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		var consecutiveErrors int
 		const maxConsecutiveErrors = 3
 		for evt := range events {
-			if evt == nil || evt.Response == nil {
+			if evt == nil {
+				continue
+			}
+
+			// Persist event to session so the next LLM call sees
+			// conversation history. Without a Runner, session.Events
+			// stays empty and each call starts fresh.
+			inv.Session.UpdateUserSession(evt)
+
+			// Signal completion for barrier events. The flow loop
+			// blocks until NotifyCompletion is called. Must happen
+			// AFTER UpdateUserSession so history is available when
+			// the flow unblocks and calls the LLM again.
+			if evt.RequiresCompletion {
+				key := agent.GetAppendEventNoticeKey(evt.ID)
+				_ = inv.NotifyCompletion(bgCtx, key)
+			}
+
+			if evt.Response == nil {
 				continue
 			}
 			turnCount++
@@ -423,7 +463,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 			errMsg := fmt.Sprintf("timed out after %d turns", turnCount)
 			d.store.Fail(taskID, errMsg)
 			d.logger.Warn("async task timed out", "task_id", taskID, "agent", req.AgentName, "turns", turnCount)
-			d.getCompleteFn()(taskID, "", fmt.Errorf(errMsg), policy)
+			d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
 			return
 		}
 

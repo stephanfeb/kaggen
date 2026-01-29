@@ -76,7 +76,7 @@ func (a *Adapter) Info() model.Info {
 func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 	apiReq := &apiRequest{
 		Model:     a.client.model,
-		MaxTokens: 4096,
+		MaxTokens: 16384,
 	}
 
 	// Set max tokens if specified

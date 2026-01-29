@@ -46,6 +46,13 @@ func executeWrite(workspace string, args WriteArgs) (*WriteResult, error) {
 		return result, fmt.Errorf("path is required")
 	}
 
+	// Reject empty content for non-append writes to prevent silent 0-byte files
+	// (can happen when LLM response is truncated by MaxTokens).
+	if !args.Append && args.Content == "" {
+		result.Message = "Error: content is empty — nothing to write. If the response was truncated, try a shorter output."
+		return result, fmt.Errorf("content is empty")
+	}
+
 	// Resolve path
 	resolvedPath := resolvePath(workspace, args.Path)
 

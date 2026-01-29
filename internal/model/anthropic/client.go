@@ -166,7 +166,7 @@ func (c *Client) Generate(ctx context.Context, messages []protocol.Message, tool
 	// Build request
 	req := &apiRequest{
 		Model:     c.model,
-		MaxTokens: 4096,
+		MaxTokens: 16384,
 		System:    systemPrompt,
 		Messages:  apiMessages,
 	}

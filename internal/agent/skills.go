@@ -77,6 +77,8 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				llmagent.WithInstruction(instruction),
 				llmagent.WithDescription(summary.Description),
 				llmagent.WithTools(generalTools),
+				llmagent.WithMaxLLMCalls(25),
+				llmagent.WithMaxToolIterations(15),
 			)
 
 			agents = append(agents, sa)
@@ -90,6 +92,8 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 		llmagent.WithTools(generalTools),
 		llmagent.WithInstruction("You are a general-purpose assistant. Use the available tools to complete tasks. Report your results clearly."),
 		llmagent.WithDescription("General-purpose agent with file read/write, exec, and other standard tools. Use for tasks that don't match a specific skill."),
+		llmagent.WithMaxLLMCalls(25),
+		llmagent.WithMaxToolIterations(15),
 	)
 	agents = append(agents, gp)
 

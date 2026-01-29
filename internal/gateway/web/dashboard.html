@@ -144,6 +144,20 @@ tr:hover { background: var(--bg-secondary); }
 .tl-tools { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
 .tl-tool-name { font-size: 10px; padding: 1px 6px; background: rgba(88,166,255,0.1); color: var(--accent); border-radius: 4px; }
 .tl-tokens { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+/* Coordinator step timeline */
+.tl-coord-step { padding: 8px 12px; margin-bottom: 6px; background: rgba(255,255,255,0.02); border-radius: 6px; border-left: 2px solid var(--border); }
+.tl-coord-step::before { display: none; }
+.tl-coord-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tl-coord-num { font-size: 11px; font-weight: 600; color: var(--accent); min-width: 24px; }
+.tl-time-inline { font-size: 10px; color: var(--text-muted); }
+.tl-duration { font-size: 10px; color: var(--text-muted); padding: 1px 5px; background: rgba(255,255,255,0.05); border-radius: 3px; }
+.tl-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 500; }
+.tl-status-ok { color: var(--green); background: rgba(63,185,80,0.1); }
+.tl-status-err { color: var(--red); background: rgba(248,81,73,0.1); }
+.tl-content-short { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-family: var(--mono); word-break: break-all; }
+.tl-content-expand { margin-top: 4px; }
+.tl-content-expand summary { font-size: 11px; color: var(--text-muted); cursor: pointer; font-family: var(--mono); }
+.tl-content-full { font-size: 11px; color: var(--text); margin-top: 4px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
 /* Running indicator */
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .running-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.5s infinite; margin-right: 4px; vertical-align: middle; }
@@ -455,6 +469,7 @@ function taskStatusBadge(t) {
 
 function renderTaskDetail(t) {
   let html = '<div class="task-detail-inner">';
+  const isCoord = t.agent_name === 'coordinator';
 
   // Task description (with basic list formatting)
   html += `<div class="detail-section section-task"><div class="section-title">Task</div><div class="text-block">${formatTaskDesc(t.task)}</div></div>`;
@@ -477,33 +492,126 @@ function renderTaskDetail(t) {
     html += `<div class="detail-section section-error"><div class="section-title">Error</div><div class="text-block" style="color:var(--red)">${esc(t.error)}</div></div>`;
   }
 
-  // Event timeline (skip if only 1 event that duplicates the result)
+  // Event timeline
   if (t.events && t.events.length > 0) {
     const showTimeline = t.events.length > 1 || !t.result;
     if (showTimeline) {
-      html += `<div class="detail-section section-timeline"><div class="section-title">Event Timeline (${t.events.length} events)</div><div class="timeline">`;
-      for (const evt of t.events) {
-        const cls = evt.type === 'tool_call' ? 'tl-tool' : evt.type === 'error' ? 'tl-error' : 'tl-response';
-        const ts = new Date(evt.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        html += `<div class="tl-event ${cls}">`;
-        html += `<div class="tl-time">Turn ${evt.turn} \u00b7 ${ts}</div>`;
-        if (evt.type === 'tool_call' && evt.tools) {
-          html += `<div class="tl-tools">${evt.tools.map(n => `<span class="tl-tool-name">${esc(n)}</span>`).join('')}</div>`;
-        }
-        if (evt.content) {
-          html += `<div class="tl-content">${esc(stripXml(evt.content))}</div>`;
-        }
-        if (evt.tokens) {
-          html += `<div class="tl-tokens">${fmtNum(evt.tokens.input)} in / ${fmtNum(evt.tokens.output)} out</div>`;
-        }
-        html += '</div>';
+      if (isCoord) {
+        // Coordinator: pair tool_call + response into compact steps.
+        html += renderCoordTimeline(t.events, t.id);
+      } else {
+        html += renderStandardTimeline(t.events);
       }
-      html += '</div></div>';
     }
   }
 
   html += '</div>';
   return html;
+}
+
+// Render timeline for coordinator tasks: pair tool_call + response into steps.
+function renderCoordTimeline(events, taskId) {
+  // Group events into steps: each tool_call followed by its response/error.
+  const steps = [];
+  let current = null;
+  for (const evt of events) {
+    if (evt.type === 'tool_call') {
+      if (current) steps.push(current);
+      current = { call: evt, result: null };
+    } else if (current) {
+      current.result = evt;
+      steps.push(current);
+      current = null;
+    } else {
+      steps.push({ call: null, result: evt });
+    }
+  }
+  if (current) steps.push(current);
+
+  const toolCalls = steps.filter(s => s.call).length;
+  let html = `<div class="detail-section section-timeline"><div class="section-title">Tool Calls (${toolCalls} call${toolCalls !== 1 ? 's' : ''})</div><div class="timeline">`;
+
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    const callNum = s.call ? s.call.turn : (i + 1);
+    const toolName = s.call && s.call.tools ? s.call.tools[0] : '?';
+    const ts = s.call ? new Date(s.call.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+
+    html += `<div class="tl-event tl-coord-step">`;
+    html += `<div class="tl-coord-header">`;
+    html += `<span class="tl-coord-num">#${callNum}</span>`;
+    html += `<span class="tl-tool-name">${esc(toolName)}</span>`;
+    html += `<span class="tl-time-inline">${ts}</span>`;
+
+    // Duration between call and result
+    if (s.call && s.result) {
+      const dur = new Date(s.result.timestamp) - new Date(s.call.timestamp);
+      html += `<span class="tl-duration">${formatDurationMs(dur)}</span>`;
+    }
+
+    // Status indicator
+    if (s.result) {
+      const isErr = s.result.type === 'error';
+      html += `<span class="tl-status ${isErr ? 'tl-status-err' : 'tl-status-ok'}">${isErr ? 'failed' : 'ok'}</span>`;
+    }
+    html += `</div>`;
+
+    // Result content (collapsible if long)
+    if (s.result && s.result.content) {
+      const clean = cleanResultContent(s.result.content);
+      if (clean.length <= 120) {
+        html += `<div class="tl-content tl-content-short">${esc(clean)}</div>`;
+      } else {
+        const dtAttr = taskId ? ` data-task-id="${esc(taskId)}-step-${i}"` : '';
+        html += `<details class="tl-content-expand"${dtAttr}><summary>${esc(clean.substring(0, 100))}...</summary><pre class="tl-content-full">${esc(s.result.content)}</pre></details>`;
+      }
+    }
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+// Render standard timeline for non-coordinator tasks.
+function renderStandardTimeline(events) {
+  let html = `<div class="detail-section section-timeline"><div class="section-title">Event Timeline (${events.length} events)</div><div class="timeline">`;
+  for (const evt of events) {
+    const cls = evt.type === 'tool_call' ? 'tl-tool' : evt.type === 'error' ? 'tl-error' : 'tl-response';
+    const ts = new Date(evt.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    html += `<div class="tl-event ${cls}">`;
+    html += `<div class="tl-time">Turn ${evt.turn} \u00b7 ${ts}</div>`;
+    if (evt.type === 'tool_call' && evt.tools) {
+      html += `<div class="tl-tools">${evt.tools.map(n => `<span class="tl-tool-name">${esc(n)}</span>`).join('')}</div>`;
+    }
+    if (evt.content) {
+      html += `<div class="tl-content">${esc(stripXml(evt.content))}</div>`;
+    }
+    if (evt.tokens) {
+      html += `<div class="tl-tokens">${fmtNum(evt.tokens.input)} in / ${fmtNum(evt.tokens.output)} out</div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+// Clean result content: strip Go struct prefixes like &{ }, strip JSON cruft.
+function cleanResultContent(text) {
+  if (!text) return '';
+  // Strip Go struct-print prefix: &{...}
+  let s = text.replace(/^&\{/, '').replace(/\}$/, '');
+  // Strip leading hash-like IDs (e.g. "f4fa81ba590f...")
+  s = s.replace(/^[0-9a-f]{20,}\s*/, '');
+  // Collapse whitespace
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+// Format duration in ms to human-friendly string.
+function formatDurationMs(ms) {
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return Math.floor(ms / 60000) + 'm ' + Math.round((ms % 60000) / 1000) + 's';
 }
 
 // Format result text: separate prose from XML tool-call output

@@ -28,8 +28,8 @@ func TestAdapterConvertRequest_BasicMessage(t *testing.T) {
 	if apiReq.System != "You are helpful." {
 		t.Errorf("expected system prompt, got %q", apiReq.System)
 	}
-	if apiReq.MaxTokens != 4096 {
-		t.Errorf("expected default max tokens 4096, got %d", apiReq.MaxTokens)
+	if apiReq.MaxTokens != 16384 {
+		t.Errorf("expected default max tokens 16384, got %d", apiReq.MaxTokens)
 	}
 	if len(apiReq.Messages) != 1 {
 		t.Fatalf("expected 1 message (user only), got %d", len(apiReq.Messages))
