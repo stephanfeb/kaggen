@@ -37,6 +37,7 @@ type Agent struct {
 	logger        *slog.Logger
 	inFlightStore *InFlightStore
 	dispatcher    *asyncDispatcher
+	pipelines     []pipeline.Pipeline
 }
 
 // NewAgent creates a new Kaggen agent using the Coordinator Team pattern.
@@ -78,14 +79,22 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		completeFn = func(taskID, result string, err error, policy TriggerPolicy) {}
 	}
 
-	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger)
+	// Load pipeline definitions for dispatch-time stage gating.
+	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
+	dispatchPipelines, _ := pipeline.LoadAll(pipelinesDir)
+	dispatchPipelineAgents := pipeline.AgentSet(dispatchPipelines)
+
+	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents)
 	statusTool := NewTaskStatusTool(store)
 
-	// Coordinator gets ONLY routing tools (dispatch + status). It should not
-	// have direct action tools (exec, read, write) — those belong to sub-agents.
-	// This prevents the coordinator from "helping" by running commands directly
-	// when it should be delegating to specialists.
-	coordinatorTools := []tool.Tool{dispatchTool, statusTool}
+	pipelineStatusTool := NewPipelineStatusTool(store, dispatchPipelines)
+	cancelTaskTool := NewCancelTaskTool(store)
+
+	// Coordinator gets ONLY routing tools (dispatch + status + pipeline_status + cancel).
+	// It should not have direct action tools (exec, read, write) — those belong
+	// to sub-agents. This prevents the coordinator from "helping" by running
+	// commands directly when it should be delegating to specialists.
+	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool}
 
 	// Default to 40 history messages if not specified (prevents unbounded context growth).
 	historyLimit := 40
@@ -107,8 +116,10 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 
 	// Infrastructure tools that should not create tasks (internal plumbing).
 	infraTools := map[string]bool{
-		"dispatch_task": true,
-		"task_status":   true,
+		"dispatch_task":   true,
+		"task_status":     true,
+		"pipeline_status": true,
+		"cancel_task":     true,
 	}
 
 	// Per-invocation counters for coordinator tool calls (used for turn numbering).
@@ -283,6 +294,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		logger:        logger,
 		inFlightStore: store,
 		dispatcher:    dispatcher,
+		pipelines:     dispatchPipelines,
 	}, nil
 }
 
@@ -290,6 +302,11 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 // (e.g. the handler) to query task state.
 func (a *Agent) InFlightStore() *InFlightStore {
 	return a.inFlightStore
+}
+
+// Pipelines returns the loaded pipeline definitions.
+func (a *Agent) Pipelines() []pipeline.Pipeline {
+	return a.pipelines
 }
 
 // SetCompletionFunc updates the async dispatch completion callback.
@@ -384,34 +401,58 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	instruction += "\n"
 	instruction += "## Task Orchestration\n\n"
 	instruction += "You have access to specialist sub-agents via `dispatch_task` (async) and team member tools (sync).\n\n"
+
+	// Load pipeline definitions early so we can gate agents in the guidelines.
+	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
+	pipelines, pipeErr := pipeline.LoadAll(pipelinesDir)
+	if pipeErr != nil {
+		// Non-fatal: continue without pipelines.
+		_ = pipeErr
+	}
+	pipelineAgentSet := pipeline.AgentSet(pipelines)
+
 	instruction += "### Guidelines\n"
 	instruction += "1. You are a ROUTER — you delegate tasks to sub-agents and synthesize their results. You do NOT have direct action tools (no exec, read, write).\n"
 	instruction += "2. For simple questions you can answer from your knowledge, respond directly without delegating.\n"
 	instruction += "3. For any task requiring file operations, code, or commands: delegate to the appropriate sub-agent.\n"
-	instruction += "4. ALWAYS use async dispatch (dispatch_task) for coding agents (product_owner, architect, coder, qa). NEVER call them synchronously — they run Claude Code CLI which takes minutes.\n"
-	instruction += "5. Notify the user when you start long-running work and when it completes.\n"
-	instruction += "6. Synthesize results from sub-agents into a coherent response for the user.\n"
-	instruction += "7. If a sub-agent fails, inform the user and ask for guidance — do NOT attempt to solve it yourself.\n"
-	instruction += "8. When you receive a [Task Completed] message, summarize the result for the user.\n"
 
-	// Load pipeline definitions from YAML and generate coordinator instructions dynamically.
-	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
-	pipelines, pipeErr := pipeline.LoadAll(pipelinesDir)
-	if pipeErr != nil {
-		// Non-fatal: log and continue without pipelines.
-		_ = pipeErr
+	if len(pipelines) > 0 {
+		pipelineNames := make([]string, 0, len(pipelineAgentSet))
+		for name := range pipelineAgentSet {
+			pipelineNames = append(pipelineNames, name)
+		}
+		instruction += "4. PIPELINE ENFORCEMENT: For tasks matching a pipeline trigger, you MUST follow the full pipeline from stage 1.\n"
+		instruction += "   Do NOT dispatch pipeline-gated agents individually — always start the pipeline from the beginning.\n"
+		instruction += fmt.Sprintf("   Pipeline-gated agents: %s\n", strings.Join(pipelineNames, ", "))
+		instruction += "   Only dispatch these agents directly if the user EXPLICITLY asks to skip the pipeline.\n"
+	} else {
+		instruction += "4. ALWAYS use async dispatch (dispatch_task) for long-running agents.\n"
 	}
+
+	instruction += "5. After dispatching an async task, STOP and tell the user it's in progress. Do NOT poll task_status in a loop — you will be notified automatically via a [Task Completed] message when the task finishes.\n"
+	instruction += "6. Notify the user when you start long-running work and when it completes.\n"
+	instruction += "7. Synthesize results from sub-agents into a coherent response for the user.\n"
+	instruction += "8. If a sub-agent fails, inform the user and ask for guidance — do NOT attempt to solve it yourself.\n"
+	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user. For pipelines, dispatch the next stage.\n"
+
+	// Inject pipeline stage definitions.
 	if pipelineInstr := pipeline.BuildInstruction(pipelines); pipelineInstr != "" {
 		instruction += pipelineInstr
-		instruction += "\nInclude the project directory path (under /Users/stephanfeb/claude-projects/) in every dispatch.\n"
 	}
+	instruction += "\nWhen dispatching project tasks, always include the full project directory path in the task description. "
+	instruction += "Sub-agents will automatically load project-specific instructions from AGENTS.md in the project directory.\n"
 
-	// List available sub-agents.
+	// List available sub-agents, annotating pipeline-gated ones.
 	if len(subAgents) > 0 {
 		instruction += "\n### Available Sub-Agents\n\n"
 		for _, sa := range subAgents {
 			info := sa.Info()
-			instruction += fmt.Sprintf("- **%s**: %s\n", info.Name, info.Description)
+			if pa, ok := pipelineAgentSet[info.Name]; ok {
+				instruction += fmt.Sprintf("- **%s**: %s *(pipeline-only: %s stage %d — do not dispatch directly)*\n",
+					info.Name, info.Description, pa.Pipeline, pa.Stage)
+			} else {
+				instruction += fmt.Sprintf("- **%s**: %s\n", info.Name, info.Description)
+			}
 		}
 	}
 

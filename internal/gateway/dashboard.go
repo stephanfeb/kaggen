@@ -317,6 +317,96 @@ func (d *DashboardAPI) HandleLogsSSE(w http.ResponseWriter, r *http.Request) {
 	}, flusher.Flush)
 }
 
+// HandlePipelines returns pipeline definitions with current progress.
+func (d *DashboardAPI) HandlePipelines(w http.ResponseWriter, r *http.Request) {
+	pipelines := d.agentProvider.Pipelines()
+	store := d.agentProvider.InFlightStore()
+	progress := store.PipelineProgress()
+
+	// Determine which agents currently have running tasks.
+	runningAgents := make(map[string]bool)
+	for _, t := range store.List(agent.TaskRunning) {
+		runningAgents[t.AgentName] = true
+	}
+
+	type stageStatus struct {
+		Agent       string `json:"agent"`
+		Description string `json:"description"`
+		Stage       int    `json:"stage"`
+		Status      string `json:"status"` // pending, running, completed
+	}
+	type pipelineStatus struct {
+		Name        string        `json:"name"`
+		Description string        `json:"description"`
+		SessionID   string        `json:"session_id,omitempty"`
+		Stages      []stageStatus `json:"stages"`
+	}
+
+	var result []pipelineStatus
+
+	for _, p := range pipelines {
+		// Collect all sessions that have progress for this pipeline.
+		sessionsWithProgress := make(map[string]map[int]bool)
+		for sid, pmap := range progress {
+			if stages, ok := pmap[p.Name]; ok {
+				sessionsWithProgress[sid] = stages
+			}
+		}
+
+		if len(sessionsWithProgress) == 0 {
+			// No active progress — show pipeline definition with all pending.
+			stages := make([]stageStatus, len(p.Stages))
+			for i, s := range p.Stages {
+				status := "pending"
+				if runningAgents[s.Agent] {
+					status = "running"
+				}
+				stages[i] = stageStatus{Agent: s.Agent, Description: s.Description, Stage: i + 1, Status: status}
+			}
+			result = append(result, pipelineStatus{Name: p.Name, Description: p.Description, Stages: stages})
+		} else {
+			// Show one entry per session with progress.
+			for sid, completedStages := range sessionsWithProgress {
+				stages := make([]stageStatus, len(p.Stages))
+				for i, s := range p.Stages {
+					status := "pending"
+					if completedStages[i+1] {
+						status = "completed"
+					} else if runningAgents[s.Agent] {
+						status = "running"
+					}
+					stages[i] = stageStatus{Agent: s.Agent, Description: s.Description, Stage: i + 1, Status: status}
+				}
+				result = append(result, pipelineStatus{Name: p.Name, Description: p.Description, SessionID: sid, Stages: stages})
+			}
+		}
+	}
+
+	writeJSON(w, result)
+}
+
+// HandleCancelTask cancels a running async task.
+// Expects POST with JSON body: {"task_id": "..."}
+func (d *DashboardAPI) HandleCancelTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TaskID == "" {
+		http.Error(w, "task_id is required", http.StatusBadRequest)
+		return
+	}
+	store := d.agentProvider.InFlightStore()
+	if store.Cancel(req.TaskID) {
+		writeJSON(w, map[string]any{"cancelled": true, "task_id": req.TaskID})
+	} else {
+		writeJSON(w, map[string]any{"cancelled": false, "message": "task not found or not running"})
+	}
+}
+
 // RegisterRoutes registers all dashboard routes on the given handler registration func.
 func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler http.HandlerFunc)) {
 	handleFunc("/", d.ServeHTML)
@@ -327,6 +417,8 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/skills", d.HandleSkills)
 	handleFunc("/api/sessions", d.HandleSessions)
 	handleFunc("/api/config", d.HandleConfig)
+	handleFunc("/api/pipelines", d.HandlePipelines)
+	handleFunc("/api/tasks/cancel", d.HandleCancelTask)
 	handleFunc("/api/logs", d.HandleLogsSSE)
 }
 

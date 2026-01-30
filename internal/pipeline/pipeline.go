@@ -107,6 +107,38 @@ func BuildInstruction(pipelines []Pipeline) string {
 	return b.String()
 }
 
+// PipelineAgent records which pipeline and stage index an agent belongs to.
+type PipelineAgent struct {
+	Pipeline string
+	Stage    int // 1-based
+}
+
+// AgentSet returns a map of agent name → PipelineAgent for all agents that
+// appear in any pipeline stage. Used to annotate the coordinator's sub-agent
+// list so it knows which agents are pipeline-gated.
+func AgentSet(pipelines []Pipeline) map[string]PipelineAgent {
+	m := make(map[string]PipelineAgent)
+	for _, p := range pipelines {
+		for i, s := range p.Stages {
+			if _, exists := m[s.Agent]; !exists {
+				m[s.Agent] = PipelineAgent{Pipeline: p.Name, Stage: i + 1}
+			}
+		}
+	}
+	return m
+}
+
+// FindAgentAtStage returns the agent name at the given 1-based stage index
+// in the named pipeline. Returns "" if not found.
+func FindAgentAtStage(pipelines []Pipeline, pipelineName string, stage int) string {
+	for _, p := range pipelines {
+		if p.Name == pipelineName && stage >= 1 && stage <= len(p.Stages) {
+			return p.Stages[stage-1].Agent
+		}
+	}
+	return ""
+}
+
 func titleCase(s string) string {
 	parts := strings.Split(s, "_")
 	for i, p := range parts {

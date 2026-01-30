@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yourusername/kaggen/internal/pipeline"
+
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -71,6 +73,7 @@ type TaskState struct {
 	Events      []*TaskEvent  `json:"events,omitempty"`
 	TurnCount   int           `json:"turn_count"`
 	TotalTokens *TokenUsage   `json:"total_tokens,omitempty"`
+	cancelFn    context.CancelFunc `json:"-"` // for external cancellation
 }
 
 // TaskEventCallback is called when a task event is added, enabling real-time broadcast.
@@ -82,12 +85,21 @@ type InFlightStore struct {
 	tasks       map[string]*TaskState
 	onEvent     TaskEventCallback
 	onEventLock sync.RWMutex
+
+	// pipelineProgress tracks completed pipeline stages per session.
+	// Key: sessionID → pipelineName → set of completed 1-based stage indices.
+	pipelineProgress map[string]map[string]map[int]bool
+
+	// pipelineStartTimes tracks when each pipeline was started per session.
+	pipelineStartTimes map[string]map[string]time.Time
 }
 
 // NewInFlightStore creates a new in-flight task store.
 func NewInFlightStore() *InFlightStore {
 	return &InFlightStore{
-		tasks: make(map[string]*TaskState),
+		tasks:              make(map[string]*TaskState),
+		pipelineProgress:   make(map[string]map[string]map[int]bool),
+		pipelineStartTimes: make(map[string]map[string]time.Time),
 	}
 }
 
@@ -210,6 +222,104 @@ func (s *InFlightStore) QueuedResults() []*TaskState {
 	return out
 }
 
+// RecordPipelineStage marks a pipeline stage as completed for a session.
+func (s *InFlightStore) RecordPipelineStage(sessionID, pipelineName string, stage int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pipelineProgress[sessionID] == nil {
+		s.pipelineProgress[sessionID] = make(map[string]map[int]bool)
+	}
+	if s.pipelineProgress[sessionID][pipelineName] == nil {
+		s.pipelineProgress[sessionID][pipelineName] = make(map[int]bool)
+	}
+	s.pipelineProgress[sessionID][pipelineName][stage] = true
+}
+
+// IsPipelineStageCompleted checks if a specific pipeline stage has completed for a session.
+func (s *InFlightStore) IsPipelineStageCompleted(sessionID, pipelineName string, stage int) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.pipelineProgress[sessionID] == nil {
+		return false
+	}
+	if s.pipelineProgress[sessionID][pipelineName] == nil {
+		return false
+	}
+	return s.pipelineProgress[sessionID][pipelineName][stage]
+}
+
+// PipelineProgress returns a copy of all pipeline progress data.
+// Structure: sessionID → pipelineName → set of completed stage indices.
+func (s *InFlightStore) PipelineProgress() map[string]map[string]map[int]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cp := make(map[string]map[string]map[int]bool, len(s.pipelineProgress))
+	for sid, pipelines := range s.pipelineProgress {
+		cp[sid] = make(map[string]map[int]bool, len(pipelines))
+		for pname, stages := range pipelines {
+			cp[sid][pname] = make(map[int]bool, len(stages))
+			for stage := range stages {
+				cp[sid][pname][stage] = true
+			}
+		}
+	}
+	return cp
+}
+
+// SetCancelFunc stores a cancel function for a task, enabling external cancellation.
+func (s *InFlightStore) SetCancelFunc(id string, fn context.CancelFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.tasks[id]; ok {
+		t.cancelFn = fn
+	}
+}
+
+// Cancel cancels a running task. Returns true if the task was found and cancelled.
+func (s *InFlightStore) Cancel(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok || t.Status != TaskRunning {
+		return false
+	}
+	if t.cancelFn != nil {
+		t.cancelFn()
+	}
+	t.Status = TaskFailed
+	t.Error = "cancelled by user"
+	now := time.Now()
+	t.DoneAt = &now
+	return true
+}
+
+// RecordPipelineStart records the start time of a pipeline for a session.
+func (s *InFlightStore) RecordPipelineStart(sessionID, pipelineName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pipelineStartTimes[sessionID] == nil {
+		s.pipelineStartTimes[sessionID] = make(map[string]time.Time)
+	}
+	// Only record if not already started (don't reset on retry).
+	if _, exists := s.pipelineStartTimes[sessionID][pipelineName]; !exists {
+		s.pipelineStartTimes[sessionID][pipelineName] = time.Now()
+	}
+}
+
+// PipelineElapsed returns how long a pipeline has been running for a session.
+func (s *InFlightStore) PipelineElapsed(sessionID, pipelineName string) time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.pipelineStartTimes[sessionID] == nil {
+		return 0
+	}
+	start, ok := s.pipelineStartTimes[sessionID][pipelineName]
+	if !ok {
+		return 0
+	}
+	return time.Since(start)
+}
+
 // CompletionFunc is called when an async sub-agent finishes.
 // It receives the task ID, result, error, and trigger policy.
 type CompletionFunc func(taskID, result string, err error, policy TriggerPolicy)
@@ -229,13 +339,15 @@ type asyncDispatchResponse struct {
 
 // asyncDispatcher holds references needed to dispatch async sub-agent tasks.
 type asyncDispatcher struct {
-	agents        map[string]agent.Agent
-	store         *InFlightStore
-	completeFn    CompletionFunc
-	mu            sync.RWMutex // protects completeFn
-	model         model.Model
-	memoryService memory.Service
-	logger        *slog.Logger
+	agents         map[string]agent.Agent
+	store          *InFlightStore
+	completeFn     CompletionFunc
+	mu             sync.RWMutex // protects completeFn
+	model          model.Model
+	memoryService  memory.Service
+	logger         *slog.Logger
+	pipelines      []pipeline.Pipeline
+	pipelineAgents map[string]pipeline.PipelineAgent
 }
 
 // SetCompletionFunc updates the completion callback. This is used to wire up
@@ -276,16 +388,49 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		userID = inv.Session.UserID
 	}
 
+	// Pipeline stage gate: reject dispatch if prior stages haven't completed.
+	if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Stage > 1 {
+		for stage := 1; stage < pa.Stage; stage++ {
+			if !d.store.IsPipelineStageCompleted(sessionID, pa.Pipeline, stage) {
+				priorAgent := pipeline.FindAgentAtStage(d.pipelines, pa.Pipeline, stage)
+				return asyncDispatchResponse{}, fmt.Errorf(
+					"cannot dispatch %q — pipeline %q requires stage %d (%s) to complete first; wait for the [Task Completed] callback",
+					req.AgentName, pa.Pipeline, stage, priorAgent)
+			}
+		}
+	}
+
+	// Pipeline-level timeout: reject if total pipeline time exceeds limit.
+	const maxPipelineDuration = 2 * time.Hour
+	if pa, ok := d.pipelineAgents[req.AgentName]; ok {
+		if pa.Stage == 1 {
+			d.store.RecordPipelineStart(sessionID, pa.Pipeline)
+		}
+		if elapsed := d.store.PipelineElapsed(sessionID, pa.Pipeline); elapsed > maxPipelineDuration {
+			return asyncDispatchResponse{}, fmt.Errorf(
+				"pipeline %q has been running for %s (limit %s); aborting",
+				pa.Pipeline, elapsed.Round(time.Minute), maxPipelineDuration)
+		}
+	}
+
 	taskID := uuid.New().String()
 	d.store.Register(taskID, req.AgentName, req.Task, policy, sessionID, userID)
 	d.logger.Info("dispatched async task", "task_id", taskID, "agent", req.AgentName, "policy", policy, "session_id", sessionID)
+
+	// Inject project-specific context (AGENTS.md) if a project directory
+	// is referenced in the task text.
+	taskMessage := req.Task
+	if projectCtx := loadProjectContext(req.Task); projectCtx != "" {
+		taskMessage = "## Project Context\n\n" + projectCtx + "\n\n---\n\n" + req.Task
+		d.logger.Info("injected project context", "task_id", taskID, "agent", req.AgentName)
+	}
 
 	go func() {
 		invOpts := []agent.InvocationOptions{
 			agent.WithInvocationAgent(ag),
 			agent.WithInvocationMessage(model.Message{
 				Role:    model.RoleUser,
-				Content: req.Task,
+				Content: taskMessage,
 			}),
 			agent.WithInvocationModel(d.model),
 			// Provide a session to prevent nil pointer in code executor
@@ -308,7 +453,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		userEvt := event.NewResponseEvent(inv.InvocationID, "user", &model.Response{
 			Choices: []model.Choice{{
 				Index:   0,
-				Message: model.Message{Role: model.RoleUser, Content: req.Task},
+				Message: model.Message{Role: model.RoleUser, Content: taskMessage},
 			}},
 		})
 		inv.Session.UpdateUserSession(userEvt)
@@ -321,6 +466,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		// Create a context with timeout to enforce hard deadline.
 		bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
+		d.store.SetCancelFunc(taskID, cancel)
 
 		// Wrap context with the invocation so tools (e.g. memory_search)
 		// can retrieve it via agent.InvocationFromContext(ctx).
@@ -361,6 +507,17 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 				continue
 			}
 			turnCount++
+
+			// Turn limit circuit breaker.
+			const maxTurns = 50
+			if turnCount >= maxTurns {
+				errMsg := fmt.Sprintf("aborted: exceeded %d turns without completing", maxTurns)
+				d.logger.Warn("turn limit reached", "task_id", taskID, "agent", req.AgentName, "turns", turnCount)
+				d.store.Fail(taskID, errMsg)
+				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
+				cancel()
+				return
+			}
 
 			// Capture token usage from response.
 			var tokens *TokenUsage
@@ -468,6 +625,11 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		}
 
 		d.store.Complete(taskID, result)
+		// Record pipeline stage completion so subsequent stages can be dispatched.
+		if pa, ok := d.pipelineAgents[req.AgentName]; ok {
+			d.store.RecordPipelineStage(sessionID, pa.Pipeline, pa.Stage)
+			d.logger.Info("pipeline stage completed", "pipeline", pa.Pipeline, "stage", pa.Stage, "agent", req.AgentName, "session_id", sessionID)
+		}
 		d.logger.Info("async task completed", "task_id", taskID, "agent", req.AgentName)
 		d.getCompleteFn()(taskID, result, nil, policy)
 	}()
@@ -481,14 +643,16 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 // NewAsyncDispatchTool creates a tool that dispatches tasks to sub-agents asynchronously.
 // It returns both the tool and the dispatcher, so the caller can update the
 // completion function later via SetCompletionFunc.
-func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger) (tool.Tool, *asyncDispatcher) {
+func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger, pipelines []pipeline.Pipeline, pipelineAgents map[string]pipeline.PipelineAgent) (tool.Tool, *asyncDispatcher) {
 	d := &asyncDispatcher{
-		agents:        agents,
-		store:         store,
-		completeFn:    completeFn,
-		model:         m,
-		memoryService: memSvc,
-		logger:        logger,
+		agents:         agents,
+		store:          store,
+		completeFn:     completeFn,
+		model:          m,
+		memoryService:  memSvc,
+		logger:         logger,
+		pipelines:      pipelines,
+		pipelineAgents: pipelineAgents,
 	}
 	t := function.NewFunctionTool(
 		d.dispatch,

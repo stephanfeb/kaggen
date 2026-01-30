@@ -127,14 +127,14 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 				if !t.isAuthorized(userID, chatID) {
 					t.logger.Warn("rejected unauthorized message",
 						"user_id", userID, "chat_id", chatID)
-					t.sendText(chatID, t.rejectMessage)
+					t.SendText(chatID, t.rejectMessage)
 					continue
 				}
 
 				if !t.userLimiter.allow(userID) {
 					t.logger.Warn("user rate limited",
 						"user_id", userID, "chat_id", chatID)
-					t.sendText(chatID, t.rateLimitMessage)
+					t.SendText(chatID, t.rateLimitMessage)
 					continue
 				}
 
@@ -250,8 +250,8 @@ func (t *TelegramChannel) sendTyping(chatID int64) {
 	}
 }
 
-// sendText sends a plain text message to a chat (used for reject/rate-limit notices).
-func (t *TelegramChannel) sendText(chatID int64, text string) {
+// SendText sends a plain text message to a chat. Exported for use by alerting systems.
+func (t *TelegramChannel) SendText(chatID int64, text string) {
 	if t.bot == nil {
 		return
 	}
@@ -305,7 +305,7 @@ func (t *TelegramChannel) handleClear(ctx context.Context, m *tgbotapi.Message) 
 	chatID := m.Chat.ID
 
 	if t.sessionService == nil {
-		t.sendText(chatID, "Session clearing is not available.")
+		t.SendText(chatID, "Session clearing is not available.")
 		return
 	}
 
@@ -321,12 +321,12 @@ func (t *TelegramChannel) handleClear(ctx context.Context, m *tgbotapi.Message) 
 
 	if err := t.sessionService.DeleteSession(ctx, key); err != nil {
 		t.logger.Warn("failed to clear session", "session_id", sessionID, "error", err)
-		t.sendText(chatID, "Failed to clear session. Please try again.")
+		t.SendText(chatID, "Failed to clear session. Please try again.")
 		return
 	}
 
 	t.logger.Info("session cleared via /clear", "session_id", sessionID, "user_id", userID)
-	t.sendText(chatID, "Session cleared. Starting fresh!")
+	t.SendText(chatID, "Session cleared. Starting fresh!")
 }
 
 // telegramUpdateToMessage converts a Telegram update to a channel Message,

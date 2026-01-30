@@ -22,6 +22,7 @@ import (
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/backlog"
+	"github.com/yourusername/kaggen/internal/browser"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/embedding"
 	"github.com/yourusername/kaggen/internal/gateway"
@@ -146,6 +147,14 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
+
+	// Initialize browser control if enabled
+	if cfg.Browser.Enabled {
+		browserMgr := browser.NewManager(cfg.Browser, logger)
+		defer browserMgr.Close()
+		toolList = append(toolList, tools.BrowserTools(browserMgr)...)
+		logger.Info("browser control enabled", "profiles", len(cfg.Browser.Profiles))
+	}
 
 	// Initialize persistent work backlog
 	backlogStore, err := backlog.NewStore(cfg.BacklogDBPath())
@@ -293,6 +302,17 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		}
 	})
 
+	// Start watchdog to detect stale tasks and alert via Telegram.
+	watchdog := kaggenAgent.NewWatchdog(provider.InFlightStore(), 30*time.Minute, func(task *kaggenAgent.TaskState, dur time.Duration) {
+		msg := fmt.Sprintf("Task stuck: %s (%s) has been running for %s",
+			task.AgentName, task.ID[:8], dur.Round(time.Minute))
+		logger.Warn(msg, "task_id", task.ID, "agent", task.AgentName)
+		for _, chatID := range cfg.Channels.Telegram.AllowedChats {
+			server.SendTelegramAlert(chatID, msg)
+		}
+	}, logger)
+	go watchdog.Start(ctx)
+
 	// Start signal handler goroutine (SIGHUP reloads skills, others shut down).
 	go func() {
 		for sig := range sigCh {
@@ -323,6 +343,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		fmt.Println("Memory Search: enabled")
 	} else {
 		fmt.Println("Memory Search: disabled")
+	}
+	if cfg.Browser.Enabled {
+		fmt.Printf("Browser Control: enabled (%d profiles)\n", len(cfg.Browser.Profiles))
+	} else {
+		fmt.Println("Browser Control: disabled")
 	}
 	if n := len(provider.SubAgents()); n > 0 {
 		fmt.Printf("Skills: %d sub-agents\n", n)

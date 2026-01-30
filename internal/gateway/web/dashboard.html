@@ -187,6 +187,25 @@ tr:hover { background: var(--bg-secondary); }
 /* Config viewer */
 .config-viewer { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; overflow-x: auto; }
 .config-viewer pre { color: var(--text); font-family: inherit; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+/* Pipeline progress */
+.pipeline-section { margin-bottom: 20px; }
+.pipeline-card {
+  background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px;
+  padding: 16px; margin-bottom: 12px;
+}
+.pipeline-header { font-size: 13px; color: var(--text-bright); font-weight: 600; margin-bottom: 12px; }
+.pipeline-header .pipeline-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-right: 6px; }
+.pipeline-stages { display: flex; align-items: center; gap: 0; flex-wrap: wrap; }
+.pipeline-stage { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 6px; background: var(--bg-tertiary); }
+.pipeline-stage .stage-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.pipeline-stage .stage-dot-pending { background: var(--bg-tertiary); border: 2px solid var(--text-muted); width: 10px; height: 10px; }
+.pipeline-stage .stage-dot-running { background: var(--accent); animation: pulse 1.5s infinite; }
+.pipeline-stage .stage-dot-completed { background: var(--green); }
+.pipeline-stage .stage-name { font-size: 12px; color: var(--text); }
+.pipeline-stage .stage-status { font-size: 10px; color: var(--text-muted); }
+.pipeline-stage.stage-completed .stage-name { color: var(--green); }
+.pipeline-stage.stage-running .stage-name { color: var(--accent); }
+.pipeline-arrow { color: var(--text-muted); font-size: 14px; padding: 0 4px; flex-shrink: 0; }
 .empty { text-align: center; padding: 48px; color: var(--text-muted); }
 </style>
 </head>
@@ -214,6 +233,7 @@ tr:hover { background: var(--bg-secondary); }
     </div>
     <div class="panel" id="panel-tasks">
       <div class="panel-title">Async Tasks</div>
+      <div class="pipeline-section" id="pipeline-progress"></div>
       <div class="filters" id="task-filters">
         <button class="filter-btn active" data-status="">All</button>
         <button class="filter-btn" data-status="running">Running</button>
@@ -393,6 +413,7 @@ document.getElementById('task-filters').addEventListener('click', e => {
 });
 
 async function loadTasks() {
+  loadPipelines(); // refresh pipeline progress alongside tasks
   const url = taskStatusFilter ? `/api/tasks?status=${taskStatusFilter}` : '/api/tasks';
   const tasks = await fetchJSON(url);
   taskDataCache = tasks || [];
@@ -408,7 +429,7 @@ async function loadTasks() {
   });
 
   document.getElementById('task-table').innerHTML = `<table>
-    <tr><th>Agent</th><th>Task</th><th>Status</th><th>Turns</th><th>Tokens</th><th>Started</th><th>Duration</th></tr>
+    <tr><th>Agent</th><th>Task</th><th>Status</th><th>Turns</th><th>Tokens</th><th>Started</th><th>Duration</th><th></th></tr>
     ${tasks.map(t => taskRow(t)).join('')}
   </table>`;
 
@@ -432,6 +453,25 @@ async function loadTasks() {
   });
 }
 
+async function loadPipelines() {
+  const pipelines = await fetchJSON('/api/pipelines');
+  const el = document.getElementById('pipeline-progress');
+  if (!pipelines || pipelines.length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = pipelines.map(p => {
+    const stagesHtml = p.stages.map((s, i) => {
+      const dotClass = 'stage-dot stage-dot-' + s.status;
+      const stageClass = 'pipeline-stage stage-' + s.status;
+      const arrow = i < p.stages.length - 1 ? '<span class="pipeline-arrow">\u2192</span>' : '';
+      return `<div class="${stageClass}"><span class="${dotClass}"></span><span class="stage-name">${esc(s.agent)}</span><span class="stage-status">${esc(s.status)}</span></div>${arrow}`;
+    }).join('');
+    const sessionLabel = p.session_id ? ` <span style="font-size:10px;color:var(--text-muted)">(${esc(p.session_id.substring(0,8))}...)</span>` : '';
+    return `<div class="pipeline-card"><div class="pipeline-header"><span class="pipeline-label">Pipeline</span>${esc(p.name)}${sessionLabel}</div><div class="pipeline-stages">${stagesHtml}</div></div>`;
+  }).join('');
+}
+
 function taskRow(t) {
   const expanded = expandedTasks.has(t.id);
   const progressInfo = t.status === 'running' ? renderProgress(t) : '';
@@ -444,9 +484,10 @@ function taskRow(t) {
     <td>${tokenStr}</td>
     <td>${timeAgo(t.started_at)}</td>
     <td>${duration(t.started_at, t.done_at)}</td>
+    <td>${t.status === 'running' ? `<button class="filter-btn cancel-btn" onclick="cancelTask('${esc(t.id)}'); event.stopPropagation();" title="Cancel task" style="color:var(--red);border-color:var(--red);padding:2px 8px;font-size:10px">Cancel</button>` : ''}</td>
   </tr>
   <tr class="task-detail ${expanded ? 'open' : ''}" id="detail-${t.id}">
-    <td colspan="7">${renderTaskDetail(t)}</td>
+    <td colspan="8">${renderTaskDetail(t)}</td>
   </tr>`;
 }
 
@@ -462,6 +503,13 @@ function renderProgress(t) {
 
 function taskStatusBadge(t) {
   if (t.status === 'running') {
+    const runMins = (Date.now() - new Date(t.started_at)) / 60000;
+    if (runMins > 30) {
+      return `<span class="badge badge-red"><span class="running-dot" style="width:6px;height:6px;margin-right:3px;background:var(--red)"></span>stuck (${Math.floor(runMins)}m)</span>`;
+    }
+    if (runMins > 10) {
+      return `<span class="badge badge-yellow"><span class="running-dot" style="width:6px;height:6px;margin-right:3px;background:var(--yellow)"></span>slow (${Math.floor(runMins)}m)</span>`;
+    }
     return `<span class="badge badge-blue"><span class="running-dot" style="width:6px;height:6px;margin-right:3px"></span>running</span>`;
   }
   return statusBadge(t.status);
@@ -654,6 +702,16 @@ function stripXml(text) {
   if (idx === -1) return text;
   const before = text.substring(0, idx).trim();
   return before || '(tool call output)';
+}
+
+async function cancelTask(taskId) {
+  if (!confirm('Cancel this task?')) return;
+  await fetch(API + '/api/tasks/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: taskId })
+  });
+  loadTasks();
 }
 
 function toggleTaskDetail(taskId) {

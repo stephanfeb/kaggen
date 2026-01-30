@@ -173,3 +173,11 @@ func (s *Server) ClientCount() int {
 func (s *Server) Broadcast(data []byte) {
 	s.wsChannel.Broadcast(data)
 }
+
+// SendTelegramAlert sends a direct text message to a Telegram chat.
+// Used by alerting systems (watchdog) to notify users of stuck tasks.
+func (s *Server) SendTelegramAlert(chatID int64, text string) {
+	if s.tgChannel != nil {
+		s.tgChannel.SendText(chatID, text)
+	}
+}

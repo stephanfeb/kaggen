@@ -15,8 +15,26 @@ type Config struct {
 	Session   SessionConfig   `json:"session"`
 	Channels  ChannelsConfig  `json:"channels"`
 	Memory    MemoryConfig    `json:"memory"`
+	Browser   BrowserConfig   `json:"browser,omitempty"`
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
 	Telemetry TelemetryConfig `json:"telemetry,omitempty"`
+}
+
+// BrowserConfig configures browser control via Chrome DevTools Protocol.
+type BrowserConfig struct {
+	Enabled  bool             `json:"enabled"`
+	Profiles []BrowserProfile `json:"profiles,omitempty"`
+}
+
+// BrowserProfile configures a browser connection profile.
+type BrowserProfile struct {
+	Name        string   `json:"name"`                    // profile name, e.g. "default"
+	Type        string   `json:"type"`                    // "managed" or "remote"
+	ExecPath    string   `json:"exec_path,omitempty"`     // managed: path to chrome binary
+	RemoteURL   string   `json:"remote_url,omitempty"`    // remote: ws:// or wss:// CDP URL
+	Headless    bool     `json:"headless"`                // managed: run headless
+	UserDataDir string   `json:"user_data_dir,omitempty"` // managed: chrome user data directory
+	Flags       []string `json:"flags,omitempty"`         // extra chrome flags
 }
 
 // TelemetryConfig configures observability (tracing, metrics).
@@ -77,9 +95,9 @@ type HeartbeatConfig struct {
 
 // MemoryConfig configures the semantic memory search system.
 type MemoryConfig struct {
-	Search    SearchConfig    `json:"search"`
-	Embedding EmbeddingConfig `json:"embedding"`
-	Indexing  IndexingConfig  `json:"indexing"`
+	Search    SearchConfig     `json:"search"`
+	Embedding EmbeddingConfig  `json:"embedding"`
+	Indexing  IndexingConfig   `json:"indexing"`
 	Auto      AutoMemoryConfig `json:"auto"`
 }
 
@@ -109,10 +127,10 @@ type IndexingConfig struct {
 
 // AgentConfig configures the AI agent.
 type AgentConfig struct {
-	Model             string `json:"model"`               // e.g., "anthropic/claude-sonnet-4-20250514"
-	Workspace         string `json:"workspace"`           // e.g., "~/.kaggen/workspace"
-	MaxHistoryRuns    int    `json:"max_history_runs"`    // Max conversation messages to keep in context (0 = unlimited, default 40)
-	MaxConcurrentLLM  int    `json:"max_concurrent_llm"`  // Max concurrent LLM API calls (0 = unlimited, default 4)
+	Model            string `json:"model"`              // e.g., "anthropic/claude-sonnet-4-20250514"
+	Workspace        string `json:"workspace"`          // e.g., "~/.kaggen/workspace"
+	MaxHistoryRuns   int    `json:"max_history_runs"`   // Max conversation messages to keep in context (0 = unlimited, default 40)
+	MaxConcurrentLLM int    `json:"max_concurrent_llm"` // Max concurrent LLM API calls (0 = unlimited, default 4)
 }
 
 // GatewayConfig configures the gateway server.
@@ -177,7 +195,7 @@ func (c *Config) TelegramBotToken() string {
 func DefaultConfig() *Config {
 	return &Config{
 		Agent: AgentConfig{
-			Model:     "anthropic/claude-sonnet-4-20250514",
+			Model:     "anthropic/claude-haiku-4-5",
 			Workspace: "~/.kaggen/workspace",
 		},
 		Gateway: GatewayConfig{

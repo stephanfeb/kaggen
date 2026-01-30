@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync/atomic"
 
+	"github.com/yourusername/kaggen/internal/pipeline"
+
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -57,6 +59,11 @@ func (p *AgentProvider) SubAgents() []agent.Agent {
 // FindSubAgent delegates to the current agent.
 func (p *AgentProvider) FindSubAgent(name string) agent.Agent {
 	return p.current.Load().FindSubAgent(name)
+}
+
+// Pipelines returns the loaded pipeline definitions from the current agent.
+func (p *AgentProvider) Pipelines() []pipeline.Pipeline {
+	return p.current.Load().Pipelines()
 }
 
 // InFlightStore returns the in-flight task store from the current agent.

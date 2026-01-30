@@ -23,6 +23,7 @@ import (
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
+	"github.com/yourusername/kaggen/internal/browser"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/embedding"
 	"github.com/yourusername/kaggen/internal/memory"
@@ -121,6 +122,14 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	toolList := tools.DefaultTools(workspace)
 	_, cronTools := tools.NewCronToolSet(cfg)
 	toolList = append(toolList, cronTools...)
+
+	// Initialize browser control if enabled
+	if cfg.Browser.Enabled {
+		browserMgr := browser.NewManager(cfg.Browser, logger)
+		defer browserMgr.Close()
+		toolList = append(toolList, tools.BrowserTools(browserMgr)...)
+		logger.Info("browser control enabled", "profiles", len(cfg.Browser.Profiles))
+	}
 
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
