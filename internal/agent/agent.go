@@ -417,58 +417,39 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	instruction += "## Task Orchestration\n\n"
 	instruction += "You have access to specialist sub-agents via `dispatch_task` (async) and team member tools (sync).\n\n"
 
-	// Load pipeline definitions early so we can gate agents in the guidelines.
-	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
-	pipelines, pipeErr := pipeline.LoadAll(pipelinesDir)
-	if pipeErr != nil {
-		// Non-fatal: continue without pipelines.
-		_ = pipeErr
-	}
-	pipelineAgentSet := pipeline.AgentSet(pipelines)
-
 	instruction += "### Guidelines\n"
 	instruction += "1. You are a ROUTER — you delegate tasks to sub-agents and synthesize their results. You do NOT have direct action tools (no exec, read, write).\n"
 	instruction += "2. For simple questions you can answer from your knowledge, respond directly without delegating.\n"
 	instruction += "3. For any task requiring file operations, code, or commands: delegate to the appropriate sub-agent.\n"
-
-	if len(pipelines) > 0 {
-		pipelineNames := make([]string, 0, len(pipelineAgentSet))
-		for name := range pipelineAgentSet {
-			pipelineNames = append(pipelineNames, name)
-		}
-		instruction += "4. PIPELINE ENFORCEMENT: For tasks matching a pipeline trigger, you MUST follow the full pipeline from stage 1.\n"
-		instruction += "   Do NOT dispatch pipeline-gated agents individually — always start the pipeline from the beginning.\n"
-		instruction += fmt.Sprintf("   Pipeline-gated agents: %s\n", strings.Join(pipelineNames, ", "))
-		instruction += "   Only dispatch these agents directly if the user EXPLICITLY asks to skip the pipeline.\n"
-	} else {
-		instruction += "4. ALWAYS use async dispatch (dispatch_task) for long-running agents.\n"
-	}
-
-	instruction += "5. After dispatching an async task, STOP and tell the user it's in progress. Do NOT poll task_status in a loop — you will be notified automatically via a [Task Completed] message when the task finishes.\n"
+	instruction += "4. Use async dispatch (`dispatch_task`) for long-running agents.\n"
+	instruction += "5. After dispatching an async task, STOP and tell the user it's in progress. Do NOT poll `task_status` in a loop — you will be notified automatically via a [Task Completed] message when the task finishes.\n"
 	instruction += "6. Notify the user when you start long-running work and when it completes.\n"
 	instruction += "7. Synthesize results from sub-agents into a coherent response for the user.\n"
 	instruction += "8. If a sub-agent fails, inform the user and ask for guidance — do NOT attempt to solve it yourself.\n"
-	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user. For pipelines, dispatch the next stage.\n"
-	instruction += "10. When the user asks to 'resume' or 'continue' a pipeline after a failure, re-dispatch the failed stage's agent with the same task. Do NOT restart the pipeline from stage 1. The pipeline tracking automatically recognizes retries — completed stages are remembered.\n"
+	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user.\n"
 
-	// Inject pipeline stage definitions.
-	if pipelineInstr := pipeline.BuildInstruction(pipelines); pipelineInstr != "" {
-		instruction += pipelineInstr
+	// Load pipeline definitions for optional workflow section.
+	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
+	pipelines, _ := pipeline.LoadAll(pipelinesDir)
+
+	if len(pipelines) > 0 {
+		instruction += "\n### Available Workflows\n\n"
+		instruction += "Multi-agent workflows are available for complex projects. Use them when the user explicitly requests a structured process (e.g. \"build this from scratch\", \"run the full dev pipeline\") or when you judge a multi-stage workflow is appropriate.\n"
+		instruction += "To activate a workflow, dispatch each stage sequentially with the `pipeline` field set to the pipeline name on each `dispatch_task` call.\n"
+		instruction += pipeline.BuildInstruction(pipelines)
+		instruction += "\nWhen running a pipeline: after a [Task Completed] message for a pipeline stage, dispatch the next stage.\n"
+		instruction += "On failure or cancellation, re-dispatch the failed stage — do NOT restart from stage 1.\n"
 	}
+
 	instruction += "\nWhen dispatching project tasks, always include the full project directory path in the task description. "
 	instruction += "Sub-agents will automatically load project-specific instructions from AGENTS.md in the project directory.\n"
 
-	// List available sub-agents, annotating pipeline-gated ones.
+	// List available sub-agents.
 	if len(subAgents) > 0 {
 		instruction += "\n### Available Sub-Agents\n\n"
 		for _, sa := range subAgents {
 			info := sa.Info()
-			if pa, ok := pipelineAgentSet[info.Name]; ok {
-				instruction += fmt.Sprintf("- **%s**: %s *(pipeline-only: %s stage %d — do not dispatch directly)*\n",
-					info.Name, info.Description, pa.Pipeline, pa.Stage)
-			} else {
-				instruction += fmt.Sprintf("- **%s**: %s\n", info.Name, info.Description)
-			}
+			instruction += fmt.Sprintf("- **%s**: %s\n", info.Name, info.Description)
 		}
 	}
 

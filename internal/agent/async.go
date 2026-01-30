@@ -359,6 +359,7 @@ type asyncDispatchRequest struct {
 	AgentName string `json:"agent_name" jsonschema:"required,description=Name of the sub-agent to dispatch"`
 	Task      string `json:"task" jsonschema:"required,description=The task description to send to the sub-agent"`
 	Policy    string `json:"policy,omitempty" jsonschema:"description=Completion trigger policy: auto (default) or queue,enum=auto,enum=queue"`
+	Pipeline  string `json:"pipeline,omitempty" jsonschema:"description=Optional pipeline name. When set stage gates are enforced (stages must complete in order). Omit for standalone agent dispatch."`
 }
 
 // asyncDispatchResponse is the output schema for the async dispatch tool.
@@ -419,28 +420,30 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		userID = inv.Session.UserID
 	}
 
-	// Pipeline stage gate: reject dispatch if prior stages haven't completed.
-	if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Stage > 1 {
-		for stage := 1; stage < pa.Stage; stage++ {
-			if !d.store.IsPipelineStageCompleted(sessionID, pa.Pipeline, stage) {
-				priorAgent := pipeline.FindAgentAtStage(d.pipelines, pa.Pipeline, stage)
-				return asyncDispatchResponse{}, fmt.Errorf(
-					"cannot dispatch %q — pipeline %q requires stage %d (%s) to complete first; wait for the [Task Completed] callback",
-					req.AgentName, pa.Pipeline, stage, priorAgent)
+	// Pipeline stage gate: only enforced when pipeline mode is explicitly requested.
+	if req.Pipeline != "" {
+		if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Pipeline == req.Pipeline && pa.Stage > 1 {
+			for stage := 1; stage < pa.Stage; stage++ {
+				if !d.store.IsPipelineStageCompleted(sessionID, pa.Pipeline, stage) {
+					priorAgent := pipeline.FindAgentAtStage(d.pipelines, pa.Pipeline, stage)
+					return asyncDispatchResponse{}, fmt.Errorf(
+						"cannot dispatch %q — pipeline %q requires stage %d (%s) to complete first; wait for the [Task Completed] callback",
+						req.AgentName, pa.Pipeline, stage, priorAgent)
+				}
 			}
 		}
-	}
 
-	// Pipeline-level timeout: reject if total pipeline time exceeds limit.
-	const maxPipelineDuration = 2 * time.Hour
-	if pa, ok := d.pipelineAgents[req.AgentName]; ok {
-		if pa.Stage == 1 {
-			d.store.RecordPipelineStart(sessionID, pa.Pipeline, req.Task)
-		}
-		if elapsed := d.store.PipelineElapsed(sessionID, pa.Pipeline); elapsed > maxPipelineDuration {
-			return asyncDispatchResponse{}, fmt.Errorf(
-				"pipeline %q has been running for %s (limit %s); aborting",
-				pa.Pipeline, elapsed.Round(time.Minute), maxPipelineDuration)
+		// Pipeline-level timeout: reject if total pipeline time exceeds limit.
+		const maxPipelineDuration = 2 * time.Hour
+		if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Pipeline == req.Pipeline {
+			if pa.Stage == 1 {
+				d.store.RecordPipelineStart(sessionID, pa.Pipeline, req.Task)
+			}
+			if elapsed := d.store.PipelineElapsed(sessionID, pa.Pipeline); elapsed > maxPipelineDuration {
+				return asyncDispatchResponse{}, fmt.Errorf(
+					"pipeline %q has been running for %s (limit %s); aborting",
+					pa.Pipeline, elapsed.Round(time.Minute), maxPipelineDuration)
+			}
 		}
 	}
 
@@ -652,9 +655,11 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 			if t, ok := d.store.Get(taskID); ok && t.Status == TaskCancelled {
 				d.logger.Info("async task cancelled by user", "task_id", taskID, "agent", req.AgentName)
 				errMsg := "cancelled by user"
-				if pa, ok := d.pipelineAgents[req.AgentName]; ok {
-					errMsg = fmt.Sprintf("cancelled by user — pipeline %q stage %d (%s) can be retried by dispatching the same agent again",
-						pa.Pipeline, pa.Stage, req.AgentName)
+				if req.Pipeline != "" {
+					if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Pipeline == req.Pipeline {
+						errMsg = fmt.Sprintf("cancelled by user — pipeline %q stage %d (%s) can be retried by dispatching the same agent again",
+							pa.Pipeline, pa.Stage, req.AgentName)
+					}
 				}
 				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
 				return
@@ -668,9 +673,11 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 
 		d.store.Complete(taskID, result)
 		// Record pipeline stage completion so subsequent stages can be dispatched.
-		if pa, ok := d.pipelineAgents[req.AgentName]; ok {
-			d.store.RecordPipelineStage(sessionID, pa.Pipeline, pa.Stage)
-			d.logger.Info("pipeline stage completed", "pipeline", pa.Pipeline, "stage", pa.Stage, "agent", req.AgentName, "session_id", sessionID)
+		if req.Pipeline != "" {
+			if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Pipeline == req.Pipeline {
+				d.store.RecordPipelineStage(sessionID, pa.Pipeline, pa.Stage)
+				d.logger.Info("pipeline stage completed", "pipeline", pa.Pipeline, "stage", pa.Stage, "agent", req.AgentName, "session_id", sessionID)
+			}
 		}
 		d.logger.Info("async task completed", "task_id", taskID, "agent", req.AgentName)
 		d.getCompleteFn()(taskID, result, nil, policy)

@@ -80,12 +80,12 @@ func BuildInstruction(pipelines []Pipeline) string {
 
 	var b strings.Builder
 	for _, p := range pipelines {
-		b.WriteString(fmt.Sprintf("\n## %s Pipeline\n\n", titleCase(p.Name)))
-		b.WriteString(fmt.Sprintf("Trigger: %s\n\n", p.Trigger))
-		b.WriteString(fmt.Sprintf("IMPORTANT: For requests matching this trigger, follow this pipeline. NEVER skip stages or dispatch agents out of order.\n\n"))
+		b.WriteString(fmt.Sprintf("\n#### %s\n\n", titleCase(p.Name)))
+		b.WriteString(fmt.Sprintf("Useful for: %s\n\n", p.Trigger))
+		b.WriteString(fmt.Sprintf("When using this workflow, follow stages in order. Set `pipeline: %q` on each `dispatch_task` call.\n\n", p.Name))
 
 		for i, s := range p.Stages {
-			b.WriteString(fmt.Sprintf("%d. Dispatch `%s` — %s\n", i+1, s.Agent, s.Description))
+			b.WriteString(fmt.Sprintf("%d. Dispatch `%s` with `pipeline: %q` — %s\n", i+1, s.Agent, p.Name, s.Description))
 		}
 
 		// Document retry policies.
@@ -100,11 +100,10 @@ func BuildInstruction(pipelines []Pipeline) string {
 			}
 		}
 
-		b.WriteString("\nAlways use async dispatch (dispatch_task) with policy=auto for each stage.\n")
-		b.WriteString("Wait for each stage to complete before dispatching the next — the pipeline is sequential.\n")
-		b.WriteString("\nIf a stage fails or is cancelled, you can retry it by dispatching the same agent again.\n")
-		b.WriteString("The pipeline will resume from where it left off — completed stages are remembered.\n")
-		b.WriteString("Do NOT restart the pipeline from stage 1 unless the user explicitly asks.\n")
+		b.WriteString("\nUse `dispatch_task` with `policy=auto` and `pipeline=\"" + p.Name + "\"` for each stage.\n")
+		b.WriteString("Stages are sequential — wait for each to complete before dispatching the next.\n")
+		b.WriteString("If a stage fails or is cancelled, retry by dispatching the same agent again.\n")
+		b.WriteString("Do NOT restart from stage 1 unless the user explicitly asks.\n")
 	}
 
 	return b.String()
