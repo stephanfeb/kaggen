@@ -27,9 +27,14 @@ func (h *cancelTaskHandler) cancel(_ context.Context, req cancelTaskRequest) (ca
 	}
 
 	if h.store.Cancel(req.TaskID) {
+		msg := fmt.Sprintf("Task %s has been cancelled.", req.TaskID)
+		// If the task was part of a pipeline, inform the coordinator it can retry.
+		if t, ok := h.store.Get(req.TaskID); ok {
+			msg += fmt.Sprintf(" You can retry the cancelled stage by dispatching agent %q again with the same task.", t.AgentName)
+		}
 		return cancelTaskResponse{
 			Cancelled: true,
-			Message:   fmt.Sprintf("Task %s has been cancelled.", req.TaskID),
+			Message:   msg,
 		}, nil
 	}
 

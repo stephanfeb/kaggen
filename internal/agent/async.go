@@ -38,6 +38,7 @@ const (
 	TaskRunning   TaskStatus = "running"
 	TaskCompleted TaskStatus = "completed"
 	TaskFailed    TaskStatus = "failed"
+	TaskCancelled TaskStatus = "cancelled"
 )
 
 // TokenUsage tracks token consumption for a task or event.
@@ -92,14 +93,18 @@ type InFlightStore struct {
 
 	// pipelineStartTimes tracks when each pipeline was started per session.
 	pipelineStartTimes map[string]map[string]time.Time
+
+	// pipelineDescriptions stores a human-readable task description per pipeline run.
+	pipelineDescriptions map[string]map[string]string // sessionID → pipeline → description
 }
 
 // NewInFlightStore creates a new in-flight task store.
 func NewInFlightStore() *InFlightStore {
 	return &InFlightStore{
-		tasks:              make(map[string]*TaskState),
-		pipelineProgress:   make(map[string]map[string]map[int]bool),
-		pipelineStartTimes: make(map[string]map[string]time.Time),
+		tasks:                make(map[string]*TaskState),
+		pipelineProgress:     make(map[string]map[string]map[int]bool),
+		pipelineStartTimes:   make(map[string]map[string]time.Time),
+		pipelineDescriptions: make(map[string]map[string]string),
 	}
 }
 
@@ -180,6 +185,10 @@ func (s *InFlightStore) Fail(id, errMsg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if t, ok := s.tasks[id]; ok {
+		// Don't overwrite a cancellation — Cancel() already set the status.
+		if t.Status == TaskCancelled {
+			return
+		}
 		t.Status = TaskFailed
 		t.Error = errMsg
 		now := time.Now()
@@ -214,7 +223,7 @@ func (s *InFlightStore) QueuedResults() []*TaskState {
 	defer s.mu.Unlock()
 	var out []*TaskState
 	for id, t := range s.tasks {
-		if t.Policy == TriggerQueue && (t.Status == TaskCompleted || t.Status == TaskFailed) {
+		if t.Policy == TriggerQueue && (t.Status == TaskCompleted || t.Status == TaskFailed || t.Status == TaskCancelled) {
 			out = append(out, t)
 			delete(s.tasks, id)
 		}
@@ -286,15 +295,15 @@ func (s *InFlightStore) Cancel(id string) bool {
 	if t.cancelFn != nil {
 		t.cancelFn()
 	}
-	t.Status = TaskFailed
+	t.Status = TaskCancelled
 	t.Error = "cancelled by user"
 	now := time.Now()
 	t.DoneAt = &now
 	return true
 }
 
-// RecordPipelineStart records the start time of a pipeline for a session.
-func (s *InFlightStore) RecordPipelineStart(sessionID, pipelineName string) {
+// RecordPipelineStart records the start time and task description of a pipeline for a session.
+func (s *InFlightStore) RecordPipelineStart(sessionID, pipelineName, description string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pipelineStartTimes[sessionID] == nil {
@@ -304,6 +313,27 @@ func (s *InFlightStore) RecordPipelineStart(sessionID, pipelineName string) {
 	if _, exists := s.pipelineStartTimes[sessionID][pipelineName]; !exists {
 		s.pipelineStartTimes[sessionID][pipelineName] = time.Now()
 	}
+	if s.pipelineDescriptions[sessionID] == nil {
+		s.pipelineDescriptions[sessionID] = make(map[string]string)
+	}
+	if s.pipelineDescriptions[sessionID][pipelineName] == "" {
+		// Truncate to a short summary.
+		desc := description
+		if len(desc) > 120 {
+			desc = desc[:120] + "..."
+		}
+		s.pipelineDescriptions[sessionID][pipelineName] = desc
+	}
+}
+
+// PipelineDescription returns the task description for a pipeline run.
+func (s *InFlightStore) PipelineDescription(sessionID, pipelineName string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.pipelineDescriptions[sessionID] == nil {
+		return ""
+	}
+	return s.pipelineDescriptions[sessionID][pipelineName]
 }
 
 // PipelineElapsed returns how long a pipeline has been running for a session.
@@ -404,7 +434,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 	const maxPipelineDuration = 2 * time.Hour
 	if pa, ok := d.pipelineAgents[req.AgentName]; ok {
 		if pa.Stage == 1 {
-			d.store.RecordPipelineStart(sessionID, pa.Pipeline)
+			d.store.RecordPipelineStart(sessionID, pa.Pipeline, req.Task)
 		}
 		if elapsed := d.store.PipelineElapsed(sessionID, pa.Pipeline); elapsed > maxPipelineDuration {
 			return asyncDispatchResponse{}, fmt.Errorf(
@@ -615,8 +645,20 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 			"agent", req.AgentName,
 			"total_turns", turnCount)
 
-		// If the context was cancelled (timeout or circuit breaker), mark as failed.
+		// If the context was cancelled, determine whether it was a user cancellation
+		// or a timeout/circuit breaker.
 		if bgCtx.Err() != nil {
+			// Check if Cancel() already marked this as TaskCancelled.
+			if t, ok := d.store.Get(taskID); ok && t.Status == TaskCancelled {
+				d.logger.Info("async task cancelled by user", "task_id", taskID, "agent", req.AgentName)
+				errMsg := "cancelled by user"
+				if pa, ok := d.pipelineAgents[req.AgentName]; ok {
+					errMsg = fmt.Sprintf("cancelled by user — pipeline %q stage %d (%s) can be retried by dispatching the same agent again",
+						pa.Pipeline, pa.Stage, req.AgentName)
+				}
+				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
+				return
+			}
 			errMsg := fmt.Sprintf("timed out after %d turns", turnCount)
 			d.store.Fail(taskID, errMsg)
 			d.logger.Warn("async task timed out", "task_id", taskID, "agent", req.AgentName, "turns", turnCount)

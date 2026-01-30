@@ -105,7 +105,7 @@ func (d *DashboardAPI) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	// Count in-flight tasks and aggregate metrics
 	store := d.agentProvider.InFlightStore()
 	allTasks := store.List("")
-	running, completed, failed := 0, 0, 0
+	running, completed, failed, cancelled := 0, 0, 0, 0
 	var totalTokens agent.TokenUsage
 	for _, t := range allTasks {
 		switch t.Status {
@@ -115,6 +115,8 @@ func (d *DashboardAPI) HandleOverview(w http.ResponseWriter, r *http.Request) {
 			completed++
 		case agent.TaskFailed:
 			failed++
+		case agent.TaskCancelled:
+			cancelled++
 		}
 		if t.TotalTokens != nil {
 			totalTokens.Input += t.TotalTokens.Input
@@ -145,6 +147,7 @@ func (d *DashboardAPI) HandleOverview(w http.ResponseWriter, r *http.Request) {
 		"total_tasks":         len(allTasks),
 		"tasks_completed":     completed,
 		"tasks_failed":        failed,
+		"tasks_cancelled":     cancelled,
 		"backlog_pending":     backlogPending,
 		"skills_loaded":       skillCount,
 		"memory_enabled":      d.config.Memory.Search.Enabled,
@@ -323,10 +326,14 @@ func (d *DashboardAPI) HandlePipelines(w http.ResponseWriter, r *http.Request) {
 	store := d.agentProvider.InFlightStore()
 	progress := store.PipelineProgress()
 
-	// Determine which agents currently have running tasks.
-	runningAgents := make(map[string]bool)
+	// Determine which agents currently have running tasks, keyed by sessionID+agentName
+	// so that concurrent pipelines in different sessions don't bleed into each other.
+	type agentSessionKey struct{ session, agent string }
+	runningBySession := make(map[agentSessionKey]bool)
+	runningGlobal := make(map[string]bool) // fallback for no-session display
 	for _, t := range store.List(agent.TaskRunning) {
-		runningAgents[t.AgentName] = true
+		runningBySession[agentSessionKey{t.SessionID, t.AgentName}] = true
+		runningGlobal[t.AgentName] = true
 	}
 
 	type stageStatus struct {
@@ -336,10 +343,11 @@ func (d *DashboardAPI) HandlePipelines(w http.ResponseWriter, r *http.Request) {
 		Status      string `json:"status"` // pending, running, completed
 	}
 	type pipelineStatus struct {
-		Name        string        `json:"name"`
-		Description string        `json:"description"`
-		SessionID   string        `json:"session_id,omitempty"`
-		Stages      []stageStatus `json:"stages"`
+		Name            string        `json:"name"`
+		Description     string        `json:"description"`
+		TaskDescription string        `json:"task_description,omitempty"` // what the user asked for
+		SessionID       string        `json:"session_id,omitempty"`
+		Stages          []stageStatus `json:"stages"`
 	}
 
 	var result []pipelineStatus
@@ -358,7 +366,7 @@ func (d *DashboardAPI) HandlePipelines(w http.ResponseWriter, r *http.Request) {
 			stages := make([]stageStatus, len(p.Stages))
 			for i, s := range p.Stages {
 				status := "pending"
-				if runningAgents[s.Agent] {
+				if runningGlobal[s.Agent] {
 					status = "running"
 				}
 				stages[i] = stageStatus{Agent: s.Agent, Description: s.Description, Stage: i + 1, Status: status}
@@ -372,12 +380,13 @@ func (d *DashboardAPI) HandlePipelines(w http.ResponseWriter, r *http.Request) {
 					status := "pending"
 					if completedStages[i+1] {
 						status = "completed"
-					} else if runningAgents[s.Agent] {
+					} else if runningBySession[agentSessionKey{sid, s.Agent}] {
 						status = "running"
 					}
 					stages[i] = stageStatus{Agent: s.Agent, Description: s.Description, Stage: i + 1, Status: status}
 				}
-				result = append(result, pipelineStatus{Name: p.Name, Description: p.Description, SessionID: sid, Stages: stages})
+				taskDesc := store.PipelineDescription(sid, p.Name)
+				result = append(result, pipelineStatus{Name: p.Name, Description: p.Description, TaskDescription: taskDesc, SessionID: sid, Stages: stages})
 			}
 		}
 	}

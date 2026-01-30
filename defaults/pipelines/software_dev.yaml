@@ -1,0 +1,14 @@
+name: software_dev
+description: Full software development lifecycle
+trigger: "building or modifying software, bug reports, bug fixes, new features, code changes, deployments"
+stages:
+  - agent: product_owner
+    description: Creates beads epic with user stories and acceptance criteria
+  - agent: architect
+    description: Reviews backlog and produces technical specifications
+  - agent: coder
+    description: Builds code via Claude Code CLI
+  - agent: qa
+    description: Validates code against acceptance criteria
+    on_fail: coder
+    max_retries: 3

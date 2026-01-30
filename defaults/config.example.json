@@ -1,0 +1,67 @@
+{
+  "agent": {
+    "model": "anthropic/claude-haiku-4-5",
+    "workspace": "~/.kaggen/workspace"
+  },
+  "gateway": {
+    "bind": "127.0.0.1",
+    "port": 18789
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "bot_token": "YOUR_BOT_TOKEN_HERE",
+      "allowed_users": [],
+      "reject_message": "Sorry, this bot is private.",
+      "user_rate_limit": 10,
+      "user_rate_window": 60,
+      "rate_limit_message": "Please slow down! Max 10 messages per minute."
+    }
+  },
+  "proactive": {
+    "jobs": [
+      {
+        "name": "example-job",
+        "schedule": "@daily",
+        "prompt": "Your daily task prompt here.",
+        "user_id": "system",
+        "session_id": "example-job",
+        "channel": "telegram",
+        "metadata": {"chat_id": "YOUR_CHAT_ID"},
+        "timeout": "10m",
+        "max_retries": 1
+      }
+    ]
+  },
+  "memory": {
+    "search": {
+      "enabled": true,
+      "db_path": "~/.kaggen/memory.db"
+    },
+    "embedding": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://localhost:11434"
+    },
+    "indexing": {
+      "chunk_size": 400,
+      "chunk_overlap": 80
+    }
+  },
+  "telemetry": {
+    "enabled": true,
+    "jaeger_endpoint": "localhost:4317",
+    "protocol": "grpc",
+    "service_name": "kaggen"
+  },
+  "browser": {
+    "enabled": true,
+    "profiles": [
+      {
+        "name": "default",
+        "type": "managed",
+        "headless": false
+      }
+    ]
+  }
+}

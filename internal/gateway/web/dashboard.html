@@ -468,7 +468,8 @@ async function loadPipelines() {
       return `<div class="${stageClass}"><span class="${dotClass}"></span><span class="stage-name">${esc(s.agent)}</span><span class="stage-status">${esc(s.status)}</span></div>${arrow}`;
     }).join('');
     const sessionLabel = p.session_id ? ` <span style="font-size:10px;color:var(--text-muted)">(${esc(p.session_id.substring(0,8))}...)</span>` : '';
-    return `<div class="pipeline-card"><div class="pipeline-header"><span class="pipeline-label">Pipeline</span>${esc(p.name)}${sessionLabel}</div><div class="pipeline-stages">${stagesHtml}</div></div>`;
+    const taskLabel = p.task_description ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px;font-style:italic">${esc(p.task_description)}</div>` : '';
+    return `<div class="pipeline-card"><div class="pipeline-header"><span class="pipeline-label">Pipeline</span>${esc(p.name)}${sessionLabel}</div>${taskLabel}<div class="pipeline-stages">${stagesHtml}</div></div>`;
   }).join('');
 }
 

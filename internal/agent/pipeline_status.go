@@ -24,10 +24,11 @@ type pipelineStageInfo struct {
 
 // pipelineInfo describes a pipeline's current progress.
 type pipelineInfo struct {
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	SessionID   string              `json:"session_id,omitempty"`
-	Stages      []pipelineStageInfo `json:"stages"`
+	Name            string              `json:"name"`
+	Description     string              `json:"description"`
+	TaskDescription string              `json:"task_description,omitempty"`
+	SessionID       string              `json:"session_id,omitempty"`
+	Stages          []pipelineStageInfo `json:"stages"`
 }
 
 // pipelineStatusResponse is the output schema for the pipeline_status tool.
@@ -43,10 +44,14 @@ type pipelineStatusChecker struct {
 func (c *pipelineStatusChecker) check(_ context.Context, req pipelineStatusRequest) (pipelineStatusResponse, error) {
 	progress := c.store.PipelineProgress()
 
-	// Determine which agents currently have running tasks.
-	runningAgents := make(map[string]bool)
+	// Determine which agents currently have running tasks, keyed by session+agent
+	// so concurrent pipelines in different sessions don't bleed into each other.
+	type agentSessionKey struct{ session, agent string }
+	runningBySession := make(map[agentSessionKey]bool)
+	runningGlobal := make(map[string]bool)
 	for _, t := range c.store.List(TaskRunning) {
-		runningAgents[t.AgentName] = true
+		runningBySession[agentSessionKey{t.SessionID, t.AgentName}] = true
+		runningGlobal[t.AgentName] = true
 	}
 
 	var result []pipelineInfo
@@ -64,13 +69,15 @@ func (c *pipelineStatusChecker) check(_ context.Context, req pipelineStatusReque
 			}
 		}
 
-		buildStages := func(completedStages map[int]bool) []pipelineStageInfo {
+		buildStages := func(sessionID string, completedStages map[int]bool) []pipelineStageInfo {
 			stages := make([]pipelineStageInfo, len(p.Stages))
 			for i, s := range p.Stages {
 				status := "pending"
 				if completedStages != nil && completedStages[i+1] {
 					status = "completed"
-				} else if runningAgents[s.Agent] {
+				} else if sessionID != "" && runningBySession[agentSessionKey{sessionID, s.Agent}] {
+					status = "running"
+				} else if sessionID == "" && runningGlobal[s.Agent] {
 					status = "running"
 				}
 				stages[i] = pipelineStageInfo{
@@ -87,15 +94,16 @@ func (c *pipelineStatusChecker) check(_ context.Context, req pipelineStatusReque
 			result = append(result, pipelineInfo{
 				Name:        p.Name,
 				Description: p.Description,
-				Stages:      buildStages(nil),
+				Stages:      buildStages("", nil),
 			})
 		} else {
 			for sid, completed := range sessionsWithProgress {
 				result = append(result, pipelineInfo{
-					Name:        p.Name,
-					Description: p.Description,
-					SessionID:   sid,
-					Stages:      buildStages(completed),
+					Name:            p.Name,
+					Description:     p.Description,
+					TaskDescription: c.store.PipelineDescription(sid, p.Name),
+					SessionID:       sid,
+					Stages:          buildStages(sid, completed),
 				})
 			}
 		}
