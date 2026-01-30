@@ -11,9 +11,12 @@ type Item struct {
 	Priority    string         `json:"priority"`  // "high", "normal", "low"
 	Status      string         `json:"status"`    // "pending", "in_progress", "completed", "failed", "blocked"
 	Source      string         `json:"source"`    // "user", "coordinator", "sub-agent"
+	ParentID    string         `json:"parent_id,omitempty"`
 	Context     map[string]any `json:"context,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
+	ChildCount  int            `json:"child_count,omitempty"` // populated on read
+	DoneCount   int            `json:"done_count,omitempty"`  // populated on read
 }
 
 // Filter controls which backlog items are returned by List.
@@ -21,6 +24,8 @@ type Filter struct {
 	Status   string `json:"status,omitempty"`
 	Priority string `json:"priority,omitempty"`
 	Source   string `json:"source,omitempty"`
+	ParentID string `json:"parent_id,omitempty"` // filter children of a parent
+	TopLevel bool   `json:"top_level,omitempty"` // only items with no parent
 	Limit    int    `json:"limit,omitempty"`
 }
 
@@ -30,4 +35,5 @@ type Update struct {
 	Description *string `json:"description,omitempty"`
 	Priority    *string `json:"priority,omitempty"`
 	Status      *string `json:"status,omitempty"`
+	ParentID    *string `json:"parent_id,omitempty"`
 }

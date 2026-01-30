@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/pipeline"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -356,10 +357,11 @@ type CompletionFunc func(taskID, result string, err error, policy TriggerPolicy)
 
 // asyncDispatchRequest is the input schema for the async dispatch tool.
 type asyncDispatchRequest struct {
-	AgentName string `json:"agent_name" jsonschema:"required,description=Name of the sub-agent to dispatch"`
-	Task      string `json:"task" jsonschema:"required,description=The task description to send to the sub-agent"`
-	Policy    string `json:"policy,omitempty" jsonschema:"description=Completion trigger policy: auto (default) or queue,enum=auto,enum=queue"`
-	Pipeline  string `json:"pipeline,omitempty" jsonschema:"description=Optional pipeline name. When set stage gates are enforced (stages must complete in order). Omit for standalone agent dispatch."`
+	AgentName     string `json:"agent_name" jsonschema:"required,description=Name of the sub-agent to dispatch"`
+	Task          string `json:"task" jsonschema:"required,description=The task description to send to the sub-agent"`
+	Policy        string `json:"policy,omitempty" jsonschema:"description=Completion trigger policy: auto (default) or queue,enum=auto,enum=queue"`
+	Pipeline      string `json:"pipeline,omitempty" jsonschema:"description=Optional pipeline name. When set stage gates are enforced (stages must complete in order). Omit for standalone agent dispatch."`
+	BacklogItemID string `json:"backlog_item_id,omitempty" jsonschema:"description=Optional backlog item ID to track. Status is auto-updated on completion or failure."`
 }
 
 // asyncDispatchResponse is the output schema for the async dispatch tool.
@@ -372,6 +374,7 @@ type asyncDispatchResponse struct {
 type asyncDispatcher struct {
 	agents         map[string]agent.Agent
 	store          *InFlightStore
+	backlogStore   *backlog.Store
 	completeFn     CompletionFunc
 	mu             sync.RWMutex // protects completeFn
 	model          model.Model
@@ -460,6 +463,14 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 	}
 
 	go func() {
+		// Helper to mark a linked backlog item as failed.
+		failBacklogItem := func() {
+			if req.BacklogItemID != "" && d.backlogStore != nil {
+				failedStatus := "failed"
+				_ = d.backlogStore.Update(req.BacklogItemID, backlog.Update{Status: &failedStatus})
+			}
+		}
+
 		invOpts := []agent.InvocationOptions{
 			agent.WithInvocationAgent(ag),
 			agent.WithInvocationMessage(model.Message{
@@ -509,6 +520,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		events, err := ag.Run(bgCtx, inv)
 		if err != nil {
 			d.store.Fail(taskID, err.Error())
+			failBacklogItem()
 			d.getCompleteFn()(taskID, "", err, policy)
 			return
 		}
@@ -547,6 +559,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 				errMsg := fmt.Sprintf("aborted: exceeded %d turns without completing", d.maxTurns)
 				d.logger.Warn("turn limit reached", "task_id", taskID, "agent", req.AgentName, "turns", turnCount)
 				d.store.Fail(taskID, errMsg)
+				failBacklogItem()
 				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
 				cancel()
 				return
@@ -580,6 +593,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 					d.logger.Warn("circuit breaker: aborting after consecutive errors",
 						"task_id", taskID, "agent", req.AgentName, "count", consecutiveErrors)
 					d.store.Fail(taskID, fmt.Sprintf("aborted after %d consecutive errors: %s", consecutiveErrors, evt.Response.Error.Message))
+					failBacklogItem()
 					d.getCompleteFn()(taskID, "", fmt.Errorf("aborted after %d consecutive errors", consecutiveErrors), policy)
 					cancel()
 					return
@@ -661,17 +675,40 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 							pa.Pipeline, pa.Stage, req.AgentName)
 					}
 				}
+				failBacklogItem()
 				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
 				return
 			}
 			errMsg := fmt.Sprintf("timed out after %d turns", turnCount)
 			d.store.Fail(taskID, errMsg)
+			failBacklogItem()
 			d.logger.Warn("async task timed out", "task_id", taskID, "agent", req.AgentName, "turns", turnCount)
 			d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
 			return
 		}
 
 		d.store.Complete(taskID, result)
+		// Update backlog item status if linked.
+		if req.BacklogItemID != "" && d.backlogStore != nil {
+			summary := result
+			if len(summary) > 200 {
+				summary = summary[:200] + "..."
+			}
+			if err := d.backlogStore.Complete(req.BacklogItemID, summary); err != nil {
+				d.logger.Warn("failed to complete backlog item", "backlog_item_id", req.BacklogItemID, "error", err)
+			} else {
+				d.logger.Info("backlog item completed", "backlog_item_id", req.BacklogItemID)
+				// Check if parent plan is now fully done.
+				item, getErr := d.backlogStore.Get(req.BacklogItemID)
+				if getErr == nil && item.ParentID != "" {
+					if allDone, checkErr := d.backlogStore.CheckParentCompletion(item.ParentID); checkErr == nil && allDone {
+						completedStatus := "completed"
+						_ = d.backlogStore.Update(item.ParentID, backlog.Update{Status: &completedStatus})
+						d.logger.Info("parent plan auto-completed", "parent_id", item.ParentID)
+					}
+				}
+			}
+		}
 		// Record pipeline stage completion so subsequent stages can be dispatched.
 		if req.Pipeline != "" {
 			if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Pipeline == req.Pipeline {
@@ -692,7 +729,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 // NewAsyncDispatchTool creates a tool that dispatches tasks to sub-agents asynchronously.
 // It returns both the tool and the dispatcher, so the caller can update the
 // completion function later via SetCompletionFunc.
-func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger, pipelines []pipeline.Pipeline, pipelineAgents map[string]pipeline.PipelineAgent, maxTurns ...int) (tool.Tool, *asyncDispatcher) {
+func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger, pipelines []pipeline.Pipeline, pipelineAgents map[string]pipeline.PipelineAgent, bStore *backlog.Store, maxTurns ...int) (tool.Tool, *asyncDispatcher) {
 	turns := 75
 	if len(maxTurns) > 0 && maxTurns[0] > 0 {
 		turns = maxTurns[0]
@@ -700,6 +737,7 @@ func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, c
 	d := &asyncDispatcher{
 		agents:         agents,
 		store:          store,
+		backlogStore:   bStore,
 		completeFn:     completeFn,
 		model:          m,
 		memoryService:  memSvc,

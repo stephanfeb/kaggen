@@ -39,14 +39,22 @@ func migrate(db *sql.DB) error {
 			priority    TEXT NOT NULL DEFAULT 'normal',
 			status      TEXT NOT NULL DEFAULT 'pending',
 			source      TEXT NOT NULL DEFAULT 'user',
+			parent_id   TEXT NOT NULL DEFAULT '',
 			context     TEXT NOT NULL DEFAULT '{}',
 			created_at  TEXT NOT NULL,
 			updated_at  TEXT NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_backlog_status ON backlog(status);
 		CREATE INDEX IF NOT EXISTS idx_backlog_priority ON backlog(priority);
+		CREATE INDEX IF NOT EXISTS idx_backlog_parent ON backlog(parent_id);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Additive migration: add parent_id column if missing (existing databases).
+	_, _ = db.Exec(`ALTER TABLE backlog ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_backlog_parent ON backlog(parent_id)`)
+	return nil
 }
 
 // Add inserts a new item into the backlog. ID and timestamps are auto-set.
@@ -74,9 +82,9 @@ func (s *Store) Add(item *Item) error {
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO backlog (id, title, description, priority, status, source, context, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.Title, item.Description, item.Priority, item.Status, item.Source,
+		INSERT INTO backlog (id, title, description, priority, status, source, parent_id, context, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.Title, item.Description, item.Priority, item.Status, item.Source, item.ParentID,
 		string(ctxJSON), now.Format(time.RFC3339), now.Format(time.RFC3339),
 	)
 	return err
@@ -84,13 +92,45 @@ func (s *Store) Add(item *Item) error {
 
 // Get returns a single backlog item by ID.
 func (s *Store) Get(id string) (*Item, error) {
-	row := s.db.QueryRow(`SELECT id, title, description, priority, status, source, context, created_at, updated_at FROM backlog WHERE id = ?`, id)
-	return scanItem(row)
+	row := s.db.QueryRow(`SELECT id, title, description, priority, status, source, parent_id, context, created_at, updated_at FROM backlog WHERE id = ?`, id)
+	item, err := scanItem(row)
+	if err != nil {
+		return nil, err
+	}
+	// Populate child counts for parent items.
+	s.populateChildCounts(item)
+	return item, nil
+}
+
+// GetWithChildren returns a parent item and all its children.
+func (s *Store) GetWithChildren(id string) (*Item, []*Item, error) {
+	parent, err := s.Get(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	children, err := s.List(Filter{ParentID: id, Limit: 200})
+	if err != nil {
+		return nil, nil, err
+	}
+	return parent, children, nil
+}
+
+// CheckParentCompletion returns true if all children of a parent are completed or failed.
+func (s *Store) CheckParentCompletion(parentID string) (bool, error) {
+	if parentID == "" {
+		return false, nil
+	}
+	var total, done int
+	err := s.db.QueryRow(`SELECT COUNT(*), COUNT(CASE WHEN status IN ('completed','failed') THEN 1 END) FROM backlog WHERE parent_id = ?`, parentID).Scan(&total, &done)
+	if err != nil {
+		return false, err
+	}
+	return total > 0 && total == done, nil
 }
 
 // List returns backlog items matching the filter.
 func (s *Store) List(f Filter) ([]*Item, error) {
-	query := `SELECT id, title, description, priority, status, source, context, created_at, updated_at FROM backlog WHERE 1=1`
+	query := `SELECT id, title, description, priority, status, source, parent_id, context, created_at, updated_at FROM backlog WHERE 1=1`
 	var args []any
 
 	if f.Status != "" {
@@ -104,6 +144,13 @@ func (s *Store) List(f Filter) ([]*Item, error) {
 	if f.Source != "" {
 		query += ` AND source = ?`
 		args = append(args, f.Source)
+	}
+	if f.ParentID != "" {
+		query += ` AND parent_id = ?`
+		args = append(args, f.ParentID)
+	}
+	if f.TopLevel {
+		query += ` AND parent_id = ''`
 	}
 
 	query += ` ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, created_at ASC`
@@ -129,7 +176,14 @@ func (s *Store) List(f Filter) ([]*Item, error) {
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Populate child counts for items that might be parents.
+	for _, item := range items {
+		s.populateChildCounts(item)
+	}
+	return items, nil
 }
 
 // Update applies partial updates to a backlog item.
@@ -152,6 +206,10 @@ func (s *Store) Update(id string, u Update) error {
 	if u.Status != nil {
 		sets = append(sets, "status = ?")
 		args = append(args, *u.Status)
+	}
+	if u.ParentID != nil {
+		sets = append(sets, "parent_id = ?")
+		args = append(args, *u.ParentID)
 	}
 
 	args = append(args, id)
@@ -205,12 +263,23 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// populateChildCounts fills ChildCount and DoneCount for a given item.
+func (s *Store) populateChildCounts(item *Item) {
+	var total, done int
+	_ = s.db.QueryRow(
+		`SELECT COUNT(*), COUNT(CASE WHEN status IN ('completed','failed') THEN 1 END) FROM backlog WHERE parent_id = ?`,
+		item.ID,
+	).Scan(&total, &done)
+	item.ChildCount = total
+	item.DoneCount = done
+}
+
 // scanItem scans a single row into an Item.
 func scanItem(row *sql.Row) (*Item, error) {
 	var item Item
 	var ctxJSON, createdAt, updatedAt string
 	err := row.Scan(&item.ID, &item.Title, &item.Description, &item.Priority,
-		&item.Status, &item.Source, &ctxJSON, &createdAt, &updatedAt)
+		&item.Status, &item.Source, &item.ParentID, &ctxJSON, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +293,7 @@ func scanItemRows(rows *sql.Rows) (*Item, error) {
 	var item Item
 	var ctxJSON, createdAt, updatedAt string
 	err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.Priority,
-		&item.Status, &item.Source, &ctxJSON, &createdAt, &updatedAt)
+		&item.Status, &item.Source, &item.ParentID, &ctxJSON, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}

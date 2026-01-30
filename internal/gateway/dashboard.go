@@ -182,7 +182,12 @@ func (d *DashboardAPI) HandleBacklog(w http.ResponseWriter, r *http.Request) {
 	f := backlog.Filter{
 		Status:   r.URL.Query().Get("status"),
 		Priority: r.URL.Query().Get("priority"),
+		ParentID: r.URL.Query().Get("parent_id"),
 		Limit:    200,
+	}
+	// Default to top-level items unless a parent_id filter or "all=true" is specified.
+	if f.ParentID == "" && r.URL.Query().Get("all") != "true" {
+		f.TopLevel = true
 	}
 
 	items, err := d.backlogStore.List(f)
@@ -416,6 +421,31 @@ func (d *DashboardAPI) HandleCancelTask(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// HandlePlanDetail returns a plan and its children.
+func (d *DashboardAPI) HandlePlanDetail(w http.ResponseWriter, r *http.Request) {
+	if d.backlogStore == nil {
+		http.Error(w, "backlog not configured", http.StatusNotFound)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "id parameter required", http.StatusBadRequest)
+		return
+	}
+	parent, children, err := d.backlogStore.GetWithChildren(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if children == nil {
+		children = []*backlog.Item{}
+	}
+	writeJSON(w, map[string]any{
+		"plan":     parent,
+		"subtasks": children,
+	})
+}
+
 // RegisterRoutes registers all dashboard routes on the given handler registration func.
 func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler http.HandlerFunc)) {
 	handleFunc("/", d.ServeHTML)
@@ -423,6 +453,7 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/overview", d.HandleOverview)
 	handleFunc("/api/tasks", d.HandleTasks)
 	handleFunc("/api/backlog", d.HandleBacklog)
+	handleFunc("/api/backlog/plan", d.HandlePlanDetail)
 	handleFunc("/api/skills", d.HandleSkills)
 	handleFunc("/api/sessions", d.HandleSessions)
 	handleFunc("/api/config", d.HandleConfig)

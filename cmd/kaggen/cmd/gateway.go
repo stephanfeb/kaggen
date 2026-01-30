@@ -229,12 +229,12 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Build the initial agent via the factory/provider pattern.
 	// This enables hot-reload of skills on SIGHUP without restarting.
-	initialAgent, err := kaggenAgent.BuildInitialAgent(modelAdapter, toolList, fileMemory, skillDirs, memService, logger, cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask)
+	initialAgent, err := kaggenAgent.BuildInitialAgent(modelAdapter, toolList, fileMemory, skillDirs, memService, backlogStore, logger, cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
 	provider := kaggenAgent.NewAgentProvider(initialAgent)
-	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, skillDirs, provider, logger, cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask)
+	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, backlogStore, skillDirs, provider, logger, cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask)
 
 	// Create session service with appropriate backend
 	sessionService, err := createSessionService(cfg)

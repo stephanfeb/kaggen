@@ -18,6 +18,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/team"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/pipeline"
@@ -47,7 +48,7 @@ type Agent struct {
 //
 // completeFn is called when an async sub-agent finishes. It may be nil during
 // construction and set later via SetCompletionFunc (to break circular deps).
-func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, memSvc trpcmemory.Service, logger *slog.Logger, maxHistoryRuns ...int) (*Agent, error) {
+func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, memSvc trpcmemory.Service, bStore *backlog.Store, logger *slog.Logger, maxHistoryRuns ...int) (*Agent, error) {
 	// Build instruction from bootstrap files.
 	instruction, err := buildInstruction(mem, subAgents)
 	if err != nil {
@@ -104,7 +105,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	dispatchPipelines, _ := pipeline.LoadAll(pipelinesDir)
 	dispatchPipelineAgents := pipeline.AgentSet(dispatchPipelines)
 
-	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents, maxTurnsPerTask)
+	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents, bStore, maxTurnsPerTask)
 	statusTool := NewTaskStatusTool(store)
 
 	pipelineStatusTool := NewPipelineStatusTool(store, dispatchPipelines)
@@ -427,6 +428,16 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	instruction += "7. Synthesize results from sub-agents into a coherent response for the user.\n"
 	instruction += "8. If a sub-agent fails, inform the user and ask for guidance — do NOT attempt to solve it yourself.\n"
 	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user.\n"
+
+	instruction += "\n### Task Decomposition\n\n"
+	instruction += "For complex tasks requiring multiple steps or agents:\n"
+	instruction += "1. Use `backlog_decompose` to create a plan with subtasks\n"
+	instruction += "2. Report the plan to the user\n"
+	instruction += "3. For each subtask, dispatch the appropriate agent with `dispatch_task`, setting `backlog_item_id` to the subtask ID\n"
+	instruction += "4. Use `backlog_plan_status` to check overall progress\n"
+	instruction += "5. When all subtasks complete, synthesize results and report to the user\n\n"
+	instruction += "Use decomposition when: 3+ distinct steps are needed, multiple specialist agents are involved, or the work will span significant time.\n"
+	instruction += "Do NOT decompose: simple single-agent tasks, direct questions, or tasks already well-scoped for one specialist.\n"
 
 	// Load pipeline definitions for optional workflow section.
 	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")

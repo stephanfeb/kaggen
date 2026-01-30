@@ -12,6 +12,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/memory"
 )
 
@@ -24,6 +25,7 @@ func BuildInitialAgent(
 	fileMemory *memory.FileMemory,
 	skillDirs []string,
 	memService trpcmemory.Service,
+	bStore *backlog.Store,
 	logger *slog.Logger,
 	maxHistoryRuns ...int,
 ) (*Agent, error) {
@@ -41,7 +43,7 @@ func BuildInitialAgent(
 		}
 	}
 
-	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, logger, maxHistoryRuns...)
+	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns...)
 }
 
 // loadSkills creates a case-insensitive skill repository from the given directories.
@@ -79,6 +81,7 @@ type AgentFactory struct {
 	tools          []tool.Tool
 	fileMemory     *memory.FileMemory
 	memService     trpcmemory.Service
+	backlogStore   *backlog.Store
 	skillDirs      []string
 	completeFn     CompletionFunc
 	provider       *AgentProvider
@@ -96,6 +99,7 @@ func NewAgentFactory(
 	tools []tool.Tool,
 	fileMemory *memory.FileMemory,
 	memService trpcmemory.Service,
+	bStore *backlog.Store,
 	skillDirs []string,
 	provider *AgentProvider,
 	logger *slog.Logger,
@@ -118,6 +122,7 @@ func NewAgentFactory(
 		tools:           tools,
 		fileMemory:      fileMemory,
 		memService:      memService,
+		backlogStore:    bStore,
 		skillDirs:       skillDirs,
 		provider:        provider,
 		logger:          logger,
@@ -166,7 +171,7 @@ func (f *AgentFactory) Rebuild() error {
 	f.logger.Info("skills reloaded", "count", skillCount, "sub_agents", len(subAgents))
 
 	// Build new agent.
-	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.logger, f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask)
+	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.backlogStore, f.logger, f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask)
 	if err != nil {
 		return fmt.Errorf("rebuild agent: %w", err)
 	}
