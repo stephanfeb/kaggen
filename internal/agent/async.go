@@ -378,6 +378,7 @@ type asyncDispatcher struct {
 	logger         *slog.Logger
 	pipelines      []pipeline.Pipeline
 	pipelineAgents map[string]pipeline.PipelineAgent
+	maxTurns       int
 }
 
 // SetCompletionFunc updates the completion callback. This is used to wire up
@@ -539,9 +540,8 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 			turnCount++
 
 			// Turn limit circuit breaker.
-			const maxTurns = 50
-			if turnCount >= maxTurns {
-				errMsg := fmt.Sprintf("aborted: exceeded %d turns without completing", maxTurns)
+			if turnCount >= d.maxTurns {
+				errMsg := fmt.Sprintf("aborted: exceeded %d turns without completing", d.maxTurns)
 				d.logger.Warn("turn limit reached", "task_id", taskID, "agent", req.AgentName, "turns", turnCount)
 				d.store.Fail(taskID, errMsg)
 				d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
@@ -685,7 +685,11 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 // NewAsyncDispatchTool creates a tool that dispatches tasks to sub-agents asynchronously.
 // It returns both the tool and the dispatcher, so the caller can update the
 // completion function later via SetCompletionFunc.
-func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger, pipelines []pipeline.Pipeline, pipelineAgents map[string]pipeline.PipelineAgent) (tool.Tool, *asyncDispatcher) {
+func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger, pipelines []pipeline.Pipeline, pipelineAgents map[string]pipeline.PipelineAgent, maxTurns ...int) (tool.Tool, *asyncDispatcher) {
+	turns := 75
+	if len(maxTurns) > 0 && maxTurns[0] > 0 {
+		turns = maxTurns[0]
+	}
 	d := &asyncDispatcher{
 		agents:         agents,
 		store:          store,
@@ -695,6 +699,7 @@ func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, c
 		logger:         logger,
 		pipelines:      pipelines,
 		pipelineAgents: pipelineAgents,
+		maxTurns:       turns,
 	}
 	t := function.NewFunctionTool(
 		d.dispatch,

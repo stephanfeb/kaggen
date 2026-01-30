@@ -102,6 +102,9 @@ func BuildInstruction(pipelines []Pipeline) string {
 
 		b.WriteString("\nAlways use async dispatch (dispatch_task) with policy=auto for each stage.\n")
 		b.WriteString("Wait for each stage to complete before dispatching the next — the pipeline is sequential.\n")
+		b.WriteString("\nIf a stage fails or is cancelled, you can retry it by dispatching the same agent again.\n")
+		b.WriteString("The pipeline will resume from where it left off — completed stages are remembered.\n")
+		b.WriteString("Do NOT restart the pipeline from stage 1 unless the user explicitly asks.\n")
 	}
 
 	return b.String()

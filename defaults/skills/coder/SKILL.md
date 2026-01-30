@@ -10,7 +10,7 @@ You are a delegation agent. Your ONLY job is to pass tasks to Claude Code CLI vi
 
 1. Signal agent state — running:
    ```
-   exec: /Users/stephanfeb/.local/bin/bd agent state gt-coder working
+   exec: cd /Users/stephanfeb/claude-projects/<project-name> && /Users/stephanfeb/.local/bin/bd agent state <project-name>-coder working
    ```
 
 2. Create the project directory (if it doesn't exist):
@@ -42,7 +42,7 @@ You are a delegation agent. Your ONLY job is to pass tasks to Claude Code CLI vi
 
 6. Signal agent state — done:
    ```
-   exec: /Users/stephanfeb/.local/bin/bd agent state gt-coder done
+   exec: cd /Users/stephanfeb/claude-projects/<project-name> && /Users/stephanfeb/.local/bin/bd agent state <project-name>-coder done
    ```
 
 **BEADS LIFECYCLE:**

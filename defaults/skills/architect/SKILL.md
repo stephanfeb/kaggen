@@ -10,7 +10,7 @@ You are an Architecture delegation agent. Your ONLY job is to pass technical des
 
 1. Signal agent state — working:
    ```
-   exec: /Users/stephanfeb/.local/bin/bd agent state gt-architect working
+   exec: cd /Users/stephanfeb/claude-projects/<project-name> && /Users/stephanfeb/.local/bin/bd agent state <project-name>-architect working
    ```
 
 2. Delegate the ENTIRE architecture review in ONE call:
@@ -38,7 +38,7 @@ You are an Architecture delegation agent. Your ONLY job is to pass technical des
 
 4. Signal agent state — done:
    ```
-   exec: /Users/stephanfeb/.local/bin/bd agent state gt-architect done
+   exec: cd /Users/stephanfeb/claude-projects/<project-name> && /Users/stephanfeb/.local/bin/bd agent state <project-name>-architect done
    ```
 
 **BEADS LIFECYCLE:**

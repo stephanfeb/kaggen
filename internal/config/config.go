@@ -130,6 +130,8 @@ type AgentConfig struct {
 	Model            string `json:"model"`              // e.g., "anthropic/claude-sonnet-4-20250514"
 	Workspace        string `json:"workspace"`          // e.g., "~/.kaggen/workspace"
 	MaxHistoryRuns   int    `json:"max_history_runs"`   // Max conversation messages to keep in context (0 = unlimited, default 40)
+	PreloadMemory    int    `json:"preload_memory"`     // Memories to inject into system prompt each turn (0 = disabled, -1 = all, default 20)
+	MaxTurnsPerTask  int    `json:"max_turns_per_task"` // Max LLM turns per async task before circuit breaker (0 = default 75)
 	MaxConcurrentLLM int    `json:"max_concurrent_llm"` // Max concurrent LLM API calls (0 = unlimited, default 4)
 }
 

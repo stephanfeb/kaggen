@@ -83,8 +83,10 @@ type AgentFactory struct {
 	completeFn     CompletionFunc
 	provider       *AgentProvider
 	logger         *slog.Logger
-	maxHistoryRuns int
-	mu             sync.Mutex // serializes rebuilds
+	maxHistoryRuns  int
+	preloadMemory   int
+	maxTurnsPerTask int
+	mu              sync.Mutex // serializes rebuilds
 }
 
 // NewAgentFactory creates a factory with the given stable dependencies.
@@ -103,15 +105,25 @@ func NewAgentFactory(
 	if len(maxHistoryRuns) > 0 {
 		hist = maxHistoryRuns[0]
 	}
+	preload := 20
+	if len(maxHistoryRuns) > 1 {
+		preload = maxHistoryRuns[1]
+	}
+	turns := 75
+	if len(maxHistoryRuns) > 2 && maxHistoryRuns[2] > 0 {
+		turns = maxHistoryRuns[2]
+	}
 	return &AgentFactory{
-		model:          m,
-		tools:          tools,
-		fileMemory:     fileMemory,
-		memService:     memService,
-		skillDirs:      skillDirs,
-		provider:       provider,
-		logger:         logger,
-		maxHistoryRuns: hist,
+		model:           m,
+		tools:           tools,
+		fileMemory:      fileMemory,
+		memService:      memService,
+		skillDirs:       skillDirs,
+		provider:        provider,
+		logger:          logger,
+		maxHistoryRuns:  hist,
+		preloadMemory:   preload,
+		maxTurnsPerTask: turns,
 	}
 }
 
@@ -154,7 +166,7 @@ func (f *AgentFactory) Rebuild() error {
 	f.logger.Info("skills reloaded", "count", skillCount, "sub_agents", len(subAgents))
 
 	// Build new agent.
-	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.logger, f.maxHistoryRuns)
+	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.logger, f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask)
 	if err != nil {
 		return fmt.Errorf("rebuild agent: %w", err)
 	}

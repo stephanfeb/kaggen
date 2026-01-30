@@ -10,7 +10,7 @@ You are a QA delegation agent. Your ONLY job is to pass quality assurance tasks 
 
 1. Signal agent state — working:
    ```
-   exec: /Users/stephanfeb/.local/bin/bd agent state gt-qa working
+   exec: cd /Users/stephanfeb/claude-projects/<project-name> && /Users/stephanfeb/.local/bin/bd agent state <project-name>-qa working
    ```
 
 2. Delegate the ENTIRE QA validation in ONE call:
@@ -39,7 +39,7 @@ You are a QA delegation agent. Your ONLY job is to pass quality assurance tasks 
 
 4. Signal agent state — done:
    ```
-   exec: /Users/stephanfeb/.local/bin/bd agent state gt-qa done
+   exec: cd /Users/stephanfeb/claude-projects/<project-name> && /Users/stephanfeb/.local/bin/bd agent state <project-name>-qa done
    ```
 
 **BEADS LIFECYCLE:**

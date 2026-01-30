@@ -79,12 +79,32 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		completeFn = func(taskID, result string, err error, policy TriggerPolicy) {}
 	}
 
+	// Default to 40 history messages if not specified (prevents unbounded context growth).
+	historyLimit := 40
+	if len(maxHistoryRuns) > 0 && maxHistoryRuns[0] > 0 {
+		historyLimit = maxHistoryRuns[0]
+	}
+
+	// Default to 20 preloaded memories in the system prompt (survives context pruning).
+	// Can be overridden via maxHistoryRuns[1] (0 = disabled, -1 = all).
+	preloadMemory := 20
+	if len(maxHistoryRuns) > 1 {
+		preloadMemory = maxHistoryRuns[1]
+	}
+
+	// Default to 75 max turns per async task (circuit breaker).
+	// Can be overridden via maxHistoryRuns[2].
+	maxTurnsPerTask := 75
+	if len(maxHistoryRuns) > 2 && maxHistoryRuns[2] > 0 {
+		maxTurnsPerTask = maxHistoryRuns[2]
+	}
+
 	// Load pipeline definitions for dispatch-time stage gating.
 	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
 	dispatchPipelines, _ := pipeline.LoadAll(pipelinesDir)
 	dispatchPipelineAgents := pipeline.AgentSet(dispatchPipelines)
 
-	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents)
+	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents, maxTurnsPerTask)
 	statusTool := NewTaskStatusTool(store)
 
 	pipelineStatusTool := NewPipelineStatusTool(store, dispatchPipelines)
@@ -95,12 +115,6 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	// to sub-agents. This prevents the coordinator from "helping" by running
 	// commands directly when it should be delegating to specialists.
 	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool}
-
-	// Default to 40 history messages if not specified (prevents unbounded context growth).
-	historyLimit := 40
-	if len(maxHistoryRuns) > 0 && maxHistoryRuns[0] > 0 {
-		historyLimit = maxHistoryRuns[0]
-	}
 
 	// Build tool callbacks to track synchronous Team delegations in InFlightStore.
 	// This makes sync member-agent calls visible in the dashboard alongside async dispatch_task calls.
@@ -270,6 +284,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		llmagent.WithInstruction(instruction),
 		llmagent.WithDescription("Kaggen personal AI assistant coordinator"),
 		llmagent.WithMaxHistoryRuns(historyLimit),
+		llmagent.WithPreloadMemory(preloadMemory),
 		llmagent.WithToolCallbacks(callbacks),
 	}
 
@@ -434,6 +449,7 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	instruction += "7. Synthesize results from sub-agents into a coherent response for the user.\n"
 	instruction += "8. If a sub-agent fails, inform the user and ask for guidance — do NOT attempt to solve it yourself.\n"
 	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user. For pipelines, dispatch the next stage.\n"
+	instruction += "10. When the user asks to 'resume' or 'continue' a pipeline after a failure, re-dispatch the failed stage's agent with the same task. Do NOT restart the pipeline from stage 1. The pipeline tracking automatically recognizes retries — completed stages are remembered.\n"
 
 	// Inject pipeline stage definitions.
 	if pipelineInstr := pipeline.BuildInstruction(pipelines); pipelineInstr != "" {
