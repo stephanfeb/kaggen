@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -72,17 +75,24 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				instruction = summary.Description
 			}
 
+			// Determine which tools this skill agent gets.
+			agentTools := generalTools
+			if allowedTools := parseSkillTools(skillsRepo, summary.Name, logger); len(allowedTools) > 0 {
+				agentTools = filterTools(generalTools, allowedTools)
+				logger.Info("skill tool filter", "skill", summary.Name, "allowed", allowedTools)
+			}
+
 			sa := llmagent.New(summary.Name,
 				llmagent.WithModel(m),
 				llmagent.WithInstruction(instruction),
 				llmagent.WithDescription(summary.Description),
-				llmagent.WithTools(generalTools),
+				llmagent.WithTools(agentTools),
 				llmagent.WithMaxLLMCalls(25),
 				llmagent.WithMaxToolIterations(15),
 			)
 
 			agents = append(agents, sa)
-			logger.Info("created skill sub-agent", "name", summary.Name)
+			logger.Info("created skill sub-agent", "name", summary.Name, "tools", len(agentTools))
 		}
 	}
 
@@ -102,4 +112,63 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	}
 
 	return agents, nil
+}
+
+// parseSkillTools reads the SKILL.md frontmatter for a "tools" field and returns
+// the list of allowed tool names. Returns nil if no tools field is specified.
+func parseSkillTools(repo skill.Repository, name string, _ *slog.Logger) []string {
+	dir, err := repo.Path(name)
+	if err != nil {
+		return nil
+	}
+	f, err := os.Open(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	rd := bufio.NewReader(f)
+	// Read opening ---
+	line, err := rd.ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "---" {
+		return nil
+	}
+	// Read frontmatter lines until closing ---
+	for {
+		l, err := rd.ReadString('\n')
+		if err != nil || strings.TrimSpace(l) == "---" {
+			break
+		}
+		if i := strings.Index(l, ":"); i >= 0 {
+			key := strings.TrimSpace(l[:i])
+			if key == "tools" {
+				val := strings.TrimSpace(l[i+1:])
+				val = strings.Trim(val, "[]\"'")
+				var tools []string
+				for _, t := range strings.Split(val, ",") {
+					t = strings.TrimSpace(t)
+					if t != "" {
+						tools = append(tools, t)
+					}
+				}
+				return tools
+			}
+		}
+	}
+	return nil
+}
+
+// filterTools returns only tools whose Declaration().Name is in the allowed list.
+func filterTools(all []tool.Tool, allowed []string) []tool.Tool {
+	set := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		set[name] = true
+	}
+	var filtered []tool.Tool
+	for _, t := range all {
+		if set[t.Declaration().Name] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }

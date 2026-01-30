@@ -10,6 +10,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
+	gopkg.in/yaml.v3 v3.0.1
 	trpc.group/trpc-go/trpc-agent-go v1.2.0
 )
 

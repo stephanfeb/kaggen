@@ -18,7 +18,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/team"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/memory"
+	"github.com/yourusername/kaggen/internal/pipeline"
 )
 
 const (
@@ -79,10 +81,11 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger)
 	statusTool := NewTaskStatusTool(store)
 
-	// Coordinator gets direct tools + async dispatch + task status.
-	allTools := make([]tool.Tool, 0, len(tools)+2)
-	allTools = append(allTools, tools...)
-	allTools = append(allTools, dispatchTool, statusTool)
+	// Coordinator gets ONLY routing tools (dispatch + status). It should not
+	// have direct action tools (exec, read, write) — those belong to sub-agents.
+	// This prevents the coordinator from "helping" by running commands directly
+	// when it should be delegating to specialists.
+	coordinatorTools := []tool.Tool{dispatchTool, statusTool}
 
 	// Default to 40 history messages if not specified (prevents unbounded context growth).
 	historyLimit := 40
@@ -252,7 +255,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 
 	coordinatorOpts := []llmagent.Option{
 		llmagent.WithModel(m),
-		llmagent.WithTools(allTools),
+		llmagent.WithTools(coordinatorTools),
 		llmagent.WithInstruction(instruction),
 		llmagent.WithDescription("Kaggen personal AI assistant coordinator"),
 		llmagent.WithMaxHistoryRuns(historyLimit),
@@ -380,21 +383,28 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	instruction += "- To send a file to the user (e.g. show an image, deliver a document), include [send_file: /path/to/file] in your response. The file will be delivered through the chat channel.\n"
 	instruction += "\n"
 	instruction += "## Task Orchestration\n\n"
-	instruction += "You have access to specialist sub-agents. You can invoke them in two ways:\n\n"
-	instruction += "### Synchronous (team member tools)\n"
-	instruction += "Call a sub-agent directly as a tool. The call blocks until the sub-agent finishes. Use this for quick tasks.\n\n"
-	instruction += "### Asynchronous (dispatch_task)\n"
-	instruction += "Use the `dispatch_task` tool to run a sub-agent in the background. It returns immediately with a task ID.\n"
-	instruction += "Use `task_status` to check progress. When the task completes, a completion event will be injected into your session.\n"
-	instruction += "Use async dispatch for long-running tasks (e.g. building software, research, data processing).\n\n"
+	instruction += "You have access to specialist sub-agents via `dispatch_task` (async) and team member tools (sync).\n\n"
 	instruction += "### Guidelines\n"
-	instruction += "1. For simple questions or tasks you can handle directly, do so without delegating\n"
-	instruction += "2. Decompose complex tasks into sub-tasks and delegate to specialists\n"
-	instruction += "3. Use async dispatch for tasks that may take a long time\n"
-	instruction += "4. Notify the user when you start long-running work and when it completes\n"
-	instruction += "5. Synthesize results from sub-agents into a coherent response for the user\n"
-	instruction += "6. If a sub-agent fails, try a different approach or ask the user for guidance\n"
-	instruction += "7. When you receive a [Task Completed] message, summarize the result for the user\n"
+	instruction += "1. You are a ROUTER — you delegate tasks to sub-agents and synthesize their results. You do NOT have direct action tools (no exec, read, write).\n"
+	instruction += "2. For simple questions you can answer from your knowledge, respond directly without delegating.\n"
+	instruction += "3. For any task requiring file operations, code, or commands: delegate to the appropriate sub-agent.\n"
+	instruction += "4. ALWAYS use async dispatch (dispatch_task) for coding agents (product_owner, architect, coder, qa). NEVER call them synchronously — they run Claude Code CLI which takes minutes.\n"
+	instruction += "5. Notify the user when you start long-running work and when it completes.\n"
+	instruction += "6. Synthesize results from sub-agents into a coherent response for the user.\n"
+	instruction += "7. If a sub-agent fails, inform the user and ask for guidance — do NOT attempt to solve it yourself.\n"
+	instruction += "8. When you receive a [Task Completed] message, summarize the result for the user.\n"
+
+	// Load pipeline definitions from YAML and generate coordinator instructions dynamically.
+	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
+	pipelines, pipeErr := pipeline.LoadAll(pipelinesDir)
+	if pipeErr != nil {
+		// Non-fatal: log and continue without pipelines.
+		_ = pipeErr
+	}
+	if pipelineInstr := pipeline.BuildInstruction(pipelines); pipelineInstr != "" {
+		instruction += pipelineInstr
+		instruction += "\nInclude the project directory path (under /Users/stephanfeb/claude-projects/) in every dispatch.\n"
+	}
 
 	// List available sub-agents.
 	if len(subAgents) > 0 {
