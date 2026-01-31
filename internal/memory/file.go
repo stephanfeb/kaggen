@@ -29,6 +29,11 @@ func NewFileMemory(workspace string) *FileMemory {
 	return &FileMemory{workspace: workspace}
 }
 
+// Workspace returns the workspace directory path.
+func (m *FileMemory) Workspace() string {
+	return m.workspace
+}
+
 // LoadBootstrap loads all bootstrap files and returns the combined content.
 func (m *FileMemory) LoadBootstrap() (string, error) {
 	var parts []string

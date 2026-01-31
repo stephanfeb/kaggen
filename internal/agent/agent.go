@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/team"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 
 	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/config"
@@ -111,11 +114,11 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	pipelineStatusTool := NewPipelineStatusTool(store, dispatchPipelines)
 	cancelTaskTool := NewCancelTaskTool(store)
 
-	// Coordinator gets ONLY routing tools (dispatch + status + pipeline_status + cancel).
-	// It should not have direct action tools (exec, read, write) — those belong
-	// to sub-agents. This prevents the coordinator from "helping" by running
-	// commands directly when it should be delegating to specialists.
-	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool}
+	// Coordinator gets routing tools plus read-only investigation tools.
+	// Write and exec remain on sub-agents to prevent the coordinator from
+	// bypassing specialists for mutating operations.
+	readTool := newCoordinatorReadTool(mem.Workspace())
+	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool, readTool}
 
 	// Build tool callbacks to track synchronous Team delegations in InFlightStore.
 	// This makes sync member-agent calls visible in the dashboard alongside async dispatch_task calls.
@@ -436,14 +439,14 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	instruction += "You have access to specialist sub-agents via `dispatch_task` (async) and team member tools (sync).\n\n"
 
 	instruction += "### Guidelines\n"
-	instruction += "1. You are a ROUTER — you delegate tasks to sub-agents and synthesize their results. You do NOT have direct action tools (no exec, read, write).\n"
+	instruction += "1. You are a COORDINATOR — you delegate tasks to sub-agents and synthesize their results. You have `read` access for investigation, but delegate all write/exec work to sub-agents.\n"
 	instruction += "2. For simple questions you can answer from your knowledge, respond directly without delegating.\n"
-	instruction += "3. For any task requiring file operations, code, or commands: delegate to the appropriate sub-agent.\n"
-	instruction += "4. Use async dispatch (`dispatch_task`) for long-running agents.\n"
+	instruction += "3. Use `read` to investigate files, logs, and outputs before deciding how to act. For any task requiring writes, code changes, or commands: delegate to the appropriate sub-agent.\n"
+	instruction += "4. Use async dispatch (`dispatch_task`) for long-running agents. Pipelines are optional — for small fixes or single-agent tasks, dispatch directly without a pipeline. Use pipelines only when the task genuinely benefits from a structured multi-stage process.\n"
 	instruction += "5. After dispatching an async task, STOP and tell the user it's in progress. Do NOT poll `task_status` in a loop — you will be notified automatically via a [Task Completed] message when the task finishes.\n"
 	instruction += "6. Notify the user when you start long-running work and when it completes.\n"
 	instruction += "7. Synthesize results from sub-agents into a coherent response for the user.\n"
-	instruction += "8. If a sub-agent fails, inform the user and ask for guidance — do NOT attempt to solve it yourself.\n"
+	instruction += "8. If a sub-agent fails, attempt one round of autonomous diagnosis (read logs, check errors) and retry or adjust the task. If the second attempt also fails, inform the user with a summary of what you tried.\n"
 	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user.\n"
 
 	instruction += "\n### Task Decomposition\n\n"
@@ -491,6 +494,65 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 	}
 
 	return instruction, nil
+}
+
+// coordinatorReadArgs defines input for the coordinator's read tool.
+type coordinatorReadArgs struct {
+	Path     string `json:"path" jsonschema:"required,description=The path to the file to read. Can be absolute or relative to the workspace."`
+	MaxLines *int   `json:"max_lines,omitempty" jsonschema:"description=Maximum number of lines to read. Defaults to 1000 if not specified."`
+}
+
+type coordinatorReadResult struct {
+	Content string `json:"content"`
+	Message string `json:"message"`
+}
+
+// newCoordinatorReadTool creates a read-only file tool for the coordinator.
+func newCoordinatorReadTool(workspace string) tool.Tool {
+	return function.NewFunctionTool(
+		func(_ context.Context, args coordinatorReadArgs) (*coordinatorReadResult, error) {
+			path := args.Path
+			if path == "" {
+				return nil, fmt.Errorf("path is required")
+			}
+			maxLines := 1000
+			if args.MaxLines != nil {
+				maxLines = *args.MaxLines
+			}
+			// Resolve path.
+			resolved := path
+			if !filepath.IsAbs(path) {
+				if strings.HasPrefix(path, "~/") {
+					if home, err := os.UserHomeDir(); err == nil {
+						resolved = filepath.Join(home, path[2:])
+					}
+				} else {
+					resolved = filepath.Join(workspace, path)
+				}
+			}
+			data, err := os.ReadFile(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read file: %w", err)
+			}
+			content := string(data)
+			lines := strings.Split(content, "\n")
+			total := len(lines)
+			if total > maxLines {
+				lines = lines[:maxLines]
+				content = strings.Join(lines, "\n") + fmt.Sprintf("\n... (truncated, showing %d of %d lines)", maxLines, total)
+			}
+			shown := total
+			if shown > maxLines {
+				shown = maxLines
+			}
+			return &coordinatorReadResult{
+				Content: content,
+				Message: fmt.Sprintf("Read %s (%d lines)", args.Path, shown),
+			}, nil
+		},
+		function.WithName("read"),
+		function.WithDescription("Read the contents of a file for investigation. Use this to examine logs, config files, or task outputs before deciding whether to delegate."),
+	)
 }
 
 // resultToString extracts a readable string from a tool result.

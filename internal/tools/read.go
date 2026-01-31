@@ -23,7 +23,12 @@ type ReadResult struct {
 	Message string `json:"message"`
 }
 
-// newReadTool creates a new read tool using trpc-agent-go's function tool.
+// NewReadTool creates a new read tool using trpc-agent-go's function tool.
+// Exported so the coordinator can use it directly for investigation.
+func NewReadTool(workspace string) tool.CallableTool {
+	return newReadTool(workspace)
+}
+
 func newReadTool(workspace string) tool.CallableTool {
 	return function.NewFunctionTool(
 		func(ctx context.Context, args ReadArgs) (*ReadResult, error) {
