@@ -5,26 +5,53 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
 )
 
+const (
+	// maxScannerBuffer is the maximum size of a single JSONL line (10 MB).
+	maxScannerBuffer = 10 * 1024 * 1024
+	// sessionFileSizeWarn is the file size threshold for warning (50 MB).
+	sessionFileSizeWarn = 50 * 1024 * 1024
+	// sessionEventCountWarn is the event count threshold for warning.
+	sessionEventCountWarn = 5000
+)
+
+// SessionWarning holds information about session health issues detected during loading.
+type SessionWarning struct {
+	FileSize   int64 // file size in bytes (0 if no warning)
+	EventCount int   // number of events (0 if no warning)
+	Skipped    int   // number of lines skipped due to parse/size errors
+}
+
 // ReadEventJSONL reads events from a JSONL file.
-func ReadEventJSONL(path string) ([]event.Event, error) {
+// It skips corrupt or oversized lines rather than failing, and returns
+// a SessionWarning if the file is unusually large.
+func ReadEventJSONL(path string) ([]event.Event, *SessionWarning, error) {
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open events file: %w", err)
+		return nil, nil, fmt.Errorf("open events file: %w", err)
 	}
 	defer file.Close()
 
+	// Check file size for warning.
+	var warn SessionWarning
+	if info, err := file.Stat(); err == nil {
+		if info.Size() > sessionFileSizeWarn {
+			warn.FileSize = info.Size()
+		}
+	}
+
 	var events []event.Event
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, maxScannerBuffer), maxScannerBuffer)
 
 	lineNum := 0
 	for scanner.Scan() {
@@ -36,16 +63,37 @@ func ReadEventJSONL(path string) ([]event.Event, error) {
 
 		var evt event.Event
 		if err := json.Unmarshal(line, &evt); err != nil {
-			return nil, fmt.Errorf("parse line %d: %w", lineNum, err)
+			slog.Warn("skipping corrupt session line",
+				"path", path,
+				"line", lineNum,
+				"error", err,
+				"line_size", len(line),
+			)
+			warn.Skipped++
+			continue
 		}
 		events = append(events, evt)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan events file: %w", err)
+		slog.Warn("scanner error reading session file, returning partial results",
+			"path", path,
+			"error", err,
+			"events_read", len(events),
+		)
+		warn.Skipped++
 	}
 
-	return events, nil
+	if len(events) > sessionEventCountWarn {
+		warn.EventCount = len(events)
+	}
+
+	var warnPtr *SessionWarning
+	if warn.FileSize > 0 || warn.EventCount > 0 || warn.Skipped > 0 {
+		warnPtr = &warn
+	}
+
+	return events, warnPtr, nil
 }
 
 // AppendEventJSONL appends an event to a JSONL file.

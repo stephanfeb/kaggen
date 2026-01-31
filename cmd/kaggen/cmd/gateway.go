@@ -243,6 +243,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 	defer sessionService.Close()
 
+	// Wire LLM model into the session service for /compact summarization.
+	if fs, ok := sessionService.(*kaggenSession.FileService); ok {
+		fs.SetModel(modelAdapter)
+	}
+
 	// Wrap session service to strip binary data (images, files) from history.
 	sanitizedSession := kaggenSession.NewSanitizeWrapper(sessionService)
 

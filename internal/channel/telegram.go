@@ -154,6 +154,12 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 				continue
 			}
 
+			// Handle /compact command
+			if update.Message.IsCommand() && update.Message.Command() == "compact" {
+				t.handleCompact(ctx, update.Message)
+				continue
+			}
+
 			msg := t.telegramUpdateToMessage(update)
 				select {
 				case t.messages <- msg:
@@ -337,6 +343,43 @@ func (t *TelegramChannel) handleClear(ctx context.Context, m *tgbotapi.Message) 
 
 	t.logger.Info("session cleared via /clear", "session_id", sessionID, "user_id", userID)
 	t.SendText(chatID, "Session cleared. Starting fresh!")
+}
+
+// handleCompact processes the /compact command by summarizing and truncating the session.
+func (t *TelegramChannel) handleCompact(ctx context.Context, m *tgbotapi.Message) {
+	chatID := m.Chat.ID
+
+	if t.sessionService == nil {
+		t.SendText(chatID, "Session compaction is not available.")
+		return
+	}
+
+	var sessionID string
+	if m.Chat.Type == "private" {
+		sessionID = fmt.Sprintf("tg-dm-%d", m.From.ID)
+	} else {
+		sessionID = fmt.Sprintf("tg-group-%d", chatID)
+	}
+
+	userID := fmt.Sprintf("tg-%d", m.From.ID)
+	key := trpcsession.Key{AppName: "kaggen", UserID: userID, SessionID: sessionID}
+
+	t.SendText(chatID, "Compacting session... this may take a moment.")
+
+	sess, err := t.sessionService.GetSession(ctx, key)
+	if err != nil || sess == nil {
+		t.SendText(chatID, "No session to compact.")
+		return
+	}
+
+	if err := t.sessionService.CreateSessionSummary(ctx, sess, "", true); err != nil {
+		t.logger.Warn("failed to compact session", "session_id", sessionID, "error", err)
+		t.SendText(chatID, fmt.Sprintf("Failed to compact session: %v", err))
+		return
+	}
+
+	t.logger.Info("session compacted via /compact", "session_id", sessionID, "user_id", userID)
+	t.SendText(chatID, "Session compacted! Kept the last 20 messages with a summary of prior history.")
 }
 
 // telegramUpdateToMessage converts a Telegram update to a channel Message,

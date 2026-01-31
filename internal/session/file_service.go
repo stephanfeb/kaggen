@@ -2,13 +2,17 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 )
 
@@ -27,7 +31,11 @@ import (
 type FileService struct {
 	dataDir string
 	mu      sync.RWMutex
+	model   model.Model // LLM for session summarization (optional, set via SetModel)
 }
+
+// compactKeepEvents is the number of recent events to keep after compaction.
+const compactKeepEvents = 20
 
 // Compile-time check.
 var _ trpcsession.Service = (*FileService)(nil)
@@ -45,6 +53,16 @@ func (s *FileService) sessionDir(key trpcsession.Key) string {
 // eventsPath returns the path to the events JSONL file for a session.
 func (s *FileService) eventsPath(key trpcsession.Key) string {
 	return filepath.Join(s.sessionDir(key), "events.jsonl")
+}
+
+// summaryPath returns the path to the summary JSON file for a session.
+func (s *FileService) summaryPath(key trpcsession.Key) string {
+	return filepath.Join(s.sessionDir(key), "summary.json")
+}
+
+// SetModel sets the LLM model used for session summarization (/compact).
+func (s *FileService) SetModel(m model.Model) {
+	s.model = m
 }
 
 // sessionStatePath returns the path to the session state JSON file.
@@ -105,9 +123,30 @@ func (s *FileService) GetSession(ctx context.Context, key trpcsession.Key, opts 
 		return nil, nil
 	}
 
-	events, err := ReadEventJSONL(s.eventsPath(key))
+	events, warn, err := ReadEventJSONL(s.eventsPath(key))
 	if err != nil {
 		return nil, fmt.Errorf("read events: %w", err)
+	}
+	if warn != nil {
+		sessionID := key.SessionID
+		if warn.FileSize > 0 {
+			slog.Warn("session file is very large — use /compact to summarize or /clear to reset",
+				"session_id", sessionID,
+				"file_size_mb", warn.FileSize/(1024*1024),
+			)
+		}
+		if warn.EventCount > 0 {
+			slog.Warn("session has many events — use /compact to summarize or /clear to reset",
+				"session_id", sessionID,
+				"event_count", warn.EventCount,
+			)
+		}
+		if warn.Skipped > 0 {
+			slog.Warn("skipped corrupt lines in session file",
+				"session_id", sessionID,
+				"skipped", warn.Skipped,
+			)
+		}
 	}
 
 	var state trpcsession.StateMap
@@ -129,6 +168,17 @@ func (s *FileService) GetSession(ctx context.Context, key trpcsession.Key, opts 
 	}
 
 	sess := trpcsession.NewSession(key.AppName, key.UserID, key.SessionID, sessOpts...)
+
+	// Load persisted summary if it exists.
+	var summary trpcsession.Summary
+	if err := readJSON(s.summaryPath(key), &summary); err == nil && summary.Summary != "" {
+		sess.SummariesMu.Lock()
+		if sess.Summaries == nil {
+			sess.Summaries = make(map[string]*trpcsession.Summary)
+		}
+		sess.Summaries[""] = &summary
+		sess.SummariesMu.Unlock()
+	}
 
 	opt := &trpcsession.Options{}
 	for _, o := range opts {
@@ -188,7 +238,7 @@ func (s *FileService) getSessionUnlocked(key trpcsession.Key, opts ...trpcsessio
 		return nil, nil
 	}
 
-	events, err := ReadEventJSONL(s.eventsPath(key))
+	events, _, err := ReadEventJSONL(s.eventsPath(key))
 	if err != nil {
 		return nil, err
 	}
@@ -443,19 +493,190 @@ func (s *FileService) UpdateSessionState(ctx context.Context, key trpcsession.Ke
 	return writeJSON(path, existing)
 }
 
-// CreateSessionSummary is a no-op stub (summarization requires an LLM).
+// CreateSessionSummary summarizes the session's conversation history using the
+// LLM and truncates the events file, keeping only the most recent events.
+// The summary is stored both in memory (on sess.Summaries) and on disk (summary.json).
 func (s *FileService) CreateSessionSummary(ctx context.Context, sess *trpcsession.Session, filterKey string, force bool) error {
+	if s.model == nil {
+		return fmt.Errorf("no LLM model configured for session summarization (call SetModel first)")
+	}
+
+	// Check if summary already exists and force is not set.
+	sess.SummariesMu.RLock()
+	existing := sess.Summaries[filterKey]
+	sess.SummariesMu.RUnlock()
+	if existing != nil && existing.Summary != "" && !force {
+		return nil // already summarized
+	}
+
+	// Build conversation transcript from events.
+	sess.EventMu.RLock()
+	events := make([]event.Event, len(sess.Events))
+	copy(events, sess.Events)
+	sess.EventMu.RUnlock()
+
+	if len(events) <= compactKeepEvents {
+		return nil // too few events to compact
+	}
+
+	// Events to summarize (all except the most recent ones we keep).
+	toSummarize := events[:len(events)-compactKeepEvents]
+	transcript := formatTranscript(toSummarize)
+
+	if strings.TrimSpace(transcript) == "" {
+		return nil
+	}
+
+	// Call LLM to generate summary.
+	prompt := "Summarize the following conversation concisely. Capture the key topics, " +
+		"decisions made, tasks completed, and any important context needed to continue " +
+		"the conversation. Write in third person, past tense.\n\n" + transcript
+
+	req := &model.Request{
+		Messages: []model.Message{
+			{Role: model.RoleUser, Content: prompt},
+		},
+	}
+
+	respCh, err := s.model.GenerateContent(ctx, req)
+	if err != nil {
+		return fmt.Errorf("generate summary: %w", err)
+	}
+
+	var summaryText string
+	for resp := range respCh {
+		if resp.Error != nil {
+			return fmt.Errorf("summary LLM error: %s", resp.Error.Message)
+		}
+		for _, choice := range resp.Choices {
+			summaryText += choice.Message.Content
+		}
+	}
+
+	if strings.TrimSpace(summaryText) == "" {
+		return fmt.Errorf("LLM returned empty summary")
+	}
+
+	// Store summary on session object.
+	now := time.Now().UTC()
+	summary := &trpcsession.Summary{
+		Summary:   summaryText,
+		UpdatedAt: now,
+	}
+
+	sess.SummariesMu.Lock()
+	if sess.Summaries == nil {
+		sess.Summaries = make(map[string]*trpcsession.Summary)
+	}
+	sess.Summaries[filterKey] = summary
+	sess.SummariesMu.Unlock()
+
+	// Persist summary to disk.
+	key := trpcsession.Key{
+		AppName:   sess.AppName,
+		UserID:    sess.UserID,
+		SessionID: sess.ID,
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := writeJSON(s.summaryPath(key), summary); err != nil {
+		return fmt.Errorf("persist summary: %w", err)
+	}
+
+	// Truncate events file to keep only recent events.
+	keptEvents := events[len(events)-compactKeepEvents:]
+	eventsPath := s.eventsPath(key)
+	tmpPath := eventsPath + ".compact.tmp"
+
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("create compact temp file: %w", err)
+	}
+	for i := range keptEvents {
+		data, err := json.Marshal(&keptEvents[i])
+		if err != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("marshal event %d: %w", i, err)
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("write event %d: %w", i, err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close compact temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, eventsPath); err != nil {
+		return fmt.Errorf("rename compact file: %w", err)
+	}
+
+	// Update in-memory events.
+	sess.EventMu.Lock()
+	sess.Events = keptEvents
+	sess.EventMu.Unlock()
+
+	slog.Info("session compacted",
+		"session_id", sess.ID,
+		"events_before", len(events),
+		"events_after", len(keptEvents),
+		"summary_length", len(summaryText),
+	)
+
 	return nil
 }
 
-// EnqueueSummaryJob is a no-op stub.
+// EnqueueSummaryJob delegates to synchronous CreateSessionSummary.
 func (s *FileService) EnqueueSummaryJob(ctx context.Context, sess *trpcsession.Session, filterKey string, force bool) error {
-	return nil
+	return s.CreateSessionSummary(ctx, sess, filterKey, force)
 }
 
-// GetSessionSummaryText is a no-op stub.
+// GetSessionSummaryText returns the summary text for the session if one exists.
 func (s *FileService) GetSessionSummaryText(ctx context.Context, sess *trpcsession.Session, opts ...trpcsession.SummaryOption) (string, bool) {
-	return "", false
+	var so trpcsession.SummaryOptions
+	for _, o := range opts {
+		o(&so)
+	}
+
+	sess.SummariesMu.RLock()
+	defer sess.SummariesMu.RUnlock()
+
+	if sess.Summaries == nil {
+		return "", false
+	}
+
+	sum := sess.Summaries[so.FilterKey]
+	if sum == nil || sum.Summary == "" {
+		return "", false
+	}
+	return sum.Summary, true
+}
+
+// formatTranscript converts events into a readable conversation transcript.
+func formatTranscript(events []event.Event) string {
+	var b strings.Builder
+	for _, evt := range events {
+		if evt.Response == nil {
+			continue
+		}
+		role := evt.Author
+		for _, choice := range evt.Response.Choices {
+			content := strings.TrimSpace(choice.Message.Content)
+			if content == "" {
+				continue
+			}
+			// Truncate very long messages to avoid overwhelming the summarizer.
+			if len(content) > 2000 {
+				content = content[:2000] + "... [truncated]"
+			}
+			fmt.Fprintf(&b, "%s: %s\n\n", role, content)
+		}
+	}
+	return b.String()
 }
 
 // Close is a no-op (no connections to close).

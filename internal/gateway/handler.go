@@ -116,12 +116,17 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		agent.WithRequestID(uuid.New().String()),
 	)
 	if err != nil {
+		h.logger.Error("agent run failed",
+			"error", err,
+			"session_id", msg.SessionID,
+			"user_id", msg.UserID,
+		)
 		errResp := &channel.Response{
 			ID:        uuid.New().String(),
 			MessageID: msg.ID,
 			SessionID: msg.SessionID,
 			Type:      "error",
-			Content:   "Sorry, I encountered an error processing your request. Please try again.",
+			Content:   fmt.Sprintf("Sorry, I encountered an error processing your request: %v", err),
 			Done:      true,
 			Metadata:  copyMetadata(msg.Metadata),
 		}

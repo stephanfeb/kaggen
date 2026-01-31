@@ -286,7 +286,7 @@ func TestFileService_Close(t *testing.T) {
 }
 
 func TestReadEventJSONL_NonExistent(t *testing.T) {
-	events, err := ReadEventJSONL("/nonexistent/path.jsonl")
+	events, _, err := ReadEventJSONL("/nonexistent/path.jsonl")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestReadEventJSONL_RoundTrip(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 
-	events, err := ReadEventJSONL(path)
+	events, _, err := ReadEventJSONL(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}

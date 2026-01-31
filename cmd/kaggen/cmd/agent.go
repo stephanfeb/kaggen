@@ -213,6 +213,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	// Create file-backed session service for CLI persistence
 	sessionService := kaggenSession.NewFileService(cfg.SessionsPath())
+	sessionService.SetModel(modelAdapter)
 	defer sessionService.Close()
 
 	// Wrap session service to strip binary data (images, files) from history.
@@ -287,6 +288,20 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			clearKey := trpcsession.Key{AppName: "kaggen", UserID: userID, SessionID: sessionID}
 			_ = sessionService.DeleteSession(ctx, clearKey)
 			fmt.Println("Session cleared.")
+			continue
+		case "/compact":
+			compactKey := trpcsession.Key{AppName: "kaggen", UserID: userID, SessionID: sessionID}
+			sess, err := sessionService.GetSession(ctx, compactKey)
+			if err != nil || sess == nil {
+				fmt.Println("No session to compact.")
+				continue
+			}
+			fmt.Println("Compacting session...")
+			if err := sessionService.CreateSessionSummary(ctx, sess, "", true); err != nil {
+				fmt.Printf("Failed to compact: %v\n", err)
+				continue
+			}
+			fmt.Println("Session compacted. Kept last 20 messages with a summary of prior history.")
 			continue
 		}
 
