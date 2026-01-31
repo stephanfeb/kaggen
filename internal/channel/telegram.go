@@ -3,8 +3,11 @@ package channel
 import (
 	"context"
 	"fmt"
+	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -38,11 +41,12 @@ type TelegramChannel struct {
 	rejectMessage    string
 	rateLimitMessage string
 	sessionService   trpcsession.Service
+	sttBaseURL       string
 }
 
 // NewTelegramChannel creates a new Telegram channel.
 // sessionService is optional; when provided, the /clear command can reset sessions.
-func NewTelegramChannel(token string, cfg *config.TelegramConfig, sessionService trpcsession.Service, logger *slog.Logger) *TelegramChannel {
+func NewTelegramChannel(token string, cfg *config.TelegramConfig, sessionService trpcsession.Service, logger *slog.Logger, sttBaseURL ...string) *TelegramChannel {
 	allowedUsers := make(map[int64]bool, len(cfg.AllowedUsers))
 	for _, uid := range cfg.AllowedUsers {
 		allowedUsers[uid] = true
@@ -61,6 +65,11 @@ func NewTelegramChannel(token string, cfg *config.TelegramConfig, sessionService
 		rateLimitMsg = "You're sending messages too quickly. Please wait a moment."
 	}
 
+	var sttURL string
+	if len(sttBaseURL) > 0 && sttBaseURL[0] != "" {
+		sttURL = sttBaseURL[0]
+	}
+
 	return &TelegramChannel{
 		token:            token,
 		messages:         make(chan *Message, 64),
@@ -72,6 +81,7 @@ func NewTelegramChannel(token string, cfg *config.TelegramConfig, sessionService
 		rejectMessage:    rejectMsg,
 		rateLimitMessage: rateLimitMsg,
 		sessionService:   sessionService,
+		sttBaseURL:       sttURL,
 	}
 }
 
@@ -349,6 +359,34 @@ func (t *TelegramChannel) telegramUpdateToMessage(update tgbotapi.Update) *Messa
 		content = m.Caption
 	}
 
+	// Transcribe voice messages (requires STT service).
+	if m.Voice != nil && t.sttBaseURL != "" {
+		if text, err := t.transcribeAudio(m.Voice.FileID, "voice.ogg"); err != nil {
+			t.logger.Warn("failed to transcribe voice message", "error", err)
+		} else if text != "" {
+			if content != "" {
+				content += "\n"
+			}
+			content += text
+		}
+	}
+
+	// Transcribe audio files (requires STT service).
+	if m.Audio != nil && t.sttBaseURL != "" {
+		fileName := m.Audio.FileName
+		if fileName == "" {
+			fileName = "audio.ogg"
+		}
+		if text, err := t.transcribeAudio(m.Audio.FileID, fileName); err != nil {
+			t.logger.Warn("failed to transcribe audio", "error", err)
+		} else if text != "" {
+			if content != "" {
+				content += "\n"
+			}
+			content += text
+		}
+	}
+
 	msg := &Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
@@ -448,6 +486,69 @@ func (t *TelegramChannel) downloadFile(fileID, fileName string) (*Attachment, er
 		Path:     localPath,
 		FileName: fileName,
 	}, nil
+}
+
+// transcribeAudio downloads a Telegram audio file and sends it to the
+// whisper-service for speech-to-text transcription.
+func (t *TelegramChannel) transcribeAudio(fileID, fileName string) (string, error) {
+	file, err := t.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+	if err != nil {
+		return "", fmt.Errorf("get file: %w", err)
+	}
+
+	fileURL := file.Link(t.bot.Token)
+	resp, err := http.Get(fileURL) //nolint:gosec // Telegram API URL
+	if err != nil {
+		return "", fmt.Errorf("download audio: %w", err)
+	}
+	defer resp.Body.Close()
+
+	audioData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read audio: %w", err)
+	}
+
+	// Build multipart request for whisper-service.
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("file", fileName)
+	if err != nil {
+		return "", fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return "", fmt.Errorf("write form file: %w", err)
+	}
+	w.Close()
+
+	transcribeURL := strings.TrimRight(t.sttBaseURL, "/") + "/transcribe"
+	req, err := http.NewRequest("POST", transcribeURL, &buf)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	sttResp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("transcribe request: %w", err)
+	}
+	defer sttResp.Body.Close()
+
+	if sttResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(sttResp.Body)
+		return "", fmt.Errorf("transcribe failed (status %d): %s", sttResp.StatusCode, body)
+	}
+
+	var result struct {
+		Status string `json:"status"`
+		Text   string `json:"text"`
+	}
+	if err := json.NewDecoder(sttResp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode transcription: %w", err)
+	}
+
+	t.logger.Info("transcribed voice message", "text_length", len(result.Text))
+	return result.Text, nil
 }
 
 // chunkText splits text into chunks of at most maxLen characters,

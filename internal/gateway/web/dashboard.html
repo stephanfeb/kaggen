@@ -605,6 +605,16 @@ function renderCoordTimeline(events, taskId) {
     }
     html += `</div>`;
 
+    // Tool call input (what was requested)
+    if (s.call && s.call.content) {
+      const input = cleanResultContent(s.call.content);
+      if (input.length <= 120) {
+        html += `<div class="tl-content tl-content-short" style="opacity:0.7">${esc(input)}</div>`;
+      } else {
+        html += `<details class="tl-content-expand"><summary style="opacity:0.7">${esc(input.substring(0, 100))}...</summary><pre class="tl-content-full">${esc(s.call.content)}</pre></details>`;
+      }
+    }
+
     // Result content (collapsible if long)
     if (s.result && s.result.content) {
       const clean = cleanResultContent(s.result.content);

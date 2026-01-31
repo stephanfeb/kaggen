@@ -18,6 +18,13 @@ type Config struct {
 	Browser   BrowserConfig   `json:"browser,omitempty"`
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
 	Telemetry TelemetryConfig `json:"telemetry,omitempty"`
+	STT       STTConfig       `json:"stt,omitempty"`
+}
+
+// STTConfig configures speech-to-text transcription for voice messages.
+type STTConfig struct {
+	Enabled bool   `json:"enabled"`
+	BaseURL string `json:"base_url,omitempty"` // default http://localhost:8000
 }
 
 // BrowserConfig configures browser control via Chrome DevTools Protocol.

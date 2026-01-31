@@ -213,6 +213,7 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 		}
 	}
 	
+	apiContents = sanitizeContents(apiContents)
 	apiReq.Contents = apiContents
 
 	// Convert tools if present
@@ -318,6 +319,97 @@ func mapFinishReason(reason string) string {
 }
 
 
+
+// sanitizeContents enforces Gemini's strict message ordering rules:
+//  1. A "function" response must immediately follow the "model" message
+//     containing the corresponding functionCall.
+//  2. A "model" message with functionCall parts must follow a "user" or
+//     "function" message — never another "model" message.
+//  3. Consecutive messages with the same role (user-user, model-model) are
+//     merged into a single message.
+//  4. The conversation must start with a "user" message.
+func sanitizeContents(contents []apiContent) []apiContent {
+	// --- Step 1: Pull out all function-response messages, keyed by name. ---
+	funcRespByName := make(map[string][]apiContent)
+	var nonFunc []apiContent
+	for _, c := range contents {
+		if c.Role == "function" && len(c.Parts) > 0 && c.Parts[0].FunctionResponse != nil {
+			name := c.Parts[0].FunctionResponse.Name
+			funcRespByName[name] = append(funcRespByName[name], c)
+		} else {
+			nonFunc = append(nonFunc, c)
+		}
+	}
+
+	// --- Step 2: Re-inject function responses right after their calls. ---
+	var paired []apiContent
+	for _, c := range nonFunc {
+		paired = append(paired, c)
+		if c.Role == "model" {
+			for _, p := range c.Parts {
+				if p.FunctionCall != nil {
+					name := p.FunctionCall.Name
+					if resps, ok := funcRespByName[name]; ok && len(resps) > 0 {
+						paired = append(paired, resps[0])
+						funcRespByName[name] = resps[1:]
+					}
+				}
+			}
+		}
+	}
+
+	// --- Step 3: Merge consecutive same-role messages. ---
+	var merged []apiContent
+	for _, c := range paired {
+		if len(merged) > 0 && merged[len(merged)-1].Role == c.Role {
+			merged[len(merged)-1].Parts = append(merged[len(merged)-1].Parts, c.Parts...)
+		} else {
+			merged = append(merged, c)
+		}
+	}
+
+	// --- Step 4: Ensure first message is "user". ---
+	for len(merged) > 0 && merged[0].Role != "user" {
+		merged = merged[1:]
+	}
+
+	// --- Step 5: Drop orphaned model functionCall messages that don't have
+	//     a following function response (their responses were missing). ---
+	var result []apiContent
+	for i, c := range merged {
+		if c.Role == "model" && hasFunctionCall(c) {
+			// Next message must be "function"; if not, strip the functionCall
+			// parts and keep only text parts from this model message.
+			nextIsFunc := i+1 < len(merged) && merged[i+1].Role == "function"
+			if !nextIsFunc {
+				var textParts []apiPart
+				for _, p := range c.Parts {
+					if p.FunctionCall == nil {
+						textParts = append(textParts, p)
+					}
+				}
+				if len(textParts) == 0 {
+					continue // drop entirely
+				}
+				c.Parts = textParts
+			}
+		}
+		result = append(result, c)
+	}
+
+	return result
+}
+
+// hasFunctionCall reports whether a content message contains at least one
+// functionCall part.
+func hasFunctionCall(c apiContent) bool {
+	for _, p := range c.Parts {
+		if p.FunctionCall != nil {
+			return true
+		}
+	}
+	return false
+}
 
 // imageFormatToMIME maps image format strings to MIME types.
 func imageFormatToMIME(format string) string {

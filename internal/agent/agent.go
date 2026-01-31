@@ -63,7 +63,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 			llmagent.WithInstruction("You are a general-purpose assistant. Use the available tools to complete tasks."),
 			llmagent.WithDescription("General-purpose agent with standard tools."),
 			llmagent.WithMaxLLMCalls(25),
-			llmagent.WithMaxToolIterations(15),
+			llmagent.WithMaxToolIterations(30),
 		)
 		subAgents = []agent.Agent{gp}
 	}
@@ -199,8 +199,19 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				if !seen {
 					coordToolNames[invID] = append(coordToolNames[invID], args.ToolName)
 				}
-				// Build description from tools used so far.
+				// Build description: prefer task content from dispatch args over tool names.
 				desc := "Coordinator: " + strings.Join(coordToolNames[invID], ", ")
+				var dispatchArgs struct {
+					Task      string `json:"task"`
+					AgentName string `json:"agent_name"`
+				}
+				if json.Unmarshal(args.Arguments, &dispatchArgs) == nil && dispatchArgs.Task != "" {
+					taskPreview := dispatchArgs.Task
+					if len(taskPreview) > 100 {
+						taskPreview = taskPreview[:100] + "..."
+					}
+					desc = "Coordinator: " + taskPreview
+				}
 				coordMu.Unlock()
 
 				if _, exists := store.Get(coordTaskID); !exists {
@@ -210,11 +221,17 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				} else {
 					store.UpdateTask(coordTaskID, desc)
 				}
+				// Extract input preview for dashboard visibility.
+				inputPreview := string(args.Arguments)
+				if len(inputPreview) > 200 {
+					inputPreview = inputPreview[:200] + "..."
+				}
 				store.AddEvent(coordTaskID, &TaskEvent{
 					Timestamp: time.Now(),
 					Type:      "tool_call",
 					Turn:      callNum,
 					Tools:     []string{args.ToolName},
+					Content:   inputPreview,
 				})
 			}
 			return &tool.BeforeToolResult{}, nil
