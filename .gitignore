@@ -1,5 +1,7 @@
 # Build artifacts
 /kaggen
+/kaggen-pubsub-bridge
+/dist/
 *.exe
 *.exe~
 *.dll

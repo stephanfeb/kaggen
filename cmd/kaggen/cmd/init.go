@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yourusername/kaggen/internal/config"
 )
+
+var nonInteractive bool
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -17,12 +21,21 @@ var initCmd = &cobra.Command{
 	RunE:  runInit,
 }
 
+func init() {
+	initCmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts and use defaults")
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("Initializing Kaggen workspace...")
 	fmt.Println()
 
-	// Get default config
 	cfg := config.DefaultConfig()
+
+	if !nonInteractive {
+		scanner := bufio.NewScanner(os.Stdin)
+		cfg = promptConfig(scanner, cfg)
+		fmt.Println()
+	}
 
 	// Create directories
 	dirs := []string{
@@ -40,7 +53,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Created: %s\n", dir)
 	}
 
-	// Save default config
+	// Save config
 	configPath := config.ExpandPath("~/.kaggen/config.json")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		if err := cfg.Save(); err != nil {
@@ -83,6 +96,96 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("3. Run: kaggen agent")
 
 	return nil
+}
+
+func promptConfig(scanner *bufio.Scanner, cfg *config.Config) *config.Config {
+	// --- LLM Provider ---
+	fmt.Println("=== LLM Provider ===")
+	fmt.Println("  1) anthropic (Claude)")
+	fmt.Println("  2) gemini (Google)")
+	fmt.Println("  3) zai (GLM)")
+	provider := prompt(scanner, "Select provider [1]:", "1")
+
+	var modelDefault string
+	var envHint string
+	switch provider {
+	case "2", "gemini":
+		modelDefault = "gemini/gemini-2.0-flash"
+		envHint = "GEMINI_API_KEY"
+	case "3", "zai":
+		modelDefault = "zai/glm-4-plus"
+		envHint = "ZAI_API_KEY"
+	default:
+		modelDefault = "anthropic/claude-haiku-4-5"
+		envHint = "ANTHROPIC_API_KEY"
+	}
+
+	model := prompt(scanner, fmt.Sprintf("Model [%s]:", modelDefault), modelDefault)
+	cfg.Agent.Model = model
+
+	fmt.Printf("  (Set your API key via: export %s=your-key-here)\n", envHint)
+	fmt.Println()
+
+	// --- Workspace ---
+	fmt.Println("=== Workspace ===")
+	workspace := prompt(scanner, "Workspace path [~/.kaggen/workspace]:", "~/.kaggen/workspace")
+	cfg.Agent.Workspace = workspace
+	fmt.Println()
+
+	// --- Telegram ---
+	fmt.Println("=== Telegram Bot ===")
+	enableTelegram := prompt(scanner, "Enable Telegram bot? [y/N]:", "n")
+	if strings.EqualFold(enableTelegram, "y") || strings.EqualFold(enableTelegram, "yes") {
+		cfg.Channels.Telegram.Enabled = true
+		token := prompt(scanner, "Bot token (or set TELEGRAM_BOT_TOKEN later) []:", "")
+		if token != "" {
+			cfg.Channels.Telegram.BotToken = token
+		}
+	} else {
+		cfg.Channels.Telegram.Enabled = false
+	}
+	fmt.Println()
+
+	// --- Memory ---
+	fmt.Println("=== Semantic Memory ===")
+	fmt.Println("  Requires Ollama running locally (ollama serve)")
+	enableMemory := prompt(scanner, "Enable semantic memory? [Y/n]:", "y")
+	if strings.EqualFold(enableMemory, "n") || strings.EqualFold(enableMemory, "no") {
+		cfg.Memory.Search.Enabled = false
+	} else {
+		cfg.Memory.Search.Enabled = true
+		cfg.Memory.Search.DBPath = "~/.kaggen/memory.db"
+		cfg.Memory.Embedding.Provider = "ollama"
+		cfg.Memory.Embedding.Model = "nomic-embed-text"
+		cfg.Memory.Embedding.BaseURL = "http://localhost:11434"
+		cfg.Memory.Indexing.ChunkSize = 400
+		cfg.Memory.Indexing.ChunkOverlap = 80
+	}
+	fmt.Println()
+
+	// --- Telemetry ---
+	fmt.Println("=== Telemetry ===")
+	enableTelemetry := prompt(scanner, "Enable telemetry (OTLP/Jaeger)? [y/N]:", "n")
+	if strings.EqualFold(enableTelemetry, "y") || strings.EqualFold(enableTelemetry, "yes") {
+		cfg.Telemetry.Enabled = true
+		cfg.Telemetry.JaegerEndpoint = "localhost:4317"
+		cfg.Telemetry.Protocol = "grpc"
+		cfg.Telemetry.ServiceName = "kaggen"
+	} else {
+		cfg.Telemetry.Enabled = false
+	}
+
+	return cfg
+}
+
+func prompt(scanner *bufio.Scanner, message, defaultVal string) string {
+	fmt.Printf("  %s ", message)
+	scanner.Scan()
+	input := strings.TrimSpace(scanner.Text())
+	if input == "" {
+		return defaultVal
+	}
+	return input
 }
 
 const defaultSoul = `# Soul

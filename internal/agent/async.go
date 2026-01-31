@@ -61,21 +61,24 @@ type TaskEvent struct {
 
 // TaskState tracks the state of an async sub-agent task.
 type TaskState struct {
-	ID          string        `json:"id"`
-	AgentName   string        `json:"agent_name"`
-	Task        string        `json:"task"`
-	Status      TaskStatus    `json:"status"`
-	Result      string        `json:"result,omitempty"`
-	Error       string        `json:"error,omitempty"`
-	Policy      TriggerPolicy `json:"policy"`
-	SessionID   string        `json:"session_id,omitempty"`
-	UserID      string        `json:"user_id,omitempty"`
-	StartedAt   time.Time     `json:"started_at"`
-	DoneAt      *time.Time    `json:"done_at,omitempty"`
-	Events      []*TaskEvent  `json:"events,omitempty"`
-	TurnCount   int           `json:"turn_count"`
-	TotalTokens *TokenUsage   `json:"total_tokens,omitempty"`
-	cancelFn    context.CancelFunc `json:"-"` // for external cancellation
+	ID             string             `json:"id"`
+	AgentName      string             `json:"agent_name"`
+	Task           string             `json:"task"`
+	Status         TaskStatus         `json:"status"`
+	Result         string             `json:"result,omitempty"`
+	Error          string             `json:"error,omitempty"`
+	Policy         TriggerPolicy      `json:"policy"`
+	SessionID      string             `json:"session_id,omitempty"`
+	UserID         string             `json:"user_id,omitempty"`
+	StartedAt      time.Time          `json:"started_at"`
+	DoneAt         *time.Time         `json:"done_at,omitempty"`
+	Events         []*TaskEvent       `json:"events,omitempty"`
+	TurnCount      int                `json:"turn_count"`
+	TotalTokens    *TokenUsage        `json:"total_tokens,omitempty"`
+	External       bool               `json:"external,omitempty"`        // true for external (non-agent) tasks awaiting callback
+	CallbackSecret string             `json:"-"`                         // HMAC secret for callback verification
+	TimeoutAt      time.Time          `json:"timeout_at,omitempty"`     // auto-fail if no callback by this time
+	cancelFn       context.CancelFunc `json:"-"`                         // for external cancellation
 }
 
 // TaskEventCallback is called when a task event is added, enabling real-time broadcast.
@@ -301,6 +304,64 @@ func (s *InFlightStore) Cancel(id string) bool {
 	now := time.Now()
 	t.DoneAt = &now
 	return true
+}
+
+// RegisterExternal registers an external task that will be completed via HTTP callback.
+func (s *InFlightStore) RegisterExternal(id, name, secret string, policy TriggerPolicy, sessionID, userID string, timeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks[id] = &TaskState{
+		ID:             id,
+		AgentName:      "external",
+		Task:           name,
+		Status:         TaskRunning,
+		Policy:         policy,
+		SessionID:      sessionID,
+		UserID:         userID,
+		StartedAt:      time.Now(),
+		External:       true,
+		CallbackSecret: secret,
+		TimeoutAt:      time.Now().Add(timeout),
+	}
+}
+
+// StartExternalReaper launches a goroutine that periodically checks for
+// expired external tasks and marks them as failed. It stops when ctx is cancelled.
+func (s *InFlightStore) StartExternalReaper(ctx context.Context, onTimeout func(taskID string, state *TaskState)) {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.reapExpiredExternal(onTimeout)
+			}
+		}
+	}()
+}
+
+func (s *InFlightStore) reapExpiredExternal(onTimeout func(taskID string, state *TaskState)) {
+	now := time.Now()
+	s.mu.Lock()
+	var expired []*TaskState
+	for _, t := range s.tasks {
+		if t.External && t.Status == TaskRunning && !t.TimeoutAt.IsZero() && now.After(t.TimeoutAt) {
+			t.Status = TaskFailed
+			t.Error = "timed out waiting for callback"
+			doneAt := now
+			t.DoneAt = &doneAt
+			expired = append(expired, t)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, t := range expired {
+		if onTimeout != nil {
+			onTimeout(t.ID, t)
+		}
+	}
 }
 
 // RecordPipelineStart records the start time and task description of a pipeline for a session.

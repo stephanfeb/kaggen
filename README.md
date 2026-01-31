@@ -13,6 +13,7 @@ Named after the mantis deity of the San people, associated with creativity and t
 - **File-backed sessions** for conversation history across restarts
 - **Bootstrap memory** -- customizable personality, identity, and instructions via Markdown files
 - **Semantic memory search** -- vector similarity search over stored memories using sqlite-vec and Ollama embeddings
+- **External task orchestration** -- launch external work (GCP instances, CI pipelines) and receive async results via Cloudflare Tunnel or GCP Pub/Sub
 
 ## Prerequisites
 
@@ -285,6 +286,171 @@ go build -tags "fts5" -o kaggen ./cmd/kaggen
 
 Without this tag the build succeeds but FTS5 tables won't be created, and hybrid search falls back to vector-only results.
 
+## External Task Orchestration
+
+Kaggen can launch external work (GCP instances, CI pipelines, long-running jobs) and receive results back asynchronously. The agent registers an external task, gets a callback URL, and passes it to the external system. When the work completes, the result is routed back to the originating conversation.
+
+### How it works
+
+1. The agent calls the `external_task_register` tool, which returns a `task_id` and `callback_url`
+2. The agent launches external work, passing the task ID and callback URL
+3. When the external system finishes, it sends results back to Kaggen
+4. The result is injected into the original session and the agent responds
+
+Results can be delivered to Kaggen in two ways: **Cloudflare Tunnel** (direct HTTP callback) or **GCP Pub/Sub** (message queue). Both feed into the same `/callbacks/{taskID}` endpoint.
+
+### Option A: Cloudflare Tunnel
+
+Exposes Kaggen's callback endpoint to the internet via a reverse tunnel. External systems POST results directly to the tunnel URL.
+
+**Prerequisites:**
+
+```bash
+brew install cloudflared
+```
+
+**Configuration:**
+
+```json
+{
+  "gateway": {
+    "tunnel": {
+      "enabled": true,
+      "provider": "cloudflare",
+      "named_tunnel": ""
+    }
+  }
+}
+```
+
+When `named_tunnel` is empty, a **quick tunnel** is used — Cloudflare assigns a random URL on each restart (e.g. `https://abc-xyz.trycloudflare.com`). This requires no account or setup.
+
+For a **stable URL** that persists across restarts:
+
+```bash
+cloudflared login
+cloudflared tunnel create kaggen
+```
+
+Then set `"named_tunnel": "kaggen"` and configure `callback_base_url` to your tunnel's hostname.
+
+**How external systems send results:**
+
+```bash
+curl -X POST https://abc-xyz.trycloudflare.com/callbacks/{task_id} \
+  -H "Content-Type: application/json" \
+  -d '{"status": "success", "result": {"key": "value"}}'
+```
+
+**Trade-offs:**
+- Simple setup, no GCP dependency
+- Callbacks are lost if the tunnel is down when they arrive
+- Quick tunnel URLs change on restart
+
+### Option B: GCP Pub/Sub
+
+External systems publish results to a Pub/Sub topic. A bridge subscribes and forwards messages to Kaggen's local callback endpoint. Messages are retained by Pub/Sub for up to 7 days, surviving restarts and network issues.
+
+**Prerequisites:**
+
+- A GCP project with Pub/Sub enabled
+- Application Default Credentials configured (`gcloud auth application-default login`)
+- A Pub/Sub topic and subscription:
+
+```bash
+gcloud pubsub topics create kaggen-callbacks
+gcloud pubsub subscriptions create kaggen-callbacks-sub \
+  --topic=kaggen-callbacks
+```
+
+**Configuration (integrated with gateway):**
+
+```json
+{
+  "gateway": {
+    "pubsub": {
+      "enabled": true,
+      "project_id": "my-gcp-project",
+      "topic": "kaggen-callbacks",
+      "subscription": "kaggen-callbacks-sub"
+    }
+  }
+}
+```
+
+The `project_id` can also be set via the `GOOGLE_CLOUD_PROJECT` environment variable.
+
+When enabled, the bridge starts automatically with `kaggen gateway`.
+
+**Standalone bridge (alternative):**
+
+The bridge can also run as a separate process, independent of the gateway:
+
+```bash
+make build-bridge
+
+./kaggen-pubsub-bridge \
+  --project my-gcp-project \
+  --subscription kaggen-callbacks-sub \
+  --callback-url http://localhost:18789
+```
+
+Or via environment variables:
+
+```bash
+export GOOGLE_CLOUD_PROJECT=my-gcp-project
+export PUBSUB_SUBSCRIPTION=kaggen-callbacks-sub
+./kaggen-pubsub-bridge
+```
+
+**How external systems send results:**
+
+Messages must include a `task_id` — either as a Pub/Sub message attribute or in the JSON body:
+
+```bash
+# Using message attributes (preferred)
+gcloud pubsub topics publish kaggen-callbacks \
+  --attribute=task_id=abc-123 \
+  --message='{"status": "success", "result": {"p50": 12, "p99": 45}}'
+
+# Or with task_id in the JSON body
+gcloud pubsub topics publish kaggen-callbacks \
+  --message='{"task_id": "abc-123", "status": "success", "result": {"p50": 12}}'
+```
+
+**Trade-offs:**
+- Messages survive Kaggen restarts (up to 7 day retention)
+- Requires GCP project and credentials
+- Small additional latency from Pub/Sub polling
+
+### Using both
+
+Tunnel and Pub/Sub can run simultaneously. The `external_task_register` tool returns both a `callback_url` (for direct HTTP) and a `pubsub_topic` (when configured). The agent can choose the appropriate delivery method based on the external system's capabilities.
+
+### Callback protocol
+
+External systems send results as a JSON POST body to `/callbacks/{taskID}`:
+
+```json
+{
+  "status": "success",
+  "result": { "any": "data" }
+}
+```
+
+To report failure:
+
+```json
+{
+  "status": "error",
+  "error": "description of what went wrong"
+}
+```
+
+Optional HMAC-SHA256 signature verification is supported via the `X-Callback-Signature` header. The secret is set per-task when calling `external_task_register`.
+
+Task status can be polled at `GET /callbacks/{taskID}/status`.
+
 ## Workspace
 
 The workspace at `~/.kaggen/workspace/` contains bootstrap Markdown files that shape the agent's personality and behavior:
@@ -303,22 +469,26 @@ Edit these files to customize the agent to your needs.
 ## Architecture
 
 ```
-cmd/kaggen/          CLI entry point
+cmd/
+  kaggen/                CLI entry point
+  kaggen-pubsub-bridge/  Standalone Pub/Sub bridge sidecar
 internal/
-  agent/             Agent logic and context assembly
+  agent/             Agent logic, async dispatch, in-flight task store
   channel/           Channel interface + implementations
     channel.go         Router, Message, Response types
     websocket.go       WebSocket channel
     telegram.go        Telegram bot channel
   config/            Configuration loading
-  gateway/           HTTP/WS gateway server + message handler
+  gateway/           HTTP/WS gateway server, message handler, callback handler
   embedding/         Embedding interface + Ollama client
   memory/            File-based bootstrap memory, vector index, indexer
   model/anthropic/   Anthropic Claude adapter
   model/gemini/      Google Gemini adapter
   model/zai/         ZAI GLM adapter
+  pubsub/            GCP Pub/Sub bridge
   session/           File-backed session service
-  tools/             Tool definitions (read, write, exec, memory_search, memory_write)
+  tools/             Tool definitions (read, write, exec, memory, external tasks)
+  tunnel/            Cloudflare Tunnel manager
 ```
 
 ## Development

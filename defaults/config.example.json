@@ -5,7 +5,19 @@
   },
   "gateway": {
     "bind": "127.0.0.1",
-    "port": 18789
+    "port": 18789,
+    "callback_base_url": "",
+    "tunnel": {
+      "enabled": false,
+      "provider": "cloudflare",
+      "named_tunnel": ""
+    },
+    "pubsub": {
+      "enabled": false,
+      "project_id": "YOUR_GCP_PROJECT",
+      "topic": "kaggen-callbacks",
+      "subscription": "kaggen-callbacks-sub"
+    }
   },
   "channels": {
     "telegram": {

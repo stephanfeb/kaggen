@@ -144,8 +144,26 @@ type AgentConfig struct {
 
 // GatewayConfig configures the gateway server.
 type GatewayConfig struct {
-	Bind string `json:"bind"`
-	Port int    `json:"port"`
+	Bind            string       `json:"bind"`
+	Port            int          `json:"port"`
+	CallbackBaseURL string       `json:"callback_base_url,omitempty"` // manual override for callback URLs (e.g. "https://kaggen.example.com")
+	Tunnel          TunnelConfig `json:"tunnel,omitempty"`
+	PubSub          PubSubConfig `json:"pubsub,omitempty"`
+}
+
+// PubSubConfig configures the GCP Pub/Sub bridge for receiving external task callbacks.
+type PubSubConfig struct {
+	Enabled      bool   `json:"enabled"`
+	ProjectID    string `json:"project_id,omitempty"`    // GCP project ID (or GOOGLE_CLOUD_PROJECT env)
+	Topic        string `json:"topic,omitempty"`         // topic name (informational, for agent to reference)
+	Subscription string `json:"subscription,omitempty"` // subscription name (required when enabled)
+}
+
+// TunnelConfig configures a reverse tunnel for exposing the gateway through NAT.
+type TunnelConfig struct {
+	Enabled     bool   `json:"enabled"`
+	Provider    string `json:"provider,omitempty"`      // "cloudflare" (only option for now)
+	NamedTunnel string `json:"named_tunnel,omitempty"` // empty = quick tunnel (random URL each restart)
 }
 
 // SessionConfig configures session storage.
@@ -320,4 +338,13 @@ func GeminiAPIKey() string {
 
 func ZaiAPIKey() string {
 	return os.Getenv("ZAI_API_KEY")
+}
+
+// PubSubProjectID returns the GCP project ID from config, falling back to
+// the GOOGLE_CLOUD_PROJECT environment variable.
+func (c *Config) PubSubProjectID() string {
+	if c.Gateway.PubSub.ProjectID != "" {
+		return c.Gateway.PubSub.ProjectID
+	}
+	return os.Getenv("GOOGLE_CLOUD_PROJECT")
 }

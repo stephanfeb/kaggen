@@ -9,9 +9,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
+	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/proactive"
+	"github.com/yourusername/kaggen/internal/pubsub"
+	"github.com/yourusername/kaggen/internal/tunnel"
 )
 
 const (
@@ -36,8 +39,11 @@ type Server struct {
 	wsChannel   *channel.WebSocketChannel
 	tgChannel   *channel.TelegramChannel
 	proactive   *proactive.Engine
-	dashboard  *DashboardAPI
-	logger     *slog.Logger
+	dashboard   *DashboardAPI
+	tunnel      *tunnel.CloudflareTunnel
+	pubsubBridge *pubsub.Bridge
+	callbackURL string // resolved callback base URL
+	logger      *slog.Logger
 }
 
 // NewServer creates a new gateway server.
@@ -112,11 +118,61 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 	return s
 }
 
+// MountCallbacks registers the callback HTTP handler on the WebSocket channel's
+// HTTP server. Call this after the InFlightStore is available.
+func (s *Server) MountCallbacks(store *kaggenAgent.InFlightStore) {
+	ch := NewCallbackHandler(store, s.handler, s.logger)
+	s.wsChannel.HandleFunc("/callbacks/", ch.ServeHTTP)
+	s.logger.Info("callback handler mounted at /callbacks/")
+}
+
 // Start begins the gateway server.
 func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("starting gateway server",
 		"bind", s.config.Gateway.Bind,
 		"port", s.config.Gateway.Port)
+
+	// Start Cloudflare Tunnel if configured.
+	if s.config.Gateway.Tunnel.Enabled {
+		provider := s.config.Gateway.Tunnel.Provider
+		if provider == "" {
+			provider = "cloudflare"
+		}
+		if provider == "cloudflare" {
+			t := tunnel.NewCloudflareTunnel(s.config.Gateway.Port, s.config.Gateway.Tunnel.NamedTunnel, s.logger)
+			if err := t.Start(ctx); err != nil {
+				s.logger.Warn("failed to start tunnel", "error", err)
+			} else {
+				s.tunnel = t
+				// Discover the public URL (blocks briefly).
+				if url, err := t.PublicURL(ctx); err != nil {
+					s.logger.Warn("tunnel URL not available", "error", err)
+				} else {
+					s.callbackURL = url
+					s.logger.Info("tunnel active", "url", url)
+				}
+			}
+		}
+	}
+
+	// Start Pub/Sub bridge if configured.
+	if s.config.Gateway.PubSub.Enabled {
+		projectID := s.config.PubSubProjectID()
+		sub := s.config.Gateway.PubSub.Subscription
+		if projectID == "" || sub == "" {
+			s.logger.Warn("pubsub enabled but project_id or subscription not configured")
+		} else {
+			localURL := fmt.Sprintf("http://127.0.0.1:%d", s.config.Gateway.Port)
+			bridge := pubsub.NewBridge(projectID, sub, localURL, s.logger)
+			s.pubsubBridge = bridge
+			go func() {
+				if err := bridge.Start(ctx); err != nil {
+					s.logger.Error("pubsub bridge failed", "error", err)
+				}
+			}()
+			s.logger.Info("pubsub bridge started", "project", projectID, "subscription", sub)
+		}
+	}
 
 	// Start the Telegram channel if configured (non-blocking)
 	if s.tgChannel != nil {
@@ -143,9 +199,35 @@ func (s *Server) Start(ctx context.Context) error {
 	return s.wsChannel.Start(ctx)
 }
 
+// CallbackBaseURL returns the resolved callback base URL for external tasks.
+// Priority: explicit config > tunnel URL > local fallback.
+func (s *Server) CallbackBaseURL() string {
+	if s.config.Gateway.CallbackBaseURL != "" {
+		return s.config.Gateway.CallbackBaseURL
+	}
+	if s.callbackURL != "" {
+		return s.callbackURL
+	}
+	return fmt.Sprintf("http://%s:%d", s.config.Gateway.Bind, s.config.Gateway.Port)
+}
+
 // Stop gracefully shuts down the gateway server.
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.Info("stopping gateway server")
+
+	// Stop the tunnel
+	if s.tunnel != nil {
+		if err := s.tunnel.Stop(); err != nil {
+			s.logger.Warn("error stopping tunnel", "error", err)
+		}
+	}
+
+	// Stop the pubsub bridge
+	if s.pubsubBridge != nil {
+		if err := s.pubsubBridge.Stop(); err != nil {
+			s.logger.Warn("error stopping pubsub bridge", "error", err)
+		}
+	}
 
 	// Stop the proactive engine
 	if s.proactive != nil {

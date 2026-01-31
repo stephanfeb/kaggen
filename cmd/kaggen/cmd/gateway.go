@@ -262,6 +262,28 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	dashboardAPI.SetBroadcastFunc(server.Broadcast)
 	dashboardAPI.WireTaskEvents()
 
+	// Mount callback handler for external tasks.
+	server.MountCallbacks(provider.InFlightStore())
+
+	// Wire external task tools into the agent's coordinator tool set.
+	externalTS := tools.NewExternalTaskToolSet(provider.InFlightStore(), server.CallbackBaseURL)
+	if cfg.Gateway.PubSub.Enabled && cfg.Gateway.PubSub.Topic != "" {
+		externalTS.SetPubSubTopic(cfg.Gateway.PubSub.Topic)
+	}
+	toolList = append(toolList, externalTS.Tools()...)
+
+	// Start the external task timeout reaper.
+	provider.InFlightStore().StartExternalReaper(ctx, func(taskID string, state *kaggenAgent.TaskState) {
+		logger.Warn("external task timed out", "task_id", taskID, "name", state.Task)
+		// Inject timeout notification into the originating session.
+		if err := server.Handler().InjectCompletion(
+			context.Background(), state.SessionID, state.UserID, taskID, "external",
+			fmt.Sprintf("External task timed out: %s", state.Task),
+		); err != nil {
+			logger.Warn("failed to inject timeout notification", "task_id", taskID, "error", err)
+		}
+	})
+
 	// Wire proactive engine to cron tools for live reload.
 	cronTS.SetEngine(server.ProactiveEngine())
 
@@ -368,6 +390,16 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("Tracing: enabled (Jaeger @ %s)\n", endpoint)
 	}
+	if cfg.Gateway.Tunnel.Enabled {
+		fmt.Printf("Tunnel: enabled (%s)\n", server.CallbackBaseURL())
+	}
+	if cfg.Gateway.PubSub.Enabled {
+		fmt.Printf("Pub/Sub: enabled (project=%s, sub=%s)\n", cfg.PubSubProjectID(), cfg.Gateway.PubSub.Subscription)
+		if cfg.Gateway.PubSub.Topic != "" {
+			fmt.Printf("Pub/Sub Topic: %s\n", cfg.Gateway.PubSub.Topic)
+		}
+	}
+	fmt.Printf("Callbacks: %s/callbacks/\n", server.CallbackBaseURL())
 	fmt.Println()
 	fmt.Println("Dashboard: http://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/")
 	fmt.Println("WebSocket endpoint: ws://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/ws")
