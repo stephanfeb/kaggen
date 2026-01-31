@@ -43,7 +43,37 @@ func BuildInitialAgent(
 		}
 	}
 
-	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns...)
+	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns)
+}
+
+// BuildInitialAgentWithOpts is like BuildInitialAgent but accepts AgentOption values
+// for external config, extra coordinator tools, etc.
+func BuildInitialAgentWithOpts(
+	m model.Model,
+	tools []tool.Tool,
+	fileMemory *memory.FileMemory,
+	skillDirs []string,
+	memService trpcmemory.Service,
+	bStore *backlog.Store,
+	logger *slog.Logger,
+	maxHistoryRuns []int,
+	opts ...AgentOption,
+) (*Agent, error) {
+	skillsRepo := loadSkills(skillDirs, logger)
+
+	var subAgents []trpcagent.Agent
+	if skillsRepo != nil {
+		var err error
+		subAgents, err = BuildSubAgents(m, skillsRepo, tools, logger)
+		if err != nil {
+			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
+		}
+		if n := len(skillsRepo.Summaries()); n > 0 {
+			logger.Info("skills loaded", "count", n)
+		}
+	}
+
+	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, opts...)
 }
 
 // loadSkills creates a case-insensitive skill repository from the given directories.
@@ -77,18 +107,20 @@ func loadSkills(dirs []string, logger *slog.Logger) skill.Repository {
 // On Rebuild(), it creates a fresh skills repository, builds new sub-agents, constructs
 // a new Agent (Team), and atomically swaps it into the AgentProvider.
 type AgentFactory struct {
-	model          model.Model
-	tools          []tool.Tool
-	fileMemory     *memory.FileMemory
-	memService     trpcmemory.Service
-	backlogStore   *backlog.Store
-	skillDirs      []string
-	completeFn     CompletionFunc
-	provider       *AgentProvider
-	logger         *slog.Logger
+	model           model.Model
+	tools           []tool.Tool
+	fileMemory      *memory.FileMemory
+	memService      trpcmemory.Service
+	backlogStore    *backlog.Store
+	skillDirs       []string
+	completeFn      CompletionFunc
+	provider        *AgentProvider
+	logger          *slog.Logger
 	maxHistoryRuns  int
 	preloadMemory   int
 	maxTurnsPerTask int
+	extConfig       *ExternalDeliveryConfig
+	extraCoordTools []tool.Tool
 	mu              sync.Mutex // serializes rebuilds
 }
 
@@ -132,6 +164,22 @@ func NewAgentFactory(
 	}
 }
 
+// SetExternalConfig stores external delivery configuration that will be
+// injected into the coordinator's system prompt on the next Rebuild().
+func (f *AgentFactory) SetExternalConfig(cfg *ExternalDeliveryConfig) {
+	f.mu.Lock()
+	f.extConfig = cfg
+	f.mu.Unlock()
+}
+
+// SetExtraCoordinatorTools stores additional tools for the coordinator
+// (e.g. external_task_register). Applied on the next Rebuild().
+func (f *AgentFactory) SetExtraCoordinatorTools(tools ...tool.Tool) {
+	f.mu.Lock()
+	f.extraCoordTools = tools
+	f.mu.Unlock()
+}
+
 // SetCompletionFunc stores the completion callback. It is re-applied to
 // each newly built agent during Rebuild().
 func (f *AgentFactory) SetCompletionFunc(fn CompletionFunc) {
@@ -171,7 +219,14 @@ func (f *AgentFactory) Rebuild() error {
 	f.logger.Info("skills reloaded", "count", skillCount, "sub_agents", len(subAgents))
 
 	// Build new agent.
-	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.backlogStore, f.logger, f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask)
+	var agentOpts []AgentOption
+	if f.extConfig != nil {
+		agentOpts = append(agentOpts, WithExternalConfig(f.extConfig))
+	}
+	if len(f.extraCoordTools) > 0 {
+		agentOpts = append(agentOpts, WithExtraCoordinatorTools(f.extraCoordTools...))
+	}
+	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.backlogStore, f.logger, []int{f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask}, agentOpts...)
 	if err != nil {
 		return fmt.Errorf("rebuild agent: %w", err)
 	}

@@ -265,12 +265,33 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Mount callback handler for external tasks.
 	server.MountCallbacks(provider.InFlightStore())
 
-	// Wire external task tools into the agent's coordinator tool set.
+	// Wire external task tools into the agent's tool set and coordinator.
 	externalTS := tools.NewExternalTaskToolSet(provider.InFlightStore(), server.CallbackBaseURL)
 	if cfg.Gateway.PubSub.Enabled && cfg.Gateway.PubSub.Topic != "" {
 		externalTS.SetPubSubTopic(cfg.Gateway.PubSub.Topic)
 	}
 	toolList = append(toolList, externalTS.Tools()...)
+
+	// Build external delivery config so the coordinator knows how external
+	// systems should send results back (Pub/Sub topic, callback URL, etc.).
+	var extConfig *kaggenAgent.ExternalDeliveryConfig
+	if cfg.Gateway.PubSub.Enabled || cfg.Gateway.Tunnel.Enabled {
+		extConfig = &kaggenAgent.ExternalDeliveryConfig{
+			PubSubProject:   cfg.PubSubProjectID(),
+			PubSubTopic:     cfg.Gateway.PubSub.Topic,
+			TunnelEnabled:   cfg.Gateway.Tunnel.Enabled,
+			CallbackBaseURL: cfg.Gateway.CallbackBaseURL,
+		}
+	}
+
+	// Give the coordinator external task tools + config awareness, then rebuild.
+	factory.SetExtraCoordinatorTools(externalTS.Tools()...)
+	if extConfig != nil {
+		factory.SetExternalConfig(extConfig)
+	}
+	if err := factory.Rebuild(); err != nil {
+		logger.Warn("failed to rebuild agent with external config", "error", err)
+	}
 
 	// Start the external task timeout reaper.
 	provider.InFlightStore().StartExternalReaper(ctx, func(taskID string, state *kaggenAgent.TaskState) {

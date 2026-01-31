@@ -32,6 +32,17 @@ const (
 	AgentName = "kaggen"
 )
 
+// ExternalDeliveryConfig describes how external systems can send results back
+// to Kaggen. When set, this information is injected into the coordinator's
+// system prompt so it can instruct external systems (GCP instances, CI
+// pipelines, etc.) on where and how to publish callbacks.
+type ExternalDeliveryConfig struct {
+	PubSubProject   string // GCP project ID for Pub/Sub delivery
+	PubSubTopic     string // Pub/Sub topic name
+	TunnelEnabled   bool   // whether a reverse tunnel is active
+	CallbackBaseURL string // public callback URL (from tunnel or manual config)
+}
+
 // Agent wraps a trpc-agent-go Team for Kaggen's coordinator pattern.
 type Agent struct {
 	team          *team.Team
@@ -44,6 +55,27 @@ type Agent struct {
 	pipelines     []pipeline.Pipeline
 }
 
+// AgentOption configures optional aspects of the Agent.
+type AgentOption func(*agentOptions)
+
+type agentOptions struct {
+	extConfig           *ExternalDeliveryConfig
+	extraCoordTools     []tool.Tool
+}
+
+// WithExternalConfig injects external delivery configuration into the
+// coordinator's system prompt so it can instruct external systems on how
+// to send results back.
+func WithExternalConfig(cfg *ExternalDeliveryConfig) AgentOption {
+	return func(o *agentOptions) { o.extConfig = cfg }
+}
+
+// WithExtraCoordinatorTools adds additional tools to the coordinator's
+// tool set (e.g. external_task_register, external_task_list).
+func WithExtraCoordinatorTools(tools ...tool.Tool) AgentOption {
+	return func(o *agentOptions) { o.extraCoordTools = append(o.extraCoordTools, tools...) }
+}
+
 // NewAgent creates a new Kaggen agent using the Coordinator Team pattern.
 // When subAgents is non-empty, a Team is created with the coordinator delegating
 // to specialist sub-agents. When subAgents is empty, a single-agent team is
@@ -51,9 +83,14 @@ type Agent struct {
 //
 // completeFn is called when an async sub-agent finishes. It may be nil during
 // construction and set later via SetCompletionFunc (to break circular deps).
-func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, memSvc trpcmemory.Service, bStore *backlog.Store, logger *slog.Logger, maxHistoryRuns ...int) (*Agent, error) {
+func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgents []agent.Agent, completeFn CompletionFunc, memSvc trpcmemory.Service, bStore *backlog.Store, logger *slog.Logger, maxHistoryRuns []int, opts ...AgentOption) (*Agent, error) {
+	var ao agentOptions
+	for _, o := range opts {
+		o(&ao)
+	}
+
 	// Build instruction from bootstrap files.
-	instruction, err := buildInstruction(mem, subAgents)
+	instruction, err := buildInstruction(mem, subAgents, ao.extConfig)
 	if err != nil {
 		return nil, fmt.Errorf("build instruction: %w", err)
 	}
@@ -119,6 +156,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	// bypassing specialists for mutating operations.
 	readTool := newCoordinatorReadTool(mem.Workspace())
 	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool, readTool}
+	coordinatorTools = append(coordinatorTools, ao.extraCoordTools...)
 
 	// Build tool callbacks to track synchronous Team delegations in InFlightStore.
 	// This makes sync member-agent calls visible in the dashboard alongside async dispatch_task calls.
@@ -413,7 +451,7 @@ func (a *Agent) FindSubAgent(name string) agent.Agent {
 }
 
 // buildInstruction constructs the system instruction from bootstrap files.
-func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, error) {
+func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig *ExternalDeliveryConfig) (string, error) {
 	bootstrap, err := mem.LoadBootstrap()
 	if err != nil {
 		return "", fmt.Errorf("load bootstrap: %w", err)
@@ -491,6 +529,31 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent) (string, 
 			names[i] = sa.Info().Name
 		}
 		instruction += fmt.Sprintf("\nValid agent_name values for dispatch_task: %s\n", strings.Join(names, ", "))
+	}
+
+	// Inject external delivery config so the coordinator knows how external
+	// systems should send results back.
+	if extConfig != nil {
+		instruction += "\n## External Task Delivery\n\n"
+		instruction += "You can register external tasks using `external_task_register` and monitor them with `external_task_list`.\n"
+		instruction += "When you register a task, you receive a `task_id` that the external system uses to correlate its results.\n\n"
+
+		if extConfig.PubSubProject != "" && extConfig.PubSubTopic != "" {
+			instruction += "### GCP Pub/Sub (primary)\n\n"
+			instruction += fmt.Sprintf("- **Project:** `%s`\n", extConfig.PubSubProject)
+			instruction += fmt.Sprintf("- **Topic:** `%s`\n", extConfig.PubSubTopic)
+			instruction += "- **Message format:** Set `task_id` as a Pub/Sub message attribute. Body is JSON: `{\"status\": \"success\"|\"error\", \"result\": {...}}`\n\n"
+			instruction += "When instructing external systems (GCP instances, CI pipelines, etc.) to report back, provide them with:\n"
+			instruction += fmt.Sprintf("1. The `task_id` from `external_task_register`\n")
+			instruction += fmt.Sprintf("2. Pub/Sub project `%s` and topic `%s`\n", extConfig.PubSubProject, extConfig.PubSubTopic)
+			instruction += "3. The message format above\n\n"
+		}
+
+		if extConfig.TunnelEnabled && extConfig.CallbackBaseURL != "" {
+			instruction += "### Direct HTTP Callback\n\n"
+			instruction += fmt.Sprintf("- **Callback URL:** `%s/callbacks/{task_id}`\n", extConfig.CallbackBaseURL)
+			instruction += "- **Method:** POST with JSON body: `{\"status\": \"success\"|\"error\", \"result\": {...}}`\n\n"
+		}
 	}
 
 	return instruction, nil

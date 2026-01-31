@@ -288,89 +288,69 @@ Without this tag the build succeeds but FTS5 tables won't be created, and hybrid
 
 ## External Task Orchestration
 
-Kaggen can launch external work (GCP instances, CI pipelines, long-running jobs) and receive results back asynchronously. The agent registers an external task, gets a callback URL, and passes it to the external system. When the work completes, the result is routed back to the originating conversation.
+Kaggen can launch external work (GCP instances, CI pipelines, long-running jobs) and receive results back asynchronously. When external work completes, the result is routed back to the originating conversation and the agent picks up where it left off.
 
 ### How it works
 
-1. The agent calls the `external_task_register` tool, which returns a `task_id` and `callback_url`
-2. The agent launches external work, passing the task ID and callback URL
-3. When the external system finishes, it sends results back to Kaggen
-4. The result is injected into the original session and the agent responds
+1. The agent calls `external_task_register`, which returns a `task_id` and delivery details
+2. The agent launches external work, passing the task ID along
+3. The external system sends results back via **GCP Pub/Sub** or **direct HTTP callback**
+4. Kaggen injects the result into the original session and the agent responds
 
-Results can be delivered to Kaggen in two ways: **Cloudflare Tunnel** (direct HTTP callback) or **GCP Pub/Sub** (message queue). Both feed into the same `/callbacks/{taskID}` endpoint.
+You can use either delivery method alone, or both simultaneously.
 
-### Option A: Cloudflare Tunnel
+---
 
-Exposes Kaggen's callback endpoint to the internet via a reverse tunnel. External systems POST results directly to the tunnel URL.
+### GCP Pub/Sub (recommended)
 
-**Prerequisites:**
+Messages are queued in Pub/Sub and survive Kaggen restarts (up to 7 days retention). This is the simplest option for most setups — no tunnels, no public URLs, works behind NAT.
 
-```bash
-brew install cloudflared
-```
-
-**Configuration:**
-
-```json
-{
-  "gateway": {
-    "tunnel": {
-      "enabled": true,
-      "provider": "cloudflare",
-      "named_tunnel": ""
-    }
-  }
-}
-```
-
-When `named_tunnel` is empty, a **quick tunnel** is used — Cloudflare assigns a random URL on each restart (e.g. `https://abc-xyz.trycloudflare.com`). This requires no account or setup.
-
-For a **stable URL** that persists across restarts:
+#### Step 1: Enable the Pub/Sub API
 
 ```bash
-cloudflared login
-cloudflared tunnel create kaggen
+gcloud services enable pubsub.googleapis.com --project=YOUR_PROJECT_ID
 ```
 
-Then set `"named_tunnel": "kaggen"` and configure `callback_base_url` to your tunnel's hostname.
-
-**How external systems send results:**
+#### Step 2: Create a topic and subscription
 
 ```bash
-curl -X POST https://abc-xyz.trycloudflare.com/callbacks/{task_id} \
-  -H "Content-Type: application/json" \
-  -d '{"status": "success", "result": {"key": "value"}}'
-```
+gcloud pubsub topics create kaggen-callbacks \
+  --project=YOUR_PROJECT_ID
 
-**Trade-offs:**
-- Simple setup, no GCP dependency
-- Callbacks are lost if the tunnel is down when they arrive
-- Quick tunnel URLs change on restart
-
-### Option B: GCP Pub/Sub
-
-External systems publish results to a Pub/Sub topic. A bridge subscribes and forwards messages to Kaggen's local callback endpoint. Messages are retained by Pub/Sub for up to 7 days, surviving restarts and network issues.
-
-**Prerequisites:**
-
-- A GCP project with Pub/Sub enabled
-- Application Default Credentials configured (`gcloud auth application-default login`)
-- A Pub/Sub topic and subscription:
-
-```bash
-gcloud pubsub topics create kaggen-callbacks
 gcloud pubsub subscriptions create kaggen-callbacks-sub \
-  --topic=kaggen-callbacks
+  --topic=kaggen-callbacks \
+  --project=YOUR_PROJECT_ID \
+  --ack-deadline=60
 ```
 
-**Configuration (integrated with gateway):**
+#### Step 3: Ensure credentials
+
+The service account or user running Kaggen needs the **Pub/Sub Admin** role (or at minimum `pubsub.subscriber` + `pubsub.viewer`). If using a service account:
+
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_SA@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/pubsub.admin"
+```
+
+Or use Application Default Credentials:
+
+```bash
+gcloud auth application-default login
+```
+
+#### Step 4: Add to kaggen config
+
+Add the `pubsub` block inside `gateway` in `~/.kaggen/config.json`:
 
 ```json
 {
   "gateway": {
+    "bind": "127.0.0.1",
+    "port": 18789,
     "pubsub": {
       "enabled": true,
-      "project_id": "my-gcp-project",
+      "project_id": "YOUR_PROJECT_ID",
       "topic": "kaggen-callbacks",
       "subscription": "kaggen-callbacks-sub"
     }
@@ -378,73 +358,127 @@ gcloud pubsub subscriptions create kaggen-callbacks-sub \
 }
 ```
 
-The `project_id` can also be set via the `GOOGLE_CLOUD_PROJECT` environment variable.
+> `project_id` can also be set via the `GOOGLE_CLOUD_PROJECT` environment variable.
 
-When enabled, the bridge starts automatically with `kaggen gateway`.
+#### Step 5: Start the gateway
 
-**Standalone bridge (alternative):**
+```bash
+./kaggen gateway
+```
 
-The bridge can also run as a separate process, independent of the gateway:
+The Pub/Sub bridge starts automatically. You should see `Pub/Sub: enabled` in the startup output.
+
+#### Step 6: Verify
+
+```bash
+# Publish a test message
+gcloud pubsub topics publish kaggen-callbacks \
+  --project=YOUR_PROJECT_ID \
+  --attribute=task_id=test-123 \
+  --message='{"status": "success", "result": {"hello": "world"}}'
+
+# Pull it back (to confirm the plumbing works before starting kaggen)
+gcloud pubsub subscriptions pull kaggen-callbacks-sub \
+  --project=YOUR_PROJECT_ID \
+  --auto-ack --limit=1
+```
+
+#### How external systems send results
+
+Messages must include a `task_id` — either as a Pub/Sub attribute (preferred) or in the JSON body:
+
+```bash
+# Via message attribute
+gcloud pubsub topics publish kaggen-callbacks \
+  --project=YOUR_PROJECT_ID \
+  --attribute=task_id=abc-123 \
+  --message='{"status": "success", "result": {"p50": 12, "p99": 45}}'
+
+# Or in the JSON body
+gcloud pubsub topics publish kaggen-callbacks \
+  --project=YOUR_PROJECT_ID \
+  --message='{"task_id": "abc-123", "status": "success", "result": {"p50": 12}}'
+```
+
+#### Standalone bridge (optional)
+
+The bridge can also run as a separate process if you don't want it coupled to the gateway:
 
 ```bash
 make build-bridge
 
 ./kaggen-pubsub-bridge \
-  --project my-gcp-project \
+  --project YOUR_PROJECT_ID \
   --subscription kaggen-callbacks-sub \
   --callback-url http://localhost:18789
 ```
 
-Or via environment variables:
+---
 
-```bash
-export GOOGLE_CLOUD_PROJECT=my-gcp-project
-export PUBSUB_SUBSCRIPTION=kaggen-callbacks-sub
-./kaggen-pubsub-bridge
+### Cloudflare Tunnel (alternative)
+
+Exposes Kaggen's callback endpoint to the internet via a reverse tunnel. External systems POST results directly to the tunnel URL. Useful when you need a public HTTP endpoint without Pub/Sub.
+
+#### Quick tunnel (no account needed)
+
+```json
+{
+  "gateway": {
+    "tunnel": {
+      "enabled": true,
+      "provider": "cloudflare"
+    }
+  }
+}
 ```
 
-**How external systems send results:**
+Cloudflare assigns a random URL on each restart (e.g. `https://abc-xyz.trycloudflare.com`). The agent gets this URL from `external_task_register` and passes it to external systems.
 
-Messages must include a `task_id` — either as a Pub/Sub message attribute or in the JSON body:
+#### Named tunnel (stable URL)
+
+Requires a domain on Cloudflare:
 
 ```bash
-# Using message attributes (preferred)
-gcloud pubsub topics publish kaggen-callbacks \
-  --attribute=task_id=abc-123 \
-  --message='{"status": "success", "result": {"p50": 12, "p99": 45}}'
-
-# Or with task_id in the JSON body
-gcloud pubsub topics publish kaggen-callbacks \
-  --message='{"task_id": "abc-123", "status": "success", "result": {"p50": 12}}'
+brew install cloudflared
+cloudflared login          # authorize via browser
+cloudflared tunnel create my-tunnel
 ```
 
-**Trade-offs:**
-- Messages survive Kaggen restarts (up to 7 day retention)
-- Requires GCP project and credentials
-- Small additional latency from Pub/Sub polling
+```json
+{
+  "gateway": {
+    "tunnel": {
+      "enabled": true,
+      "provider": "cloudflare",
+      "named_tunnel": "my-tunnel"
+    },
+    "callback_base_url": "https://my-tunnel.example.com"
+  }
+}
+```
 
-### Using both
+#### How external systems send results
 
-Tunnel and Pub/Sub can run simultaneously. The `external_task_register` tool returns both a `callback_url` (for direct HTTP) and a `pubsub_topic` (when configured). The agent can choose the appropriate delivery method based on the external system's capabilities.
+```bash
+curl -X POST https://YOUR_TUNNEL_URL/callbacks/{task_id} \
+  -H "Content-Type: application/json" \
+  -d '{"status": "success", "result": {"key": "value"}}'
+```
+
+> **Note:** Callbacks are lost if the tunnel is down when they arrive. Pub/Sub doesn't have this problem.
+
+---
 
 ### Callback protocol
 
-External systems send results as a JSON POST body to `/callbacks/{taskID}`:
+Regardless of delivery method, result payloads follow the same format:
 
 ```json
-{
-  "status": "success",
-  "result": { "any": "data" }
-}
+{"status": "success", "result": {"any": "data"}}
 ```
 
-To report failure:
-
 ```json
-{
-  "status": "error",
-  "error": "description of what went wrong"
-}
+{"status": "error", "error": "description of what went wrong"}
 ```
 
 Optional HMAC-SHA256 signature verification is supported via the `X-Callback-Signature` header. The secret is set per-task when calling `external_task_register`.
