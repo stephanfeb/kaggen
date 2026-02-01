@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
@@ -128,4 +129,79 @@ func Wait(ctx context.Context, selector string, timeout time.Duration) error {
 	return chromedp.Run(ctx,
 		chromedp.WaitVisible(selector),
 	)
+}
+
+// SetViewport overrides the viewport dimensions.
+func SetViewport(ctx context.Context, width, height int) error {
+	return chromedp.Run(ctx,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return emulation.SetDeviceMetricsOverride(int64(width), int64(height), 1.0, false).Do(ctx)
+		}),
+	)
+}
+
+// GetTitle returns the current page title.
+func GetTitle(ctx context.Context) (string, error) {
+	var title string
+	err := chromedp.Run(ctx, chromedp.Title(&title))
+	return title, err
+}
+
+// GetCurrentURL returns the current page URL.
+func GetCurrentURL(ctx context.Context) (string, error) {
+	var url string
+	err := chromedp.Run(ctx, chromedp.Location(&url))
+	return url, err
+}
+
+// GoBack navigates back in browser history.
+func GoBack(ctx context.Context) error {
+	return chromedp.Run(ctx, chromedp.NavigateBack())
+}
+
+// GoForward navigates forward in browser history.
+func GoForward(ctx context.Context) error {
+	return chromedp.Run(ctx, chromedp.NavigateForward())
+}
+
+// Reload reloads the current page.
+func Reload(ctx context.Context) error {
+	return chromedp.Run(ctx, chromedp.Reload())
+}
+
+// GetText extracts the visible text content of an element matching the CSS selector.
+func GetText(ctx context.Context, selector string) (string, error) {
+	var text string
+	err := chromedp.Run(ctx,
+		chromedp.WaitVisible(selector),
+		chromedp.Text(selector, &text, chromedp.ByQuery),
+	)
+	return text, err
+}
+
+// GetHTML returns the outer HTML of an element matching the CSS selector.
+func GetHTML(ctx context.Context, selector string) (string, error) {
+	var html string
+	err := chromedp.Run(ctx,
+		chromedp.WaitVisible(selector),
+		chromedp.OuterHTML(selector, &html, chromedp.ByQuery),
+	)
+	return html, err
+}
+
+// GetAttribute returns the value of an attribute on an element matching the CSS selector.
+func GetAttribute(ctx context.Context, selector, attribute string) (string, error) {
+	var val string
+	var ok bool
+	err := chromedp.Run(ctx,
+		chromedp.WaitVisible(selector),
+		chromedp.AttributeValue(selector, attribute, &val, &ok, chromedp.ByQuery),
+	)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("attribute %q not found on %q", attribute, selector)
+	}
+	return val, nil
 }

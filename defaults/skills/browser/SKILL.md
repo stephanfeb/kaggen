@@ -17,11 +17,20 @@ Use the `browser` tool with the `action` field set to one of:
 | `navigate` | `url` | Navigate to a URL |
 | `click` | `selector` | Click an element matching a CSS selector |
 | `type` | `selector`, `text` | Type text into an input field |
-| `screenshot` | — | Capture a screenshot and save as PNG file (optional `path` field to specify save location) |
+| `screenshot` | — | Capture a screenshot and save as PNG file (optional `path` field) |
 | `content` | — | Extract all visible text from the current page |
 | `evaluate` | `script` | Run JavaScript in the page context and return the result |
 | `scroll` | — | Scroll the page (`direction`: "up" or "down", `amount`: pixels) |
 | `wait` | `selector` | Wait for an element to appear on the page |
+| `setViewport` | `width`, `height` | Set browser viewport dimensions (pixels) |
+| `getTitle` | — | Get the current page title |
+| `getCurrentUrl` | — | Get the current page URL |
+| `getText` | `selector` | Extract visible text from a specific element |
+| `getHTML` | `selector` | Get outer HTML of a specific element |
+| `getAttribute` | `selector`, `attribute` | Read an attribute value from an element |
+| `goBack` | — | Navigate back in browser history |
+| `goForward` | — | Navigate forward in browser history |
+| `reload` | — | Reload the current page |
 | `close` | — | Close the browser session. Always do this when finished. |
 
 ### Optional Fields
@@ -56,16 +65,39 @@ Then include in your response:
 Here is the screenshot of example.com.
 ```
 
-### Take a screenshot to a specific path
+### Set viewport for responsive testing
 ```json
-{"action": "screenshot", "path": "/tmp/page.png"}
+{"action": "setViewport", "width": 375, "height": 812}
+```
+```json
+{"action": "screenshot", "path": "/tmp/mobile.png"}
+```
+
+### Extract text from a specific element
+```json
+{"action": "getText", "selector": "h1.title"}
+```
+Returns: `content` (visible text of the matched element)
+
+### Get an element's attribute
+```json
+{"action": "getAttribute", "selector": "a.main-link", "attribute": "href"}
+```
+Returns: `content` (the attribute value)
+
+### Get page title and URL
+```json
+{"action": "getTitle"}
+```
+```json
+{"action": "getCurrentUrl"}
 ```
 
 ### Extract page text
 ```json
 {"action": "content"}
 ```
-Returns: `content` (visible text of the page)
+Returns: `content` (visible text of the entire page)
 
 ### Wait for content to load, then extract it
 ```json
@@ -102,20 +134,13 @@ For most browser tasks, follow this pattern:
 5. **Send** any files to the user with `[send_file: /path]`
 6. **Close** the browser session
 
-Example: navigate, screenshot, deliver, and clean up:
-1. `{"action": "navigate", "url": "https://example.com"}`
-2. `{"action": "wait", "selector": "body", "timeout_seconds": 5}`
-3. `{"action": "screenshot"}`
-4. `{"action": "close"}`
-5. Include `[send_file: <file_path from step 3>]` in your response
-
 ## Tips
 
 - **Always close the browser** when your task is done using the `close` action
 - **Always use `[send_file:]`** to deliver screenshots and files to the user
 - **Selectors**: Use CSS selectors (e.g., `"button.primary"`, `"input[type=text]"`, `"#header > h1"`)
 - **Dynamic content**: Use the `wait` action before interacting with elements that load asynchronously
-- **Screenshots**: Viewport is fixed at 1280×720 for consistency
+- **Viewport**: Default is 1280×720. Use `setViewport` to test responsive layouts (e.g., 375×812 for mobile)
 - **JavaScript**: The `evaluate` action runs code in the page context; return JSON-serializable values
 - **Profiles**: Use different browser profiles for isolated sessions (e.g., separate cookies/state)
 - **Errors**: Check the `success` field in the response; `message` describes what happened

@@ -460,6 +460,38 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/pipelines", d.HandlePipelines)
 	handleFunc("/api/tasks/cancel", d.HandleCancelTask)
 	handleFunc("/api/logs", d.HandleLogsSSE)
+	handleFunc("/api/files/", d.HandleFiles)
+}
+
+// HandleFiles serves published files from ~/.kaggen/public/.
+// Only files that have been explicitly published via extractSendFiles are accessible.
+// No server filesystem paths are exposed — clients request by filename only.
+func (d *DashboardAPI) HandleFiles(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Extract filename from /api/files/<name>
+	name := strings.TrimPrefix(r.URL.Path, "/api/files/")
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	pubDir := config.ExpandPath("~/.kaggen/public")
+	filePath := filepath.Join(pubDir, filepath.Base(name))
+
+	// Verify the resolved path is still inside the public directory.
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	absPubDir, _ := filepath.Abs(pubDir)
+	if !strings.HasPrefix(absPath, absPubDir) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	http.ServeFile(w, r, absPath)
 }
 
 // --- helpers ---

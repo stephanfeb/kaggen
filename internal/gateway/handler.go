@@ -3,8 +3,12 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,6 +23,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
 	"github.com/yourusername/kaggen/internal/channel"
+	"github.com/yourusername/kaggen/internal/config"
 )
 
 // RespondFunc is a callback for sending responses through a channel.
@@ -262,15 +267,65 @@ func copyMetadata(src map[string]any) map[string]any {
 // sendFileRe matches [send_file: /path/to/file] directives in agent responses.
 var sendFileRe = regexp.MustCompile(`\[send_file:\s*([^\]]+)\]`)
 
+// publicDir returns the path to the public file-serving directory, creating it if needed.
+func publicDir() string {
+	dir := config.ExpandPath("~/.kaggen/public")
+	os.MkdirAll(dir, 0755)
+	return dir
+}
+
+// publishFile copies a file into the public directory with a content-hashed name.
+// Returns the public filename (no path) or empty string on error.
+func publishFile(srcPath string) string {
+	srcPath = config.ExpandPath(strings.TrimSpace(srcPath))
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return ""
+	}
+	defer src.Close()
+
+	// Hash a prefix of the content + original name for a stable short filename.
+	h := sha256.New()
+	io.CopyN(h, src, 64*1024) // hash first 64KB
+	src.Seek(0, io.SeekStart)
+
+	ext := filepath.Ext(srcPath)
+	name := fmt.Sprintf("%x%s", h.Sum(nil)[:8], ext)
+
+	dstPath := filepath.Join(publicDir(), name)
+	if _, err := os.Stat(dstPath); err == nil {
+		return name // already published
+	}
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return ""
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		os.Remove(dstPath)
+		return ""
+	}
+	return name
+}
+
 // extractSendFiles scans text for [send_file: /path] directives, removes them,
-// and sets the first match as metadata["send_file"] so the channel can deliver it.
+// copies the file to the public directory, and sets metadata["send_file"] to the
+// public filename (no server paths exposed).
 func extractSendFiles(text string, meta map[string]any) (string, map[string]any) {
 	matches := sendFileRe.FindStringSubmatch(text)
 	if matches == nil {
 		return text, meta
 	}
 	filePath := strings.TrimSpace(matches[1])
-	meta["send_file"] = filePath
+
+	// Publish file and expose only the public name.
+	if pubName := publishFile(filePath); pubName != "" {
+		meta["send_file"] = pubName
+	}
+	// Keep original path for channels that read local files (e.g. Telegram).
+	meta["send_file_local"] = config.ExpandPath(filePath)
+
 	text = strings.TrimSpace(sendFileRe.ReplaceAllString(text, ""))
 	return text, meta
 }

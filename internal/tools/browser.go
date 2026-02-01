@@ -13,15 +13,18 @@ import (
 
 // BrowserArgs defines the input arguments for the browser tool.
 type BrowserArgs struct {
-	Action    string `json:"action" jsonschema:"required,enum=navigate|click|type|screenshot|content|evaluate|scroll|wait|close,description=The browser action to perform."`
+	Action    string `json:"action" jsonschema:"required,enum=navigate|click|type|screenshot|content|evaluate|scroll|wait|close|setViewport|getTitle|getCurrentUrl|goBack|goForward|reload|getText|getHTML|getAttribute,description=The browser action to perform."`
 	Profile   string `json:"profile,omitempty" jsonschema:"description=Browser profile name. Uses first configured profile if omitted."`
 	URL       string `json:"url,omitempty" jsonschema:"description=URL to navigate to (required for navigate action)."`
-	Selector  string `json:"selector,omitempty" jsonschema:"description=CSS selector for click/type/wait actions."`
+	Selector  string `json:"selector,omitempty" jsonschema:"description=CSS selector for click/type/wait/getText/getHTML/getAttribute actions."`
 	Text      string `json:"text,omitempty" jsonschema:"description=Text to type (required for type action)."`
 	Script    string `json:"script,omitempty" jsonschema:"description=JavaScript code to evaluate (required for evaluate action)."`
 	Path      string `json:"path,omitempty" jsonschema:"description=File path to save screenshot to. If omitted a temp file is created. Used only for screenshot action."`
 	Direction string `json:"direction,omitempty" jsonschema:"description=Scroll direction: up or down (default down)."`
 	Amount    int    `json:"amount,omitempty" jsonschema:"description=Pixels to scroll (default 300)."`
+	Width     int    `json:"width,omitempty" jsonschema:"description=Viewport width in pixels (required for setViewport action)."`
+	Height    int    `json:"height,omitempty" jsonschema:"description=Viewport height in pixels (required for setViewport action)."`
+	Attribute string `json:"attribute,omitempty" jsonschema:"description=Element attribute name (required for getAttribute action)."`
 	Timeout   int    `json:"timeout_seconds,omitempty" jsonschema:"description=Timeout in seconds (default 30)."`
 }
 
@@ -51,7 +54,7 @@ func newBrowserTool(mgr *browser.Manager) tool.CallableTool {
 			return executeBrowser(ctx, mgr, args)
 		},
 		function.WithName("browser"),
-		function.WithDescription("Control a browser via Chrome DevTools Protocol. Supports actions: navigate (go to URL), click (click element), type (type text into element), screenshot (capture page as PNG file), content (extract page text), evaluate (run JavaScript), scroll (scroll page), wait (wait for element), close (close browser session). Always close the browser when done."),
+		function.WithDescription("Control a browser via Chrome DevTools Protocol. Actions: navigate, click, type, screenshot, content, evaluate, scroll, wait, close, setViewport, getTitle, getCurrentUrl, goBack, goForward, reload, getText, getHTML, getAttribute. Always close the browser when done."),
 	)
 }
 
@@ -223,6 +226,141 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 		}
 		result.Success = true
 		result.Message = fmt.Sprintf("Element %s appeared", args.Selector)
+
+	case "setViewport":
+		if args.Width <= 0 || args.Height <= 0 {
+			result.Message = "width and height are required for setViewport action"
+			return result, fmt.Errorf("width and height are required for setViewport action")
+		}
+		err = runWithTimeout(func() error {
+			return browser.SetViewport(bctx, args.Width, args.Height)
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("SetViewport failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Message = fmt.Sprintf("Viewport set to %dx%d", args.Width, args.Height)
+
+	case "getTitle":
+		var title string
+		err = runWithTimeout(func() error {
+			var e error
+			title, e = browser.GetTitle(bctx)
+			return e
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("GetTitle failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Title = title
+		result.Message = "Page title retrieved"
+
+	case "getCurrentUrl":
+		var currentURL string
+		err = runWithTimeout(func() error {
+			var e error
+			currentURL, e = browser.GetCurrentURL(bctx)
+			return e
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("GetCurrentUrl failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.URL = currentURL
+		result.Message = "Current URL retrieved"
+
+	case "goBack":
+		err = runWithTimeout(func() error {
+			return browser.GoBack(bctx)
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("GoBack failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Message = "Navigated back"
+
+	case "goForward":
+		err = runWithTimeout(func() error {
+			return browser.GoForward(bctx)
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("GoForward failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Message = "Navigated forward"
+
+	case "reload":
+		err = runWithTimeout(func() error {
+			return browser.Reload(bctx)
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("Reload failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Message = "Page reloaded"
+
+	case "getText":
+		if args.Selector == "" {
+			result.Message = "selector is required for getText action"
+			return result, fmt.Errorf("selector is required for getText action")
+		}
+		var text string
+		err = runWithTimeout(func() error {
+			var e error
+			text, e = browser.GetText(bctx, args.Selector)
+			return e
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("GetText failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Content = text
+		result.Message = fmt.Sprintf("Text extracted from %s", args.Selector)
+
+	case "getHTML":
+		if args.Selector == "" {
+			result.Message = "selector is required for getHTML action"
+			return result, fmt.Errorf("selector is required for getHTML action")
+		}
+		var html string
+		err = runWithTimeout(func() error {
+			var e error
+			html, e = browser.GetHTML(bctx, args.Selector)
+			return e
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("GetHTML failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Content = html
+		result.Message = fmt.Sprintf("HTML extracted from %s", args.Selector)
+
+	case "getAttribute":
+		if args.Selector == "" || args.Attribute == "" {
+			result.Message = "selector and attribute are required for getAttribute action"
+			return result, fmt.Errorf("selector and attribute are required for getAttribute action")
+		}
+		var val string
+		err = runWithTimeout(func() error {
+			var e error
+			val, e = browser.GetAttribute(bctx, args.Selector, args.Attribute)
+			return e
+		})
+		if err != nil {
+			result.Message = fmt.Sprintf("GetAttribute failed: %v", err)
+			return result, nil
+		}
+		result.Success = true
+		result.Content = val
+		result.Message = fmt.Sprintf("Attribute %q from %s", args.Attribute, args.Selector)
 
 	default:
 		result.Message = fmt.Sprintf("Unknown action: %s", args.Action)

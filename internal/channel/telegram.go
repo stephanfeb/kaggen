@@ -212,11 +212,14 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 	case "tool_call", "tool_result":
 		return nil
 	}
-	if resp.Content == "" && resp.Metadata["send_file"] == nil {
+	if resp.Content == "" && resp.Metadata["send_file"] == nil && resp.Metadata["send_file_local"] == nil {
 		return nil
 	}
 
-	// Send file if requested.
+	// Send file if requested. Prefer local path for direct file access.
+	if filePath, ok := resp.Metadata["send_file_local"].(string); ok && filePath != "" {
+		return t.sendFile(chatID, filePath, resp.Content)
+	}
 	if filePath, ok := resp.Metadata["send_file"].(string); ok && filePath != "" {
 		return t.sendFile(chatID, filePath, resp.Content)
 	}
