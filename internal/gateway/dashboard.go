@@ -15,6 +15,7 @@ import (
 	"github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/config"
+	kaggenSession "github.com/yourusername/kaggen/internal/session"
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -226,26 +227,30 @@ func (d *DashboardAPI) HandleSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, skills)
 }
 
-// HandleSessions returns session listing.
+// HandleSessions returns session listing with metadata.
 func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 	sessionsDir := d.config.SessionsPath()
 	appDir := filepath.Join(sessionsDir, AppName)
 
 	type sessionInfo struct {
+		ID           string `json:"id"`
+		Name         string `json:"name,omitempty"`
 		UserID       string `json:"user_id"`
-		SessionID    string `json:"session_id"`
+		Channel      string `json:"channel,omitempty"`
+		CreatedAt    string `json:"created_at,omitempty"`
 		UpdatedAt    string `json:"updated_at"`
 		MessageCount int    `json:"message_count"`
 	}
 
 	var sessions []sessionInfo
 
-	// Walk sessions directory: <appName>/<userID>/<sessionID>/
 	userDirs, err := os.ReadDir(appDir)
 	if err != nil {
 		writeJSON(w, []any{})
 		return
 	}
+
+	fs := kaggenSession.NewFileService(sessionsDir)
 
 	for _, userDir := range userDirs {
 		if !userDir.IsDir() {
@@ -260,33 +265,241 @@ func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 			if !sessDir.IsDir() {
 				continue
 			}
-			info, err := sessDir.Info()
-			if err != nil {
-				continue
-			}
-			// Count lines in events.jsonl for message count
+			dirInfo, _ := sessDir.Info()
+
 			eventsPath := filepath.Join(userPath, sessDir.Name(), "events.jsonl")
 			msgCount := countLines(eventsPath)
-			sessions = append(sessions, sessionInfo{
+
+			si := sessionInfo{
+				ID:           sessDir.Name(),
 				UserID:       userDir.Name(),
-				SessionID:    sessDir.Name(),
-				UpdatedAt:    info.ModTime().Format(time.RFC3339),
 				MessageCount: msgCount,
-			})
+			}
+
+			// Try to read metadata.json for richer info.
+			key := session.Key{AppName: AppName, UserID: userDir.Name(), SessionID: sessDir.Name()}
+			if meta, err := fs.ReadMetadata(key); err == nil && meta != nil {
+				si.Name = meta.Name
+				si.Channel = meta.Channel
+				if !meta.CreatedAt.IsZero() {
+					si.CreatedAt = meta.CreatedAt.Format(time.RFC3339)
+				}
+				if !meta.UpdatedAt.IsZero() {
+					si.UpdatedAt = meta.UpdatedAt.Format(time.RFC3339)
+				}
+			}
+
+			// Fallback UpdatedAt from directory mod time.
+			if si.UpdatedAt == "" && dirInfo != nil {
+				si.UpdatedAt = dirInfo.ModTime().Format(time.RFC3339)
+			}
+
+			sessions = append(sessions, si)
 		}
 	}
 
-	// Sort by most recently updated
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
 	})
 
-	// Limit
 	if len(sessions) > 100 {
 		sessions = sessions[:100]
 	}
 
 	writeJSON(w, sessions)
+}
+
+// HandleSessionMessages returns chat history for a specific session.
+// Query params: user_id, session_id (required), detail=chat|full, limit, offset.
+func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	userID := r.URL.Query().Get("user_id")
+	sessionID := r.URL.Query().Get("session_id")
+	if userID == "" || sessionID == "" {
+		http.Error(w, `{"error":"user_id and session_id are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	detail := r.URL.Query().Get("detail")
+	if detail == "" {
+		detail = "chat"
+	}
+
+	sessionsDir := d.config.SessionsPath()
+	eventsPath := filepath.Join(sessionsDir, AppName, userID, sessionID, "events.jsonl")
+
+	events, _, err := kaggenSession.ReadEventJSONL(eventsPath)
+	if err != nil {
+		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+
+	type msgOut struct {
+		Role      string   `json:"role"`
+		Content   string   `json:"content"`
+		Timestamp string   `json:"timestamp,omitempty"`
+		ToolCalls []string `json:"tool_calls,omitempty"` // only if detail=full
+		ToolID    string   `json:"tool_id,omitempty"`    // only if detail=full
+	}
+
+	var messages []msgOut
+	for _, evt := range events {
+		if evt.Response == nil {
+			continue
+		}
+		ts := ""
+		if !evt.Timestamp.IsZero() {
+			ts = evt.Timestamp.Format(time.RFC3339)
+		}
+		for _, choice := range evt.Response.Choices {
+			msg := choice.Message
+
+			if detail == "chat" {
+				// Chat mode: only user/assistant text messages.
+				if msg.Role == "tool" || msg.ToolID != "" {
+					continue
+				}
+				if msg.Content == "" && len(msg.ContentParts) == 0 {
+					continue
+				}
+				if len(msg.ToolCalls) > 0 && msg.Content == "" {
+					continue
+				}
+				messages = append(messages, msgOut{
+					Role:      string(msg.Role),
+					Content:   msg.Content,
+					Timestamp: ts,
+				})
+			} else {
+				// Full mode: include everything.
+				m := msgOut{
+					Role:      string(msg.Role),
+					Content:   msg.Content,
+					Timestamp: ts,
+					ToolID:    msg.ToolID,
+				}
+				for _, tc := range msg.ToolCalls {
+					m.ToolCalls = append(m.ToolCalls, tc.Function.Name)
+				}
+				messages = append(messages, m)
+			}
+		}
+	}
+
+	// Pagination.
+	limit := 50
+	offset := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		fmt.Sscanf(v, "%d", &offset)
+	}
+	if offset > len(messages) {
+		offset = len(messages)
+	}
+	end := offset + limit
+	if end > len(messages) {
+		end = len(messages)
+	}
+	page := messages[offset:end]
+
+	// Read metadata and summary.
+	fs := kaggenSession.NewFileService(sessionsDir)
+	key := session.Key{AppName: AppName, UserID: userID, SessionID: sessionID}
+
+	var name string
+	if meta, err := fs.ReadMetadata(key); err == nil && meta != nil {
+		name = meta.Name
+	}
+
+	var summaryText string
+	summaryPath := filepath.Join(sessionsDir, AppName, userID, sessionID, "summary.json")
+	var summaryObj struct {
+		Summary string `json:"summary"`
+	}
+	if data, err := os.ReadFile(summaryPath); err == nil {
+		json.Unmarshal(data, &summaryObj)
+		summaryText = summaryObj.Summary
+	}
+
+	// Context cache info.
+	type contextInfo struct {
+		TokenCount int    `json:"token_count"`
+		UpdatedAt  string `json:"updated_at"`
+	}
+	var ctxInfo *contextInfo
+	if cache, err := fs.ReadContextCache(key); err == nil && cache != nil {
+		ctxInfo = &contextInfo{
+			TokenCount: cache.TokenCount,
+			UpdatedAt:  cache.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+
+	resp := struct {
+		SessionID    string       `json:"session_id"`
+		Name         string       `json:"name,omitempty"`
+		Messages     []msgOut     `json:"messages"`
+		Summary      string       `json:"summary,omitempty"`
+		Total        int          `json:"total"`
+		ContextCache *contextInfo `json:"context_cache,omitempty"`
+	}{
+		SessionID:    sessionID,
+		Name:         name,
+		Messages:     page,
+		Summary:      summaryText,
+		Total:        len(messages),
+		ContextCache: ctxInfo,
+	}
+
+	writeJSON(w, resp)
+}
+
+// HandleSessionRename renames a session (updates metadata.json name field).
+// Expects POST with JSON body: {"user_id": "...", "session_id": "...", "name": "..."}.
+func (d *DashboardAPI) HandleSessionRename(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		http.Error(w, `{"error":"POST or PATCH required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserID    string `json:"user_id"`
+		SessionID string `json:"session_id"`
+		Name      string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if req.UserID == "" || req.SessionID == "" || req.Name == "" {
+		http.Error(w, `{"error":"user_id, session_id, and name are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	sessionsDir := d.config.SessionsPath()
+	fs := kaggenSession.NewFileService(sessionsDir)
+	key := session.Key{AppName: AppName, UserID: req.UserID, SessionID: req.SessionID}
+
+	meta, err := fs.ReadMetadata(key)
+	if err != nil || meta == nil {
+		// Create metadata if it doesn't exist yet.
+		meta = &kaggenSession.SessionMetadata{
+			ID:     req.SessionID,
+			UserID: req.UserID,
+		}
+	}
+	meta.Name = req.Name
+	meta.UpdatedAt = time.Now().UTC()
+
+	if err := fs.WriteMetadata(key, meta); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to write metadata: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "ok", "name": meta.Name})
 }
 
 // HandleConfig returns sanitized configuration.
@@ -456,6 +669,8 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/backlog/plan", d.HandlePlanDetail)
 	handleFunc("/api/skills", d.HandleSkills)
 	handleFunc("/api/sessions", d.HandleSessions)
+	handleFunc("/api/sessions/messages", d.HandleSessionMessages)
+	handleFunc("/api/sessions/rename", d.HandleSessionRename)
 	handleFunc("/api/config", d.HandleConfig)
 	handleFunc("/api/pipelines", d.HandlePipelines)
 	handleFunc("/api/tasks/cancel", d.HandleCancelTask)

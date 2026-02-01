@@ -256,9 +256,21 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 	defer sessionService.Close()
 
-	// Wire LLM model into the session service for /compact summarization.
+	// Wire LLM model and session namer into the file service.
 	if fs, ok := sessionService.(*kaggenSession.FileService); ok {
 		fs.SetModel(modelAdapter)
+		fs.SetLogger(logger)
+		namer := kaggenSession.NewSessionNamer(
+			cfg.Agent.Supervisor.OllamaBaseURL,
+			cfg.Agent.Supervisor.OllamaModel,
+			logger,
+		)
+		if namer != nil {
+			fs.SetNamer(namer)
+			logger.Info("session auto-naming enabled via Ollama",
+				"url", cfg.Agent.Supervisor.OllamaBaseURL,
+				"model", cfg.Agent.Supervisor.OllamaModel)
+		}
 	}
 
 	// Wrap session service to strip binary data (images, files) from history.

@@ -48,11 +48,16 @@ var agentCmd = &cobra.Command{
 }
 
 func init() {
-	agentCmd.Flags().StringVarP(&sessionID, "session", "s", "main", "Session ID to use")
+	agentCmd.Flags().StringVarP(&sessionID, "session", "s", "", "Session ID to use (defaults to new UUID)")
 	agentCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
+	// Generate UUID session ID if not explicitly provided.
+	if sessionID == "" {
+		sessionID = uuid.New().String()
+	}
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {

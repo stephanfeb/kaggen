@@ -172,10 +172,11 @@ func (w *WebSocketChannel) handleWebSocket(rw http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get or generate session ID from query param
+	// Get or generate session ID from query param.
+	// If not specified, generate a UUID for a new session.
 	sessionID := r.URL.Query().Get("session")
 	if sessionID == "" {
-		sessionID = "main"
+		sessionID = uuid.New().String()
 	}
 
 	clientID := uuid.New().String()

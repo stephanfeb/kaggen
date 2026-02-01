@@ -16,6 +16,23 @@ import (
 	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 )
 
+// SessionMetadata holds human-readable session info persisted in metadata.json.
+type SessionMetadata struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Channel   string    `json:"channel,omitempty"`
+	UserID    string    `json:"user_id"`
+}
+
+// ContextCache stores the last LLM messages array for fast session reload.
+type ContextCache struct {
+	Messages   []model.Message `json:"messages"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	TokenCount int             `json:"token_count,omitempty"`
+}
+
 // FileService implements trpc-agent-go's session.Service using the local filesystem.
 //
 // Storage layout:
@@ -24,6 +41,8 @@ import (
 //	  <appName>/<userID>/<sessionID>/
 //	    events.jsonl   – append-only event log
 //	    state.json     – session-level state
+//	    metadata.json  – session metadata (name, timestamps, channel)
+//	    context.json   – cached LLM context (messages array)
 //	  <appName>/
 //	    app_state.json – app-scoped state
 //	  <appName>/<userID>/
@@ -31,7 +50,9 @@ import (
 type FileService struct {
 	dataDir string
 	mu      sync.RWMutex
-	model   model.Model // LLM for session summarization (optional, set via SetModel)
+	model   model.Model        // LLM for session summarization (optional, set via SetModel)
+	namer   *SessionNamer      // Session auto-naming (optional, set via SetNamer)
+	logger  *slog.Logger
 }
 
 // compactKeepEvents is the number of recent events to keep after compaction.
@@ -42,7 +63,20 @@ var _ trpcsession.Service = (*FileService)(nil)
 
 // NewFileService creates a new file-backed session service rooted at dataDir.
 func NewFileService(dataDir string) *FileService {
-	return &FileService{dataDir: dataDir}
+	return &FileService{
+		dataDir: dataDir,
+		logger:  slog.Default(),
+	}
+}
+
+// SetNamer sets the session auto-namer.
+func (s *FileService) SetNamer(n *SessionNamer) {
+	s.namer = n
+}
+
+// SetLogger sets the logger for the file service.
+func (s *FileService) SetLogger(l *slog.Logger) {
+	s.logger = l
 }
 
 // sessionDir returns the directory for a specific session.
@@ -60,9 +94,53 @@ func (s *FileService) summaryPath(key trpcsession.Key) string {
 	return filepath.Join(s.sessionDir(key), "summary.json")
 }
 
+// metadataPath returns the path to the metadata JSON file for a session.
+func (s *FileService) metadataPath(key trpcsession.Key) string {
+	return filepath.Join(s.sessionDir(key), "metadata.json")
+}
+
+// contextCachePath returns the path to the context cache JSON file for a session.
+func (s *FileService) contextCachePath(key trpcsession.Key) string {
+	return filepath.Join(s.sessionDir(key), "context.json")
+}
+
 // SetModel sets the LLM model used for session summarization (/compact).
 func (s *FileService) SetModel(m model.Model) {
 	s.model = m
+}
+
+// ReadMetadata reads the session metadata from disk. Returns nil if not found.
+func (s *FileService) ReadMetadata(key trpcsession.Key) (*SessionMetadata, error) {
+	var meta SessionMetadata
+	if err := readJSON(s.metadataPath(key), &meta); err != nil {
+		return nil, err
+	}
+	if meta.ID == "" {
+		return nil, nil
+	}
+	return &meta, nil
+}
+
+// WriteMetadata writes session metadata to disk.
+func (s *FileService) WriteMetadata(key trpcsession.Key, meta *SessionMetadata) error {
+	return writeJSON(s.metadataPath(key), meta)
+}
+
+// ReadContextCache reads the cached LLM context from disk. Returns nil if not found.
+func (s *FileService) ReadContextCache(key trpcsession.Key) (*ContextCache, error) {
+	var cache ContextCache
+	if err := readJSON(s.contextCachePath(key), &cache); err != nil {
+		return nil, err
+	}
+	if len(cache.Messages) == 0 {
+		return nil, nil
+	}
+	return &cache, nil
+}
+
+// WriteContextCache writes the LLM context cache to disk.
+func (s *FileService) WriteContextCache(key trpcsession.Key, cache *ContextCache) error {
+	return writeJSON(s.contextCachePath(key), cache)
 }
 
 // sessionStatePath returns the path to the session state JSON file.
@@ -298,6 +376,13 @@ func (s *FileService) AppendEvent(ctx context.Context, sess *trpcsession.Session
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Check if this is the first event (metadata.json doesn't exist yet).
+	metaPath := s.metadataPath(key)
+	isFirst := false
+	if _, err := os.Stat(metaPath); os.IsNotExist(err) {
+		isFirst = true
+	}
+
 	// Update the in-memory session (mirrors inmemory behavior)
 	sess.UpdateUserSession(evt, opts...)
 
@@ -311,7 +396,110 @@ func (s *FileService) AppendEvent(ctx context.Context, sess *trpcsession.Session
 		return fmt.Errorf("write session state: %w", err)
 	}
 
+	now := time.Now().UTC()
+
+	if isFirst {
+		// Write initial metadata for new session.
+		meta := &SessionMetadata{
+			ID:        key.SessionID,
+			UserID:    key.UserID,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := writeJSON(metaPath, meta); err != nil {
+			s.logger.Warn("failed to write session metadata", "error", err)
+		}
+
+		// Fire async naming from first user message.
+		if s.namer != nil {
+			var firstContent string
+			if evt.Author == "user" && evt.Response != nil {
+				for _, choice := range evt.Response.Choices {
+					if choice.Message.Content != "" {
+						firstContent = choice.Message.Content
+						break
+					}
+				}
+			}
+			if firstContent != "" {
+				go s.asyncInferName(key, firstContent)
+			}
+		}
+	} else {
+		// Bump UpdatedAt on existing metadata.
+		go s.bumpMetadataUpdatedAt(key, now)
+	}
+
+	// Cache LLM context when a response with usage info arrives.
+	if evt.Response != nil && evt.Response.Usage != nil && evt.Response.Usage.TotalTokens > 0 {
+		go s.cacheContext(sess, key, evt.Response.Usage.TotalTokens)
+	}
+
 	return nil
+}
+
+// asyncInferName generates a session name from the first message and updates metadata.
+func (s *FileService) asyncInferName(key trpcsession.Key, firstMessage string) {
+	name := s.namer.InferName(context.Background(), firstMessage)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var meta SessionMetadata
+	if err := readJSON(s.metadataPath(key), &meta); err != nil || meta.ID == "" {
+		return
+	}
+	meta.Name = name
+	if err := writeJSON(s.metadataPath(key), &meta); err != nil {
+		s.logger.Warn("failed to update session name", "error", err)
+	}
+}
+
+// bumpMetadataUpdatedAt updates the UpdatedAt timestamp in metadata.
+func (s *FileService) bumpMetadataUpdatedAt(key trpcsession.Key, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var meta SessionMetadata
+	if err := readJSON(s.metadataPath(key), &meta); err != nil || meta.ID == "" {
+		return
+	}
+	meta.UpdatedAt = t
+	_ = writeJSON(s.metadataPath(key), &meta)
+}
+
+// cacheContext snapshots the current session messages as cached LLM context.
+func (s *FileService) cacheContext(sess *trpcsession.Session, key trpcsession.Key, tokenCount int) {
+	sess.EventMu.RLock()
+	var messages []model.Message
+	for _, e := range sess.Events {
+		if e.Response == nil {
+			continue
+		}
+		for _, choice := range e.Response.Choices {
+			if choice.Message.Content == "" && len(choice.Message.ContentParts) == 0 && len(choice.Message.ToolCalls) == 0 {
+				continue
+			}
+			messages = append(messages, choice.Message)
+		}
+	}
+	sess.EventMu.RUnlock()
+
+	if len(messages) == 0 {
+		return
+	}
+
+	cache := &ContextCache{
+		Messages:   messages,
+		UpdatedAt:  time.Now().UTC(),
+		TokenCount: tokenCount,
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := writeJSON(s.contextCachePath(key), cache); err != nil {
+		s.logger.Warn("failed to write context cache", "error", err)
+	}
 }
 
 // UpdateAppState merges state into the app-level state file.
