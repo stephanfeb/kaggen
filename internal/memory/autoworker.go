@@ -205,6 +205,18 @@ func (w *autoMemoryWorker) createAutoMemory(ctx context.Context, userKey memory.
 	if w.config.Extractor == nil {
 		return nil
 	}
+	// Guard: extractor needs at least one user message to build a valid prompt.
+	hasUser := false
+	for _, m := range messages {
+		if m.Role == model.RoleUser {
+			hasUser = true
+			break
+		}
+	}
+	if !hasUser {
+		w.logger.Debug("auto_memory: skipping extraction, no user messages in delta")
+		return nil
+	}
 	existing, err := w.operator.ReadMemories(ctx, userKey, 0)
 	if err != nil {
 		w.logger.Warn("auto_memory: failed to read existing memories", "error", err)

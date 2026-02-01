@@ -37,7 +37,13 @@ func (a *Adapter) GenerateContent(ctx context.Context, req *model.Request) (<-ch
 		defer close(responseChan)
 
 		// Convert trpc model.Request to our API format
-		apiReq := a.convertRequest(req)
+		apiReq, err := a.convertRequest(req)
+		if err != nil {
+			responseChan <- &model.Response{
+				Error: &model.ResponseError{Message: fmt.Sprintf("model error: %v", err)},
+			}
+			return
+		}
 
 		// Send request to Gemini API
 		resp, err := a.client.sendAPIRequest(ctx, apiReq)
@@ -72,7 +78,7 @@ func (a *Adapter) Info() model.Info {
 }
 
 // convertRequest converts a trpc model.Request to our internal API request format.
-func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
+func (a *Adapter) convertRequest(req *model.Request) (*apiRequest, error) {
 	apiReq := &apiRequest{
 		GenerationConfig: &apiGenerationConfig{
             MaxOutputTokens: 8192,
@@ -214,6 +220,9 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 	}
 	
 	apiContents = sanitizeContents(apiContents)
+	if len(apiContents) == 0 {
+		return nil, fmt.Errorf("no valid messages after sanitization (conversation must contain at least one user message)")
+	}
 	apiReq.Contents = apiContents
 
 	// Convert tools if present
@@ -230,7 +239,7 @@ func (a *Adapter) convertRequest(req *model.Request) *apiRequest {
 		apiReq.Tools = []apiTool{{FunctionDeclarations: funcDecls}}
 	}
 
-	return apiReq
+	return apiReq, nil
 }
 
 // convertResponse converts an API response to a trpc model.Response.
