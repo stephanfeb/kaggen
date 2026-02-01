@@ -227,14 +227,27 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		config.ExpandPath("~/.kaggen/skills"),
 	}
 
+	// Create supervisor if enabled.
+	var agentOpts []kaggenAgent.AgentOption
+	supervisor := kaggenAgent.NewSupervisor(cfg.Agent.Supervisor, logger)
+	if supervisor != nil {
+		agentOpts = append(agentOpts, kaggenAgent.WithSupervisor(supervisor))
+		logger.Info("agent supervisor enabled",
+			"ollama_model", cfg.Agent.Supervisor.OllamaModel,
+			"check_interval", cfg.Agent.Supervisor.CheckInterval)
+	}
+
 	// Build the initial agent via the factory/provider pattern.
 	// This enables hot-reload of skills on SIGHUP without restarting.
-	initialAgent, err := kaggenAgent.BuildInitialAgent(modelAdapter, toolList, fileMemory, skillDirs, memService, backlogStore, logger, cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask)
+	initialAgent, err := kaggenAgent.BuildInitialAgentWithOpts(modelAdapter, toolList, fileMemory, skillDirs, memService, backlogStore, logger, []int{cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask}, agentOpts...)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
 	provider := kaggenAgent.NewAgentProvider(initialAgent)
 	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, backlogStore, skillDirs, provider, logger, cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask)
+	if supervisor != nil {
+		factory.SetSupervisor(supervisor)
+	}
 
 	// Create session service with appropriate backend
 	sessionService, err := createSessionService(cfg)

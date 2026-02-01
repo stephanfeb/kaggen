@@ -444,6 +444,7 @@ type asyncDispatcher struct {
 	pipelines      []pipeline.Pipeline
 	pipelineAgents map[string]pipeline.PipelineAgent
 	maxTurns       int
+	supervisor     *Supervisor
 }
 
 // SetCompletionFunc updates the completion callback. This is used to wire up
@@ -716,6 +717,126 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 						"finish_reason", *c.FinishReason)
 				}
 			}
+
+			// Supervisor evaluation: check if agent is on track.
+			if d.supervisor != nil {
+				// Build a TaskEvent for the supervisor from the last recorded event.
+				var supervisorEvt *TaskEvent
+				if evt.Response.Error != nil {
+					supervisorEvt = &TaskEvent{Type: "error", Content: evt.Response.Error.Message}
+				} else if len(evt.Response.Choices) > 0 {
+					c := evt.Response.Choices[0]
+					supervisorEvt = &TaskEvent{Type: "response", Content: c.Message.Content, Turn: turnCount}
+					if len(c.Message.ToolCalls) > 0 {
+						supervisorEvt.Type = "tool_call"
+						names := make([]string, len(c.Message.ToolCalls))
+						for i, tc := range c.Message.ToolCalls {
+							names[i] = tc.Function.Name
+						}
+						supervisorEvt.Tools = names
+					}
+				}
+
+				if supervisorEvt != nil {
+					verdict := d.supervisor.Evaluate(taskID, supervisorEvt, req.Task)
+					switch verdict.Action {
+					case "correct":
+						if claudeAg, ok := ag.(*ClaudeAgent); ok {
+							if !d.supervisor.IncrementCorrections(taskID) {
+								errMsg := "exceeded max corrections: " + verdict.Reason
+								d.logger.Warn("supervisor: aborting task", "task_id", taskID, "reason", errMsg)
+								d.store.Fail(taskID, errMsg)
+								failBacklogItem()
+								d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
+								cancel()
+								return
+							}
+							sessionID := claudeAg.Kill()
+							d.store.AddEvent(taskID, &TaskEvent{
+								Timestamp: time.Now(),
+								Type:      "supervisor_correction",
+								Turn:      turnCount,
+								Content:   verdict.Reason,
+							})
+							d.logger.Info("supervisor: correcting agent",
+								"task_id", taskID, "reason", verdict.Reason, "session_id", sessionID)
+							newEvents, err := claudeAg.Resume(bgCtx, inv, sessionID, verdict.Correction)
+							if err != nil {
+								errMsg := "resume failed: " + err.Error()
+								d.store.Fail(taskID, errMsg)
+								failBacklogItem()
+								d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
+								cancel()
+								return
+							}
+							// Swap to the new event channel — drain remaining events from the
+							// resumed subprocess by recursing into a helper or re-reading.
+							// Since we can't reassign the range variable, we drain the new channel inline.
+							for resumeEvt := range newEvents {
+								if resumeEvt == nil {
+									continue
+								}
+								inv.Session.UpdateUserSession(resumeEvt)
+								if resumeEvt.RequiresCompletion {
+									key := agent.GetAppendEventNoticeKey(resumeEvt.ID)
+									_ = inv.NotifyCompletion(bgCtx, key)
+								}
+								if resumeEvt.Response == nil {
+									continue
+								}
+								turnCount++
+								if turnCount >= d.maxTurns {
+									errMsg := fmt.Sprintf("aborted: exceeded %d turns without completing", d.maxTurns)
+									d.store.Fail(taskID, errMsg)
+									failBacklogItem()
+									d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
+									cancel()
+									return
+								}
+								if resumeEvt.Response.Error != nil {
+									d.store.AddEvent(taskID, &TaskEvent{
+										Timestamp: time.Now(), Type: "error", Turn: turnCount,
+										Content: resumeEvt.Response.Error.Message,
+									})
+									continue
+								}
+								if len(resumeEvt.Response.Choices) > 0 {
+									rc := resumeEvt.Response.Choices[0]
+									if rc.Message.Content != "" {
+										result = rc.Message.Content
+										preview := rc.Message.Content
+										if len(preview) > 200 {
+											preview = preview[:200] + "..."
+										}
+										d.store.AddEvent(taskID, &TaskEvent{
+											Timestamp: time.Now(), Type: "response", Turn: turnCount, Content: preview,
+										})
+									}
+									if len(rc.Message.ToolCalls) > 0 {
+										names := make([]string, len(rc.Message.ToolCalls))
+										for i, tc := range rc.Message.ToolCalls {
+											names[i] = tc.Function.Name
+										}
+										d.store.AddEvent(taskID, &TaskEvent{
+											Timestamp: time.Now(), Type: "tool_call", Turn: turnCount, Tools: names,
+										})
+									}
+								}
+							}
+							// After draining resumed events, we're done with this dispatch.
+							// Break out of the original event loop.
+							break
+						}
+					case "abort":
+						d.logger.Warn("supervisor: aborting task", "task_id", taskID, "reason", verdict.Reason)
+						d.store.Fail(taskID, verdict.Reason)
+						failBacklogItem()
+						d.getCompleteFn()(taskID, "", fmt.Errorf("%s", verdict.Reason), policy)
+						cancel()
+						return
+					}
+				}
+			}
 		}
 
 		d.logger.Info("async task event loop done",
@@ -790,7 +911,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 // NewAsyncDispatchTool creates a tool that dispatches tasks to sub-agents asynchronously.
 // It returns both the tool and the dispatcher, so the caller can update the
 // completion function later via SetCompletionFunc.
-func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger, pipelines []pipeline.Pipeline, pipelineAgents map[string]pipeline.PipelineAgent, bStore *backlog.Store, maxTurns ...int) (tool.Tool, *asyncDispatcher) {
+func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, completeFn CompletionFunc, m model.Model, memSvc memory.Service, logger *slog.Logger, pipelines []pipeline.Pipeline, pipelineAgents map[string]pipeline.PipelineAgent, bStore *backlog.Store, supervisor *Supervisor, maxTurns ...int) (tool.Tool, *asyncDispatcher) {
 	turns := 75
 	if len(maxTurns) > 0 && maxTurns[0] > 0 {
 		turns = maxTurns[0]
@@ -806,6 +927,7 @@ func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, c
 		pipelines:      pipelines,
 		pipelineAgents: pipelineAgents,
 		maxTurns:       turns,
+		supervisor:     supervisor,
 	}
 	t := function.NewFunctionTool(
 		d.dispatch,

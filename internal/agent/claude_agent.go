@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -19,6 +20,9 @@ import (
 // ClaudeAgent implements agent.Agent by running `claude -p` as a subprocess
 // instead of making an LLM API call. This eliminates the intermediate LLM
 // round-trip that was previously used just to construct a CLI command.
+//
+// It uses --output-format stream-json to get real-time events, enabling
+// the supervisor to monitor and intervene during execution.
 type ClaudeAgent struct {
 	name        string
 	description string
@@ -28,6 +32,12 @@ type ClaudeAgent struct {
 	instruction string        // skill instruction prepended to task prompt
 	timeout     time.Duration // subprocess timeout
 	logger      *slog.Logger
+
+	// Mutable state for active subprocess (protected by mu).
+	mu        sync.Mutex
+	activeCmd *exec.Cmd
+	cancelFn  context.CancelFunc
+	sessionID string
 }
 
 // ClaudeAgentOption configures a ClaudeAgent.
@@ -79,30 +89,40 @@ func NewClaudeAgent(name, description string, opts ...ClaudeAgentOption) *Claude
 	return a
 }
 
-// claudeOutput is the JSON structure returned by `claude -p --output-format json`.
-type claudeOutput struct {
-	SessionID string `json:"session_id"`
-	Result    string `json:"result"`
-	Cost      any    `json:"cost_usd"`
+// Stream-JSON event types from `claude -p --output-format stream-json --verbose`.
+
+type claudeStreamEvent struct {
+	Type      string          `json:"type"`    // "system", "assistant", "user", "result"
+	Subtype   string          `json:"subtype"` // e.g. "init", "success"
+	SessionID string          `json:"session_id"`
+	Message   *claudeMessage  `json:"message,omitempty"`
+	Result    string          `json:"result,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+	TotalCost float64         `json:"total_cost_usd,omitempty"`
 }
 
-// Run executes the task by spawning a `claude -p` subprocess.
-// It combines the skill instruction with the task from the invocation message,
-// streams output, and returns events compatible with the async dispatch loop.
-func (a *ClaudeAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
-	// Extract task text from invocation message.
-	taskText := invocation.Message.Content
+type claudeMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"` // array of claudeContent
+	Usage   *claudeUsage    `json:"usage,omitempty"`
+}
 
-	// Build the combined prompt: instruction context + task.
-	var prompt string
-	if a.instruction != "" {
-		prompt = a.instruction + "\n\n---\n\n" + taskText
-	} else {
-		prompt = taskText
-	}
+type claudeContent struct {
+	Type  string          `json:"type"` // "text", "tool_use", "tool_result"
+	Text  string          `json:"text,omitempty"`
+	Name  string          `json:"name,omitempty"`  // tool name for tool_use
+	ID    string          `json:"id,omitempty"`    // tool call ID
+	Input json.RawMessage `json:"input,omitempty"` // tool args
+}
 
-	// Build CLI arguments.
-	args := []string{"-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"}
+type claudeUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// buildArgs constructs the CLI arguments for a claude -p invocation.
+func (a *ClaudeAgent) buildArgs(prompt string) []string {
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
 	if a.claudeModel != "" {
 		args = append(args, "--model", a.claudeModel)
 	}
@@ -112,18 +132,23 @@ func (a *ClaudeAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	if a.tools != "" {
 		args = append(args, "--allowed-tools", a.tools)
 	}
+	return args
+}
 
-	a.logger.Info("claude subprocess starting",
-		"agent", a.name,
-		"model", a.claudeModel,
-		"work_dir", a.workDir,
-		"prompt_len", len(prompt))
+// buildPrompt combines the skill instruction with the task text.
+func (a *ClaudeAgent) buildPrompt(taskText string) string {
+	if a.instruction != "" {
+		return a.instruction + "\n\n---\n\n" + taskText
+	}
+	return taskText
+}
 
-	// Create subprocess with timeout context.
+// runSubprocess starts a claude subprocess and streams events on the returned channel.
+// It sets activeCmd, cancelFn, and sessionID on the agent for Kill/Resume support.
+func (a *ClaudeAgent) runSubprocess(ctx context.Context, invocation *agent.Invocation, args []string) (<-chan *event.Event, error) {
 	subCtx, cancel := context.WithTimeout(ctx, a.timeout)
 	cmd := exec.CommandContext(subCtx, "claude", args...)
 
-	// Capture stderr for error reporting.
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
 
@@ -138,80 +163,240 @@ func (a *ClaudeAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 		return nil, fmt.Errorf("claude subprocess start: %w", err)
 	}
 
-	ch := make(chan *event.Event, 1)
+	// Store active state for Kill().
+	a.mu.Lock()
+	a.activeCmd = cmd
+	a.cancelFn = cancel
+	a.sessionID = ""
+	a.mu.Unlock()
+
+	invID := ""
+	if invocation != nil {
+		invID = invocation.InvocationID
+	}
+
+	ch := make(chan *event.Event, 8)
 	go func() {
 		defer close(ch)
+		defer func() {
+			a.mu.Lock()
+			a.activeCmd = nil
+			a.cancelFn = nil
+			a.mu.Unlock()
+		}()
 		defer cancel()
 
-		// Read all stdout (claude -p --output-format json writes a single JSON blob).
-		var output strings.Builder
 		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB buffer
+		scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
 		for scanner.Scan() {
-			output.WriteString(scanner.Text())
-			output.WriteByte('\n')
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			var streamEvt claudeStreamEvent
+			if err := json.Unmarshal([]byte(line), &streamEvt); err != nil {
+				a.logger.Debug("claude stream: unparseable line", "line", line[:min(len(line), 200)])
+				continue
+			}
+
+			// Capture session_id from any event.
+			if streamEvt.SessionID != "" {
+				a.mu.Lock()
+				if a.sessionID == "" {
+					a.sessionID = streamEvt.SessionID
+					a.logger.Info("claude session started", "agent", a.name, "session_id", a.sessionID)
+				}
+				a.mu.Unlock()
+			}
+
+			switch streamEvt.Type {
+			case "assistant":
+				if streamEvt.Message == nil {
+					continue
+				}
+				evt := a.parseAssistantEvent(invID, &streamEvt)
+				if evt != nil {
+					ch <- evt
+				}
+
+			case "result":
+				// Final result event.
+				finishReason := "stop"
+				content := streamEvt.Result
+				if streamEvt.IsError {
+					ch <- event.NewResponseEvent(invID, a.name, &model.Response{
+						Error: &model.ResponseError{Message: content},
+					})
+				} else {
+					ch <- event.NewResponseEvent(invID, a.name, &model.Response{
+						Choices: []model.Choice{{
+							Index: 0,
+							Message: model.Message{
+								Role:    model.RoleAssistant,
+								Content: content,
+							},
+							FinishReason: &finishReason,
+						}},
+					})
+				}
+				a.logger.Info("claude subprocess completed",
+					"agent", a.name,
+					"session_id", streamEvt.SessionID,
+					"cost_usd", streamEvt.TotalCost,
+					"result_len", len(content))
+			}
 		}
 
+		// Wait for process to finish.
 		waitErr := cmd.Wait()
-		invID := ""
-		if invocation != nil {
-			invID = invocation.InvocationID
-		}
-
 		if waitErr != nil {
-			// Subprocess failed.
+			// Check if it was killed intentionally.
+			a.mu.Lock()
+			wasKilled := a.activeCmd == nil
+			a.mu.Unlock()
+			if wasKilled {
+				return // Kill() was called, don't emit error
+			}
+
 			errMsg := fmt.Sprintf("claude subprocess failed: %v", waitErr)
 			if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" {
 				errMsg += "\nstderr: " + stderr
 			}
-			a.logger.Error("claude subprocess failed",
-				"agent", a.name,
-				"error", waitErr,
-				"stderr", stderrBuf.String())
-
+			a.logger.Error("claude subprocess failed", "agent", a.name, "error", waitErr)
 			ch <- event.NewResponseEvent(invID, a.name, &model.Response{
 				Error: &model.ResponseError{Message: errMsg},
 			})
-			return
 		}
-
-		// Parse JSON output.
-		rawOutput := strings.TrimSpace(output.String())
-		var result string
-		var parsed claudeOutput
-		if json.Unmarshal([]byte(rawOutput), &parsed) == nil && parsed.Result != "" {
-			result = parsed.Result
-			a.logger.Info("claude subprocess completed",
-				"agent", a.name,
-				"session_id", parsed.SessionID,
-				"result_len", len(result))
-		} else {
-			// Fallback: use raw output as result.
-			result = rawOutput
-			a.logger.Info("claude subprocess completed (raw output)",
-				"agent", a.name,
-				"result_len", len(result))
-		}
-
-		// Emit a single response event with the result.
-		finishReason := "stop"
-		ch <- event.NewResponseEvent(invID, a.name, &model.Response{
-			Choices: []model.Choice{{
-				Index: 0,
-				Message: model.Message{
-					Role:    model.RoleAssistant,
-					Content: result,
-				},
-				FinishReason: &finishReason,
-			}},
-		})
 	}()
 
 	return ch, nil
 }
 
+// parseAssistantEvent converts a claude stream assistant event into a trpc event.
+func (a *ClaudeAgent) parseAssistantEvent(invID string, streamEvt *claudeStreamEvent) *event.Event {
+	msg := streamEvt.Message
+	if msg == nil {
+		return nil
+	}
+
+	var contents []claudeContent
+	if err := json.Unmarshal(msg.Content, &contents); err != nil {
+		return nil
+	}
+
+	var toolCalls []model.ToolCall
+	var textContent string
+
+	for _, c := range contents {
+		switch c.Type {
+		case "tool_use":
+			toolCalls = append(toolCalls, model.ToolCall{
+				ID: c.ID,
+				Function: model.FunctionDefinitionParam{
+					Name:      c.Name,
+					Arguments: c.Input,
+				},
+			})
+		case "text":
+			textContent += c.Text
+		}
+	}
+
+	// Build usage if available.
+	var usage *model.Usage
+	if msg.Usage != nil {
+		usage = &model.Usage{
+			PromptTokens:     msg.Usage.InputTokens,
+			CompletionTokens: msg.Usage.OutputTokens,
+			TotalTokens:      msg.Usage.InputTokens + msg.Usage.OutputTokens,
+		}
+	}
+
+	resp := &model.Response{Usage: usage}
+
+	if len(toolCalls) > 0 || textContent != "" {
+		resp.Choices = []model.Choice{{
+			Index: 0,
+			Message: model.Message{
+				Role:      model.RoleAssistant,
+				Content:   textContent,
+				ToolCalls: toolCalls,
+			},
+		}}
+	} else {
+		return nil
+	}
+
+	return event.NewResponseEvent(invID, a.name, resp)
+}
+
+// Run executes the task by spawning a `claude -p` subprocess with stream-json output.
+func (a *ClaudeAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
+	taskText := invocation.Message.Content
+	prompt := a.buildPrompt(taskText)
+	args := a.buildArgs(prompt)
+
+	a.logger.Info("claude subprocess starting",
+		"agent", a.name,
+		"model", a.claudeModel,
+		"work_dir", a.workDir,
+		"prompt_len", len(prompt))
+
+	return a.runSubprocess(ctx, invocation, args)
+}
+
+// Kill terminates the active subprocess and returns its session_id for potential resume.
+// Returns empty string if no subprocess is active or session_id was not captured.
+func (a *ClaudeAgent) Kill() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	sid := a.sessionID
+	if a.activeCmd != nil && a.activeCmd.Process != nil {
+		_ = a.activeCmd.Process.Kill()
+		a.activeCmd = nil
+	}
+	if a.cancelFn != nil {
+		a.cancelFn()
+		a.cancelFn = nil
+	}
+
+	a.logger.Info("claude subprocess killed", "agent", a.name, "session_id", sid)
+	return sid
+}
+
+// SessionID returns the session ID of the active or last subprocess.
+func (a *ClaudeAgent) SessionID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessionID
+}
+
+// Resume starts a new subprocess that continues from a previous session with a corrective prompt.
+func (a *ClaudeAgent) Resume(ctx context.Context, invocation *agent.Invocation, sessionID, correction string) (<-chan *event.Event, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("no session_id for resume")
+	}
+
+	args := []string{
+		"-p", correction,
+		"--resume", sessionID,
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+	}
+
+	a.logger.Info("claude subprocess resuming",
+		"agent", a.name,
+		"session_id", sessionID,
+		"correction_len", len(correction))
+
+	return a.runSubprocess(ctx, invocation, args)
+}
+
 // Tools returns an empty slice — ClaudeAgent doesn't expose tools to the coordinator.
-// The actual tools are specified via --allowed-tools on the subprocess.
 func (a *ClaudeAgent) Tools() []tool.Tool {
 	return nil
 }

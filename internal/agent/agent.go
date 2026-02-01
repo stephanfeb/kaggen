@@ -61,6 +61,7 @@ type AgentOption func(*agentOptions)
 type agentOptions struct {
 	extConfig           *ExternalDeliveryConfig
 	extraCoordTools     []tool.Tool
+	supervisor          *Supervisor
 }
 
 // WithExternalConfig injects external delivery configuration into the
@@ -74,6 +75,11 @@ func WithExternalConfig(cfg *ExternalDeliveryConfig) AgentOption {
 // tool set (e.g. external_task_register, external_task_list).
 func WithExtraCoordinatorTools(tools ...tool.Tool) AgentOption {
 	return func(o *agentOptions) { o.extraCoordTools = append(o.extraCoordTools, tools...) }
+}
+
+// WithSupervisor sets the agent execution supervisor for monitoring ClaudeAgent subprocesses.
+func WithSupervisor(s *Supervisor) AgentOption {
+	return func(o *agentOptions) { o.supervisor = s }
 }
 
 // NewAgent creates a new Kaggen agent using the Coordinator Team pattern.
@@ -145,7 +151,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	dispatchPipelines, _ := pipeline.LoadAll(pipelinesDir)
 	dispatchPipelineAgents := pipeline.AgentSet(dispatchPipelines)
 
-	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents, bStore, maxTurnsPerTask)
+	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents, bStore, ao.supervisor, maxTurnsPerTask)
 	statusTool := NewTaskStatusTool(store)
 
 	pipelineStatusTool := NewPipelineStatusTool(store, dispatchPipelines)

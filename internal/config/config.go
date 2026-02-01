@@ -134,14 +134,26 @@ type IndexingConfig struct {
 
 // AgentConfig configures the AI agent.
 type AgentConfig struct {
-	Model            string `json:"model"`              // e.g., "anthropic/claude-sonnet-4-20250514"
-	Workspace        string `json:"workspace"`          // e.g., "~/.kaggen/workspace"
-	MaxHistoryRuns   int    `json:"max_history_runs"`   // Max conversation messages to keep in context (0 = unlimited, default 40)
-	PreloadMemory    int    `json:"preload_memory"`     // Memories to inject into system prompt each turn (0 = disabled, -1 = all, default 20)
-	MaxTurnsPerTask  int    `json:"max_turns_per_task"` // Max LLM turns per async task before circuit breaker (0 = default 75)
-	MaxConcurrentLLM int    `json:"max_concurrent_llm"` // Max concurrent LLM API calls (0 = unlimited, default 4)
-	ClaudeModel      string `json:"claude_model,omitempty"`  // Default Claude model for sub-agent subprocess dispatch (e.g. "sonnet"), default "sonnet"
-	ClaudeTools      string `json:"claude_tools,omitempty"`  // Default --allowed-tools for Claude sub-agents, default "Bash,Read,Edit,Write,Glob,Grep"
+	Model            string           `json:"model"`              // e.g., "anthropic/claude-sonnet-4-20250514"
+	Workspace        string           `json:"workspace"`          // e.g., "~/.kaggen/workspace"
+	MaxHistoryRuns   int              `json:"max_history_runs"`   // Max conversation messages to keep in context (0 = unlimited, default 40)
+	PreloadMemory    int              `json:"preload_memory"`     // Memories to inject into system prompt each turn (0 = disabled, -1 = all, default 20)
+	MaxTurnsPerTask  int              `json:"max_turns_per_task"` // Max LLM turns per async task before circuit breaker (0 = default 75)
+	MaxConcurrentLLM int              `json:"max_concurrent_llm"` // Max concurrent LLM API calls (0 = unlimited, default 4)
+	ClaudeModel      string           `json:"claude_model,omitempty"`  // Default Claude model for sub-agent subprocess dispatch (e.g. "sonnet"), default "sonnet"
+	ClaudeTools      string           `json:"claude_tools,omitempty"`  // Default --allowed-tools for Claude sub-agents, default "Bash,Read,Edit,Write,Glob,Grep"
+	Supervisor       SupervisorConfig `json:"supervisor,omitempty"`    // Agent execution supervisor
+}
+
+// SupervisorConfig configures the agent execution supervisor that monitors
+// ClaudeAgent subprocesses and can intervene when agents go off-track.
+type SupervisorConfig struct {
+	Enabled         bool   `json:"enabled"`
+	OllamaBaseURL   string `json:"ollama_base_url,omitempty"`   // default "http://localhost:11434"
+	OllamaModel     string `json:"ollama_model,omitempty"`      // default "qwen2.5:1.5b"
+	CheckInterval   int    `json:"check_interval,omitempty"`    // turns between Ollama checks, default 10
+	MaxCorrections  int    `json:"max_corrections,omitempty"`   // max resume attempts before abort, default 2
+	StallTimeoutSec int    `json:"stall_timeout_sec,omitempty"` // seconds of inactivity before stall detection, default 300
 }
 
 // GatewayConfig configures the gateway server.

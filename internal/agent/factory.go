@@ -121,6 +121,7 @@ type AgentFactory struct {
 	maxTurnsPerTask int
 	extConfig       *ExternalDeliveryConfig
 	extraCoordTools []tool.Tool
+	supervisor      *Supervisor
 	mu              sync.Mutex // serializes rebuilds
 }
 
@@ -169,6 +170,14 @@ func NewAgentFactory(
 func (f *AgentFactory) SetExternalConfig(cfg *ExternalDeliveryConfig) {
 	f.mu.Lock()
 	f.extConfig = cfg
+	f.mu.Unlock()
+}
+
+// SetSupervisor stores the supervisor for agent execution monitoring.
+// Applied on the next Rebuild().
+func (f *AgentFactory) SetSupervisor(s *Supervisor) {
+	f.mu.Lock()
+	f.supervisor = s
 	f.mu.Unlock()
 }
 
@@ -225,6 +234,9 @@ func (f *AgentFactory) Rebuild() error {
 	}
 	if len(f.extraCoordTools) > 0 {
 		agentOpts = append(agentOpts, WithExtraCoordinatorTools(f.extraCoordTools...))
+	}
+	if f.supervisor != nil {
+		agentOpts = append(agentOpts, WithSupervisor(f.supervisor))
 	}
 	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.backlogStore, f.logger, []int{f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask}, agentOpts...)
 	if err != nil {

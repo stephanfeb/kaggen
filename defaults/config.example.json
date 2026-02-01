@@ -1,7 +1,21 @@
 {
   "agent": {
     "model": "anthropic/claude-haiku-4-5",
-    "workspace": "~/.kaggen/workspace"
+    "workspace": "~/.kaggen/workspace",
+    "max_history_runs": 40,
+    "preload_memory": 20,
+    "max_turns_per_task": 75,
+    "max_concurrent_llm": 4,
+    "claude_model": "sonnet",
+    "claude_tools": "Bash,Read,Edit,Write,Glob,Grep",
+    "supervisor": {
+      "enabled": false,
+      "ollama_base_url": "http://localhost:11434",
+      "ollama_model": "qwen2.5:1.5b",
+      "check_interval": 10,
+      "max_corrections": 2,
+      "stall_timeout_sec": 300
+    }
   },
   "gateway": {
     "bind": "127.0.0.1",
