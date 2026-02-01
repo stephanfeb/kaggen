@@ -140,6 +140,8 @@ type AgentConfig struct {
 	PreloadMemory    int    `json:"preload_memory"`     // Memories to inject into system prompt each turn (0 = disabled, -1 = all, default 20)
 	MaxTurnsPerTask  int    `json:"max_turns_per_task"` // Max LLM turns per async task before circuit breaker (0 = default 75)
 	MaxConcurrentLLM int    `json:"max_concurrent_llm"` // Max concurrent LLM API calls (0 = unlimited, default 4)
+	ClaudeModel      string `json:"claude_model,omitempty"`  // Default Claude model for sub-agent subprocess dispatch (e.g. "sonnet"), default "sonnet"
+	ClaudeTools      string `json:"claude_tools,omitempty"`  // Default --allowed-tools for Claude sub-agents, default "Bash,Read,Edit,Write,Glob,Grep"
 }
 
 // GatewayConfig configures the gateway server.

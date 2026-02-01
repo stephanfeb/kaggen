@@ -7,12 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+
+	"github.com/yourusername/kaggen/internal/config"
 )
 
 // CaseInsensitiveRepository wraps a skill.Repository to provide case-insensitive lookups.
@@ -55,11 +58,33 @@ func (r *CaseInsensitiveRepository) Path(name string) (string, error) {
 	return r.inner.Path(name)
 }
 
+// skillFrontmatter holds parsed SKILL.md frontmatter fields.
+type skillFrontmatter struct {
+	Tools      []string // allowed tool names
+	Delegate   string   // "claude" for subprocess dispatch, empty for LLM agent
+	ClaudeModel string  // --model flag override
+	ClaudeTools string  // --allowed-tools override
+	WorkDir    string   // --add-dir override
+}
+
 // BuildSubAgents creates a specialist sub-agent for each skill in the repository,
 // plus a general-purpose sub-agent with the provided tools. These sub-agents are
 // used as members of the Coordinator Team.
 func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []tool.Tool, logger *slog.Logger) ([]agent.Agent, error) {
 	var agents []agent.Agent
+
+	// Load default claude config for sub-agents.
+	cfg, _ := config.Load()
+	defaultClaudeModel := "sonnet"
+	defaultClaudeTools := "Bash,Read,Edit,Write,Glob,Grep"
+	if cfg != nil {
+		if cfg.Agent.ClaudeModel != "" {
+			defaultClaudeModel = cfg.Agent.ClaudeModel
+		}
+		if cfg.Agent.ClaudeTools != "" {
+			defaultClaudeTools = cfg.Agent.ClaudeTools
+		}
+	}
 
 	// Create a sub-agent for each skill.
 	if skillsRepo != nil {
@@ -75,11 +100,38 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				instruction = summary.Description
 			}
 
-			// Determine which tools this skill agent gets.
+			fm := parseSkillFrontmatter(skillsRepo, summary.Name, logger)
+
+			// If skill delegates to claude, create a ClaudeAgent (subprocess).
+			if fm.Delegate == "claude" {
+				claudeModel := defaultClaudeModel
+				if fm.ClaudeModel != "" {
+					claudeModel = fm.ClaudeModel
+				}
+				claudeTools := defaultClaudeTools
+				if fm.ClaudeTools != "" {
+					claudeTools = fm.ClaudeTools
+				}
+				workDir := fm.WorkDir
+
+				sa := NewClaudeAgent(summary.Name, summary.Description,
+					WithClaudeModel(claudeModel),
+					WithClaudeTools(claudeTools),
+					WithClaudeWorkDir(workDir),
+					WithClaudeInstruction(instruction),
+					WithClaudeTimeout(30*time.Minute),
+					WithClaudeLogger(logger),
+				)
+				agents = append(agents, sa)
+				logger.Info("created claude sub-agent", "name", summary.Name, "model", claudeModel)
+				continue
+			}
+
+			// Standard LLM agent path.
 			agentTools := generalTools
-			if allowedTools := parseSkillTools(skillsRepo, summary.Name, logger); len(allowedTools) > 0 {
-				agentTools = filterTools(generalTools, allowedTools)
-				logger.Info("skill tool filter", "skill", summary.Name, "allowed", allowedTools)
+			if len(fm.Tools) > 0 {
+				agentTools = filterTools(generalTools, fm.Tools)
+				logger.Info("skill tool filter", "skill", summary.Name, "allowed", fm.Tools)
 			}
 
 			sa := llmagent.New(summary.Name,
@@ -114,16 +166,16 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	return agents, nil
 }
 
-// parseSkillTools reads the SKILL.md frontmatter for a "tools" field and returns
-// the list of allowed tool names. Returns nil if no tools field is specified.
-func parseSkillTools(repo skill.Repository, name string, _ *slog.Logger) []string {
+// parseSkillFrontmatter reads the SKILL.md frontmatter and returns parsed fields.
+func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) skillFrontmatter {
+	var fm skillFrontmatter
 	dir, err := repo.Path(name)
 	if err != nil {
-		return nil
+		return fm
 	}
 	f, err := os.Open(filepath.Join(dir, "SKILL.md"))
 	if err != nil {
-		return nil
+		return fm
 	}
 	defer f.Close()
 
@@ -131,7 +183,7 @@ func parseSkillTools(repo skill.Repository, name string, _ *slog.Logger) []strin
 	// Read opening ---
 	line, err := rd.ReadString('\n')
 	if err != nil || strings.TrimSpace(line) != "---" {
-		return nil
+		return fm
 	}
 	// Read frontmatter lines until closing ---
 	for {
@@ -139,23 +191,34 @@ func parseSkillTools(repo skill.Repository, name string, _ *slog.Logger) []strin
 		if err != nil || strings.TrimSpace(l) == "---" {
 			break
 		}
-		if i := strings.Index(l, ":"); i >= 0 {
-			key := strings.TrimSpace(l[:i])
-			if key == "tools" {
-				val := strings.TrimSpace(l[i+1:])
-				val = strings.Trim(val, "[]\"'")
-				var tools []string
-				for _, t := range strings.Split(val, ",") {
-					t = strings.TrimSpace(t)
-					if t != "" {
-						tools = append(tools, t)
-					}
+		i := strings.Index(l, ":")
+		if i < 0 {
+			continue
+		}
+		key := strings.TrimSpace(l[:i])
+		val := strings.TrimSpace(l[i+1:])
+		val = strings.Trim(val, "\"'")
+
+		switch key {
+		case "tools":
+			val = strings.Trim(val, "[]")
+			for _, t := range strings.Split(val, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					fm.Tools = append(fm.Tools, t)
 				}
-				return tools
 			}
+		case "delegate":
+			fm.Delegate = val
+		case "claude_model":
+			fm.ClaudeModel = val
+		case "claude_tools":
+			fm.ClaudeTools = val
+		case "work_dir":
+			fm.WorkDir = config.ExpandPath(val)
 		}
 	}
-	return nil
+	return fm
 }
 
 // filterTools returns only tools whose Declaration().Name is in the allowed list.
