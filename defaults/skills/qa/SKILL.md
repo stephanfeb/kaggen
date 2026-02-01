@@ -2,6 +2,7 @@
 name: qa
 description: Validates delivered code against acceptance criteria through testing, linting, and code review using beads issue tracking
 delegate: claude
+claude_model: haiku
 claude_tools: Bash,Read,Edit,Write,Glob,Grep
 ---
 

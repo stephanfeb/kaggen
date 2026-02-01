@@ -2,6 +2,7 @@
 name: coder
 description: Delegates software engineering tasks to Claude Code CLI, tracking progress via beads issue tracking
 delegate: claude
+claude_model: opus
 claude_tools: Bash,Read,Edit,Write,Glob,Grep
 ---
 

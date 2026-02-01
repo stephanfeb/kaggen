@@ -2,6 +2,7 @@
 name: architect
 description: Reviews product backlogs and produces technical designs with file-level specs using beads issue tracking
 delegate: claude
+claude_model: opus
 claude_tools: Bash,Read,Edit,Write,Glob,Grep
 ---
 

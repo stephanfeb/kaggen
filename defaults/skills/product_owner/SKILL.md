@@ -2,6 +2,7 @@
 name: product_owner
 description: Decomposes user requests into actionable backlogs with user stories and acceptance criteria using beads issue tracking
 delegate: claude
+claude_model: opus
 claude_tools: Bash,Read,Edit,Write,Glob,Grep
 ---
 
