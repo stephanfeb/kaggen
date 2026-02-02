@@ -376,6 +376,7 @@ func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Requ
 		Role      string   `json:"role"`
 		Content   string   `json:"content"`
 		Timestamp string   `json:"timestamp,omitempty"`
+		SendFile  string   `json:"send_file,omitempty"`
 		ToolCalls []string `json:"tool_calls,omitempty"` // only if detail=full
 		ToolID    string   `json:"tool_id,omitempty"`    // only if detail=full
 	}
@@ -403,11 +404,19 @@ func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Requ
 				if len(msg.ToolCalls) > 0 && msg.Content == "" {
 					continue
 				}
+				content := msg.Content
+				var sendFile string
+				meta := map[string]any{}
+				content, meta = extractSendFiles(content, meta)
+				if sf, ok := meta["send_file"].(string); ok {
+					sendFile = sf
+				}
 				messages = append(messages, msgOut{
 					EventID:   evt.ID,
 					Role:      string(msg.Role),
-					Content:   msg.Content,
+					Content:   content,
 					Timestamp: ts,
+					SendFile:  sendFile,
 				})
 			} else {
 				// Full mode: include everything.
