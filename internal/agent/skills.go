@@ -60,18 +60,21 @@ func (r *CaseInsensitiveRepository) Path(name string) (string, error) {
 
 // skillFrontmatter holds parsed SKILL.md frontmatter fields.
 type skillFrontmatter struct {
-	Tools      []string // allowed tool names
-	Delegate   string   // "claude" for subprocess dispatch, empty for LLM agent
-	ClaudeModel string  // --model flag override
-	ClaudeTools string  // --allowed-tools override
-	WorkDir    string   // --add-dir override
+	Tools        []string // allowed tool names
+	GuardedTools []string // tools that require human approval before execution
+	Delegate     string   // "claude" for subprocess dispatch, empty for LLM agent
+	ClaudeModel  string   // --model flag override
+	ClaudeTools  string   // --allowed-tools override
+	WorkDir      string   // --add-dir override
 }
 
 // BuildSubAgents creates a specialist sub-agent for each skill in the repository,
 // plus a general-purpose sub-agent with the provided tools. These sub-agents are
 // used as members of the Coordinator Team.
-func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []tool.Tool, logger *slog.Logger) ([]agent.Agent, error) {
+// It also returns a map of guarded tool names to their owning skill name.
+func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []tool.Tool, logger *slog.Logger) ([]agent.Agent, map[string]string, error) {
 	var agents []agent.Agent
+	guardedTools := make(map[string]string) // tool name -> skill name
 
 	// Load default claude config for sub-agents.
 	cfg, _ := config.Load()
@@ -101,6 +104,14 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 			}
 
 			fm := parseSkillFrontmatter(skillsRepo, summary.Name, logger)
+
+			// Collect guarded tools for this skill.
+			for _, gt := range fm.GuardedTools {
+				guardedTools[gt] = summary.Name
+			}
+			if len(fm.GuardedTools) > 0 {
+				logger.Info("skill guarded tools", "skill", summary.Name, "guarded", fm.GuardedTools)
+			}
 
 			// If skill delegates to claude, create a ClaudeAgent (subprocess).
 			if fm.Delegate == "claude" {
@@ -160,10 +171,10 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	agents = append(agents, gp)
 
 	if len(agents) == 0 {
-		return nil, fmt.Errorf("no sub-agents created")
+		return nil, nil, fmt.Errorf("no sub-agents created")
 	}
 
-	return agents, nil
+	return agents, guardedTools, nil
 }
 
 // parseSkillFrontmatter reads the SKILL.md frontmatter and returns parsed fields.
@@ -206,6 +217,14 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 				t = strings.TrimSpace(t)
 				if t != "" {
 					fm.Tools = append(fm.Tools, t)
+				}
+			}
+		case "guarded_tools":
+			val = strings.Trim(val, "[]")
+			for _, t := range strings.Split(val, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					fm.GuardedTools = append(fm.GuardedTools, t)
 				}
 			}
 		case "delegate":

@@ -35,6 +35,7 @@ delegate: claude                  # Optional. "claude" = subprocess, omit = LLM 
 claude_model: sonnet              # Optional. CLI alias: opus, sonnet, haiku.
 claude_tools: Bash,Read,Edit,Write,Glob,Grep  # Optional. Comma-separated.
 tools: [browser, memory_search]   # Optional. Tool filter for LLM agent mode.
+guarded_tools: [Bash]             # Optional. Tools requiring human approval.
 work_dir: ~/projects/foo          # Optional. --add-dir for claude subprocess.
 ---
 ```
@@ -47,6 +48,7 @@ work_dir: ~/projects/foo          # Optional. --add-dir for claude subprocess.
 | `claude_model` | Claude agent | Model for the subprocess. Defaults to config `claude_model` or `"sonnet"`. |
 | `claude_tools` | Claude agent | Tools available to the subprocess. Defaults to config `claude_tools`. |
 | `tools` | LLM agent | Restricts which coordinator tools the agent can use. Omit for all tools. |
+| `guarded_tools` | Both | Tools that require human approval before execution. See [Guarded Tools](#guarded-tools). |
 | `work_dir` | Claude agent | Working directory added via `--add-dir`. Supports `~` expansion. |
 
 ### Body (Instructions)
@@ -152,6 +154,50 @@ You are a Software Engineer. Your job is to implement code according to the back
 - Do NOT close issues — leave for QA
 ```
 
+## Guarded Tools
+
+Some skills perform side-effects that should require explicit human approval before execution (e.g., deploying to production, deleting resources, running destructive commands). Use `guarded_tools` to declare which tools need approval.
+
+```yaml
+---
+name: deploy
+description: Deploy services to production
+tools: [Bash, Read]
+guarded_tools: [Bash]
+---
+```
+
+When the agent invokes a guarded tool, execution for that task is **suspended** — not the entire agent. The agent continues working on other tasks while the approval is pending.
+
+### How It Works
+
+1. Agent calls a guarded tool (e.g., `Bash`)
+2. The `BeforeTool` callback intercepts the call and registers an approval request
+3. The agent receives an "approval required" message and moves on to other work
+4. The user is notified:
+   - **Mobile app**: Approval appears in the pending approvals queue (`GET /api/approvals`)
+   - **Telegram**: Inline keyboard with Approve / Reject buttons
+   - **WebSocket**: `approval_required` event for custom UIs
+5. User approves or rejects
+6. The agent receives the decision and retries the tool (if approved) or adapts (if rejected)
+
+Approvals time out after 30 minutes if no action is taken.
+
+### When to Use Guarded Tools
+
+- Production deployments
+- Destructive operations (delete, drop, truncate)
+- Financial transactions or external API calls with real consequences
+- Any action where a mistake is costly to reverse
+
+### REST API
+
+```
+GET  /api/approvals                  — list pending approvals
+POST /api/approvals/approve          — approve (body: {"id": "<approval_id>"})
+POST /api/approvals/reject           — reject  (body: {"id": "<approval_id>", "reason": "..."})
+```
+
 ## Writing Good Instructions
 
 ### For LLM Agent Skills
@@ -248,4 +294,5 @@ Skills are loaded at startup and on SIGHUP (hot-reload without restart).
 - [ ] `description` is clear enough for the coordinator to route tasks correctly
 - [ ] Body instructions match the agent type (direct prompt for claude, tool docs for LLM)
 - [ ] Scripts have shebang, `set -euo pipefail`, and `--help` support
+- [ ] `guarded_tools` (if used) lists only tools declared in `tools` or available by default
 - [ ] Tested manually: dispatch a task and verify the agent behaves correctly

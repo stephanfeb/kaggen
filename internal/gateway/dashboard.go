@@ -33,6 +33,7 @@ type DashboardAPI struct {
 	startTime      time.Time
 	wsClientCount  func() int
 	taskBroadcast  func(data []byte) // broadcasts to all WS clients
+	handler        *Handler           // for approval InjectCompletion; set via SetHandler
 }
 
 // NewDashboardAPI creates a new dashboard API.
@@ -803,7 +804,102 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/pipelines", d.HandlePipelines)
 	handleFunc("/api/tasks/cancel", d.HandleCancelTask)
 	handleFunc("/api/logs", d.HandleLogsSSE)
+	handleFunc("/api/approvals", d.HandleApprovals)
+	handleFunc("/api/approvals/approve", d.HandleApprovalAction)
+	handleFunc("/api/approvals/reject", d.HandleApprovalAction)
 	handleFunc("/api/files/", d.HandleFiles)
+}
+
+// SetHandler stores the message handler for approval completion injection.
+func (d *DashboardAPI) SetHandler(h *Handler) {
+	d.handler = h
+}
+
+// HandleApprovals returns pending approval requests.
+func (d *DashboardAPI) HandleApprovals(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	store := d.agentProvider.InFlightStore()
+	all := store.List(agent.TaskPendingApproval)
+
+	type approvalOut struct {
+		ID          string                  `json:"id"`
+		ToolName    string                  `json:"tool_name"`
+		SkillName   string                  `json:"skill_name"`
+		Description string                  `json:"description"`
+		Arguments   string                  `json:"arguments"`
+		SessionID   string                  `json:"session_id"`
+		UserID      string                  `json:"user_id"`
+		RequestedAt string                  `json:"requested_at"`
+		TimeoutAt   string                  `json:"timeout_at"`
+	}
+
+	out := make([]approvalOut, 0, len(all))
+	for _, t := range all {
+		if t.ApprovalRequest == nil {
+			continue
+		}
+		out = append(out, approvalOut{
+			ID:          t.ID,
+			ToolName:    t.ApprovalRequest.ToolName,
+			SkillName:   t.ApprovalRequest.SkillName,
+			Description: t.ApprovalRequest.Description,
+			Arguments:   t.ApprovalRequest.Arguments,
+			SessionID:   t.SessionID,
+			UserID:      t.UserID,
+			RequestedAt: t.ApprovalRequest.RequestedAt.Format(time.RFC3339),
+			TimeoutAt:   t.TimeoutAt.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, out)
+}
+
+// HandleApprovalAction handles POST /api/approvals/approve and /api/approvals/reject.
+func (d *DashboardAPI) HandleApprovalAction(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID     string `json:"id"`
+		Reason string `json:"reason,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, `{"error":"id is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	store := d.agentProvider.InFlightStore()
+	task, ok := store.Get(req.ID)
+	if !ok || task.Status != agent.TaskPendingApproval {
+		http.Error(w, `{"error":"approval not found or already resolved"}`, http.StatusNotFound)
+		return
+	}
+
+	isApprove := strings.HasSuffix(r.URL.Path, "/approve")
+	var action, result string
+	if isApprove {
+		action = "approved"
+		store.Complete(req.ID, "approved")
+		result = fmt.Sprintf("Tool %s was APPROVED by user. You may now retry the action.", task.ApprovalRequest.ToolName)
+	} else {
+		action = "rejected"
+		reason := req.Reason
+		if reason == "" {
+			reason = "rejected by user"
+		}
+		store.Fail(req.ID, reason)
+		result = fmt.Sprintf("Tool %s was REJECTED by user. Reason: %s. Find an alternative approach.", task.ApprovalRequest.ToolName, reason)
+	}
+
+	// Inject completion back to the coordinator.
+	if d.handler != nil {
+		_ = d.handler.InjectCompletion(r.Context(), task.SessionID, task.UserID, req.ID, task.AgentName, result)
+	}
+
+	writeJSON(w, map[string]string{"status": action, "id": req.ID})
 }
 
 // HandleFiles serves published files from ~/.kaggen/public/.

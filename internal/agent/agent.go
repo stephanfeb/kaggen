@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -22,6 +24,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 
 	"github.com/yourusername/kaggen/internal/backlog"
+	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/pipeline"
@@ -43,16 +46,22 @@ type ExternalDeliveryConfig struct {
 	CallbackBaseURL string // public callback URL (from tunnel or manual config)
 }
 
+// ApprovalNotifyFunc sends an approval notification to the client's channel.
+type ApprovalNotifyFunc func(sessionID string, resp *channel.Response) error
+
 // Agent wraps a trpc-agent-go Team for Kaggen's coordinator pattern.
 type Agent struct {
-	team          *team.Team
-	memory        *memory.FileMemory
-	tools         []tool.Tool
-	model         model.Model
-	logger        *slog.Logger
-	inFlightStore *InFlightStore
-	dispatcher    *asyncDispatcher
-	pipelines     []pipeline.Pipeline
+	team           *team.Team
+	memory         *memory.FileMemory
+	tools          []tool.Tool
+	model          model.Model
+	logger         *slog.Logger
+	inFlightStore  *InFlightStore
+	dispatcher     *asyncDispatcher
+	pipelines      []pipeline.Pipeline
+	guardedTools        map[string]string    // tool name -> skill name
+	approvalNotify      ApprovalNotifyFunc
+	setApprovalNotifyRef func(ApprovalNotifyFunc) // wires closure-captured ref
 }
 
 // AgentOption configures optional aspects of the Agent.
@@ -62,6 +71,7 @@ type agentOptions struct {
 	extConfig           *ExternalDeliveryConfig
 	extraCoordTools     []tool.Tool
 	supervisor          *Supervisor
+	guardedTools        map[string]string // tool name -> skill name
 }
 
 // WithExternalConfig injects external delivery configuration into the
@@ -80,6 +90,12 @@ func WithExtraCoordinatorTools(tools ...tool.Tool) AgentOption {
 // WithSupervisor sets the agent execution supervisor for monitoring ClaudeAgent subprocesses.
 func WithSupervisor(s *Supervisor) AgentOption {
 	return func(o *agentOptions) { o.supervisor = s }
+}
+
+// WithGuardedTools sets the tool-name-to-skill-name mapping for tools that
+// require human approval before execution.
+func WithGuardedTools(gt map[string]string) AgentOption {
+	return func(o *agentOptions) { o.guardedTools = gt }
 }
 
 // NewAgent creates a new Kaggen agent using the Coordinator Team pattern.
@@ -184,6 +200,15 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		"cancel_task":     true,
 	}
 
+	// Approval interception: guardedTools is the tool→skill map; approvalNotifyRef
+	// is a pointer filled after Agent construction via SetApprovalNotifyFunc.
+	guardedTools := ao.guardedTools
+	if guardedTools == nil {
+		guardedTools = make(map[string]string)
+	}
+	var approvalNotifyMu sync.RWMutex
+	var approvalNotifyRef ApprovalNotifyFunc
+
 	// Per-invocation counters for coordinator tool calls (used for turn numbering).
 	var coordMu sync.Mutex
 	coordCallCount := make(map[string]int)    // invID -> call count
@@ -204,6 +229,51 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 
 			if isInfra {
 				return &tool.BeforeToolResult{}, nil
+			}
+
+			// Approval gate: intercept guarded tool calls.
+			if skillName, guarded := guardedTools[args.ToolName]; guarded {
+				var sessID, uID string
+				if inv, ok := agent.InvocationFromContext(ctx); ok && inv.Session != nil {
+					sessID = inv.Session.ID
+					uID = inv.Session.UserID
+				}
+
+				approvalID := uuid.New().String()
+
+				// Build human-readable description from tool args.
+				desc := fmt.Sprintf("%s: %s", args.ToolName, string(args.Arguments))
+				if len(desc) > 200 {
+					desc = desc[:200] + "..."
+				}
+
+				store.RegisterApproval(approvalID, skillName, args.ToolName, string(args.Arguments), desc, sessID, uID, 30*time.Minute)
+				logger.Info("approval required",
+					"approval_id", approvalID,
+					"tool", args.ToolName,
+					"skill", skillName,
+					"session_id", sessID)
+
+				// Notify client via channel.
+				approvalNotifyMu.RLock()
+				notifyFn := approvalNotifyRef
+				approvalNotifyMu.RUnlock()
+				if notifyFn != nil {
+					_ = notifyFn(sessID, &channel.Response{
+						ID:        approvalID,
+						SessionID: sessID,
+						Type:      "approval_required",
+						Metadata: map[string]any{
+							"approval_id": approvalID,
+							"tool_name":   args.ToolName,
+							"skill_name":  skillName,
+							"description": desc,
+							"arguments":   string(args.Arguments),
+						},
+					})
+				}
+
+				return &tool.BeforeToolResult{}, fmt.Errorf("Approval required for %s (ID: %s). This action is pending human approval. Continue with other tasks while waiting.", args.ToolName, approvalID)
 			}
 
 			var sessionID, userID, invID string
@@ -366,7 +436,12 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		return nil, fmt.Errorf("create team: %w", err)
 	}
 
-	return &Agent{
+	gt := ao.guardedTools
+	if gt == nil {
+		gt = make(map[string]string)
+	}
+
+	a := &Agent{
 		team:          t,
 		memory:        mem,
 		tools:         tools,
@@ -375,7 +450,18 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		inFlightStore: store,
 		dispatcher:    dispatcher,
 		pipelines:     dispatchPipelines,
-	}, nil
+		guardedTools:  gt,
+	}
+
+	// Wire the approval notify ref so BeforeTool closure can access it.
+	// SetApprovalNotifyFunc updates both the agent field and the closure ref.
+	a.setApprovalNotifyRef = func(fn ApprovalNotifyFunc) {
+		approvalNotifyMu.Lock()
+		approvalNotifyRef = fn
+		approvalNotifyMu.Unlock()
+	}
+
+	return a, nil
 }
 
 // InFlightStore returns the async task store for external components
@@ -393,6 +479,20 @@ func (a *Agent) Pipelines() []pipeline.Pipeline {
 // Call this after handler construction to wire up completion event injection.
 func (a *Agent) SetCompletionFunc(fn CompletionFunc) {
 	a.dispatcher.SetCompletionFunc(fn)
+}
+
+// SetApprovalNotifyFunc sets the callback used to send approval notifications
+// to clients. Call this after handler/channel construction.
+func (a *Agent) SetApprovalNotifyFunc(fn ApprovalNotifyFunc) {
+	a.approvalNotify = fn
+	if a.setApprovalNotifyRef != nil {
+		a.setApprovalNotifyRef(fn)
+	}
+}
+
+// GuardedTools returns the tool-name-to-skill-name mapping.
+func (a *Agent) GuardedTools() map[string]string {
+	return a.guardedTools
 }
 
 // Run executes the agent with the given invocation.
@@ -492,6 +592,7 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "7. Synthesize results from sub-agents into a coherent response for the user.\n"
 	instruction += "8. If a sub-agent fails, attempt one round of autonomous diagnosis (read logs, check errors) and retry or adjust the task. If the second attempt also fails, inform the user with a summary of what you tried.\n"
 	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user.\n"
+	instruction += "10. Some tools require human approval before execution. When a tool call returns 'Approval required', note the approval ID and continue with other non-blocked tasks. When you receive a [Task Completed] message about an approval, check if it was approved or rejected and act accordingly — retry the tool if approved, or inform the user and find an alternative if rejected.\n"
 
 	instruction += "\n### Task Decomposition\n\n"
 	instruction += "For complex tasks requiring multiple steps or agents:\n"

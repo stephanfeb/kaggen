@@ -32,9 +32,10 @@ func BuildInitialAgent(
 	skillsRepo := loadSkills(skillDirs, logger)
 
 	var subAgents []trpcagent.Agent
+	var guardedTools map[string]string
 	if skillsRepo != nil {
 		var err error
-		subAgents, err = BuildSubAgents(m, skillsRepo, tools, logger)
+		subAgents, guardedTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
 		if err != nil {
 			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
 		}
@@ -43,7 +44,7 @@ func BuildInitialAgent(
 		}
 	}
 
-	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns)
+	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, WithGuardedTools(guardedTools))
 }
 
 // BuildInitialAgentWithOpts is like BuildInitialAgent but accepts AgentOption values
@@ -62,9 +63,10 @@ func BuildInitialAgentWithOpts(
 	skillsRepo := loadSkills(skillDirs, logger)
 
 	var subAgents []trpcagent.Agent
+	var guardedTools map[string]string
 	if skillsRepo != nil {
 		var err error
-		subAgents, err = BuildSubAgents(m, skillsRepo, tools, logger)
+		subAgents, guardedTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
 		if err != nil {
 			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
 		}
@@ -73,6 +75,7 @@ func BuildInitialAgentWithOpts(
 		}
 	}
 
+	opts = append(opts, WithGuardedTools(guardedTools))
 	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, opts...)
 }
 
@@ -212,9 +215,10 @@ func (f *AgentFactory) Rebuild() error {
 
 	// Build sub-agents from skills.
 	var subAgents []trpcagent.Agent
+	var guardedTools map[string]string
 	if skillsRepo != nil {
 		var err error
-		subAgents, err = BuildSubAgents(f.model, skillsRepo, f.tools, f.logger)
+		subAgents, guardedTools, err = BuildSubAgents(f.model, skillsRepo, f.tools, f.logger)
 		if err != nil {
 			f.logger.Warn("failed to build sub-agents", "error", err)
 		}
@@ -238,6 +242,7 @@ func (f *AgentFactory) Rebuild() error {
 	if f.supervisor != nil {
 		agentOpts = append(agentOpts, WithSupervisor(f.supervisor))
 	}
+	agentOpts = append(agentOpts, WithGuardedTools(guardedTools))
 	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.backlogStore, f.logger, []int{f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask}, agentOpts...)
 	if err != nil {
 		return fmt.Errorf("rebuild agent: %w", err)

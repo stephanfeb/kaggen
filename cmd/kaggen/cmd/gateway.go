@@ -25,6 +25,7 @@ import (
 	"github.com/yourusername/kaggen/internal/browser"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/embedding"
+	kaggenChannel "github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/gateway"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
@@ -373,6 +374,24 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		); err != nil {
 			logger.Warn("failed to inject completion", "task_id", taskID, "error", err)
 		}
+	})
+
+	// Wire approval notifications: when a guarded tool is invoked, notify the client.
+	provider.SetApprovalNotifyFunc(func(sessionID string, resp *kaggenChannel.Response) error {
+		// Try to route through the session's respond callback.
+		if respond, meta, ok := server.Handler().Responders().Get(sessionID); ok {
+			if resp.Metadata == nil {
+				resp.Metadata = make(map[string]any)
+			}
+			// Merge channel-specific metadata (chat_id, etc.) so Telegram can route.
+			for k, v := range meta {
+				if _, exists := resp.Metadata[k]; !exists {
+					resp.Metadata[k] = v
+				}
+			}
+			return respond(resp)
+		}
+		return nil
 	})
 
 	// Start watchdog to detect stale tasks and alert via Telegram.

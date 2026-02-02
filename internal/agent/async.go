@@ -36,10 +36,11 @@ const (
 type TaskStatus string
 
 const (
-	TaskRunning   TaskStatus = "running"
-	TaskCompleted TaskStatus = "completed"
-	TaskFailed    TaskStatus = "failed"
-	TaskCancelled TaskStatus = "cancelled"
+	TaskRunning         TaskStatus = "running"
+	TaskCompleted       TaskStatus = "completed"
+	TaskFailed          TaskStatus = "failed"
+	TaskCancelled       TaskStatus = "cancelled"
+	TaskPendingApproval TaskStatus = "pending_approval"
 )
 
 // TokenUsage tracks token consumption for a task or event.
@@ -59,26 +60,36 @@ type TaskEvent struct {
 	Tokens    *TokenUsage  `json:"tokens,omitempty"`
 }
 
+// ApprovalRequest holds details about a tool call awaiting human approval.
+type ApprovalRequest struct {
+	ToolName    string    `json:"tool_name"`
+	Arguments   string    `json:"arguments"`    // raw JSON tool arguments
+	SkillName   string    `json:"skill_name"`
+	Description string    `json:"description"`  // human-readable summary
+	RequestedAt time.Time `json:"requested_at"`
+}
+
 // TaskState tracks the state of an async sub-agent task.
 type TaskState struct {
-	ID             string             `json:"id"`
-	AgentName      string             `json:"agent_name"`
-	Task           string             `json:"task"`
-	Status         TaskStatus         `json:"status"`
-	Result         string             `json:"result,omitempty"`
-	Error          string             `json:"error,omitempty"`
-	Policy         TriggerPolicy      `json:"policy"`
-	SessionID      string             `json:"session_id,omitempty"`
-	UserID         string             `json:"user_id,omitempty"`
-	StartedAt      time.Time          `json:"started_at"`
-	DoneAt         *time.Time         `json:"done_at,omitempty"`
-	Events         []*TaskEvent       `json:"events,omitempty"`
-	TurnCount      int                `json:"turn_count"`
-	TotalTokens    *TokenUsage        `json:"total_tokens,omitempty"`
-	External       bool               `json:"external,omitempty"`        // true for external (non-agent) tasks awaiting callback
-	CallbackSecret string             `json:"-"`                         // HMAC secret for callback verification
-	TimeoutAt      time.Time          `json:"timeout_at,omitempty"`     // auto-fail if no callback by this time
-	cancelFn       context.CancelFunc `json:"-"`                         // for external cancellation
+	ID              string             `json:"id"`
+	AgentName       string             `json:"agent_name"`
+	Task            string             `json:"task"`
+	Status          TaskStatus         `json:"status"`
+	Result          string             `json:"result,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	Policy          TriggerPolicy      `json:"policy"`
+	SessionID       string             `json:"session_id,omitempty"`
+	UserID          string             `json:"user_id,omitempty"`
+	StartedAt       time.Time          `json:"started_at"`
+	DoneAt          *time.Time         `json:"done_at,omitempty"`
+	Events          []*TaskEvent       `json:"events,omitempty"`
+	TurnCount       int                `json:"turn_count"`
+	TotalTokens     *TokenUsage        `json:"total_tokens,omitempty"`
+	External        bool               `json:"external,omitempty"`        // true for external (non-agent) tasks awaiting callback
+	CallbackSecret  string             `json:"-"`                         // HMAC secret for callback verification
+	TimeoutAt       time.Time          `json:"timeout_at,omitempty"`     // auto-fail if no callback by this time
+	ApprovalRequest *ApprovalRequest   `json:"approval_request,omitempty"` // set when status is pending_approval
+	cancelFn        context.CancelFunc `json:"-"`                         // for external cancellation
 }
 
 // TaskEventCallback is called when a task event is added, enabling real-time broadcast.
@@ -306,6 +317,32 @@ func (s *InFlightStore) Cancel(id string) bool {
 	return true
 }
 
+// RegisterApproval registers a tool call that is pending human approval.
+// It behaves like an external task — the reaper will auto-fail it on timeout.
+func (s *InFlightStore) RegisterApproval(id, skillName, toolName, args, description, sessionID, userID string, timeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks[id] = &TaskState{
+		ID:        id,
+		AgentName: skillName,
+		Task:      description,
+		Status:    TaskPendingApproval,
+		Policy:    TriggerAuto,
+		SessionID: sessionID,
+		UserID:    userID,
+		StartedAt: time.Now(),
+		External:  true, // reuse external reaper for timeout
+		TimeoutAt: time.Now().Add(timeout),
+		ApprovalRequest: &ApprovalRequest{
+			ToolName:    toolName,
+			Arguments:   args,
+			SkillName:   skillName,
+			Description: description,
+			RequestedAt: time.Now(),
+		},
+	}
+}
+
 // RegisterExternal registers an external task that will be completed via HTTP callback.
 func (s *InFlightStore) RegisterExternal(id, name, secret string, policy TriggerPolicy, sessionID, userID string, timeout time.Duration) {
 	s.mu.Lock()
@@ -347,7 +384,7 @@ func (s *InFlightStore) reapExpiredExternal(onTimeout func(taskID string, state 
 	s.mu.Lock()
 	var expired []*TaskState
 	for _, t := range s.tasks {
-		if t.External && t.Status == TaskRunning && !t.TimeoutAt.IsZero() && now.After(t.TimeoutAt) {
+		if t.External && (t.Status == TaskRunning || t.Status == TaskPendingApproval) && !t.TimeoutAt.IsZero() && now.After(t.TimeoutAt) {
 			t.Status = TaskFailed
 			t.Error = "timed out waiting for callback"
 			doneAt := now

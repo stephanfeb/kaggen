@@ -75,3 +75,8 @@ func (p *AgentProvider) InFlightStore() *InFlightStore {
 func (p *AgentProvider) SetCompletionFunc(fn CompletionFunc) {
 	p.current.Load().SetCompletionFunc(fn)
 }
+
+// SetApprovalNotifyFunc sets the approval notification callback on the current agent.
+func (p *AgentProvider) SetApprovalNotifyFunc(fn ApprovalNotifyFunc) {
+	p.current.Load().SetApprovalNotifyFunc(fn)
+}

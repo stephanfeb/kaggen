@@ -130,6 +130,12 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 				if !ok {
 					return
 				}
+				// Handle inline keyboard callback queries (approval buttons).
+				if update.CallbackQuery != nil {
+					t.handleCallbackQuery(update.CallbackQuery)
+					continue
+				}
+
 				if update.Message == nil {
 					continue
 				}
@@ -209,6 +215,11 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 		t.sendTyping(chatID)
 	}
 
+	// Handle approval requests with inline keyboard buttons.
+	if resp.Type == "approval_required" {
+		return t.sendApprovalKeyboard(chatID, resp)
+	}
+
 	// Skip tool calls, tool results, and empty responses — only send
 	// user-facing text and error messages to Telegram.
 	switch resp.Type {
@@ -256,6 +267,95 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 	}
 
 	return nil
+}
+
+// handleCallbackQuery processes inline keyboard button presses (e.g. approval actions).
+func (t *TelegramChannel) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
+	// Acknowledge the callback to dismiss the loading indicator.
+	callback := tgbotapi.NewCallback(cq.ID, "")
+	t.bot.Request(callback)
+
+	// Parse "approve:<id>" or "reject:<id>".
+	parts := strings.SplitN(cq.Data, ":", 2)
+	if len(parts) != 2 {
+		return
+	}
+	action := parts[0]   // "approve" or "reject"
+	approvalID := parts[1]
+
+	if action != "approve" && action != "reject" {
+		return
+	}
+
+	// Edit the original message to show the result.
+	var resultText string
+	if action == "approve" {
+		resultText = "Approved"
+	} else {
+		resultText = "Rejected"
+	}
+	if cq.Message != nil {
+		edit := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID,
+			cq.Message.Text+"\n\n"+resultText)
+		t.bot.Send(edit)
+	}
+
+	// Determine session/user from the callback query sender.
+	chatID := int64(0)
+	if cq.Message != nil {
+		chatID = cq.Message.Chat.ID
+	}
+	userID := fmt.Sprintf("tg-%d", cq.From.ID)
+	var sessionID string
+	if cq.Message != nil && cq.Message.Chat.Type == "private" {
+		sessionID = fmt.Sprintf("tg-dm-%d", cq.From.ID)
+	} else if chatID != 0 {
+		sessionID = fmt.Sprintf("tg-group-%d", chatID)
+	}
+
+	// Emit a synthetic message with approval metadata.
+	msg := &Message{
+		ID:        uuid.New().String(),
+		SessionID: sessionID,
+		UserID:    userID,
+		Content:   "", // no text content
+		Channel:   "telegram",
+		Metadata: map[string]any{
+			"chat_id":         fmt.Sprintf("%d", chatID),
+			"approval_action": action,
+			"approval_id":     approvalID,
+		},
+	}
+
+	select {
+	case t.messages <- msg:
+	default:
+		t.logger.Warn("message queue full, dropping approval callback")
+	}
+}
+
+// sendApprovalKeyboard sends an inline keyboard with Approve/Reject buttons.
+func (t *TelegramChannel) sendApprovalKeyboard(chatID int64, resp *Response) error {
+	approvalID, _ := resp.Metadata["approval_id"].(string)
+	toolName, _ := resp.Metadata["tool_name"].(string)
+	description, _ := resp.Metadata["description"].(string)
+
+	text := fmt.Sprintf("Approval required: %s\n> %s", toolName, description)
+	if len(text) > telegramMaxMessageLen {
+		text = text[:telegramMaxMessageLen-3] + "..."
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Approve", "approve:"+approvalID),
+			tgbotapi.NewInlineKeyboardButtonData("Reject", "reject:"+approvalID),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	_, err := t.bot.Send(msg)
+	return err
 }
 
 // isAuthorized returns true if the user or chat is allowed.

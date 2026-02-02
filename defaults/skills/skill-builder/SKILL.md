@@ -88,6 +88,7 @@ delegate: claude                         # Optional. Set to "claude" for subproc
 claude_model: sonnet                     # Optional. opus, sonnet, or haiku. Default: sonnet.
 claude_tools: Bash,Read,Edit,Write,Glob,Grep  # Optional. Tools for subprocess.
 tools: [browser, memory_search]          # Optional. Tool filter for LLM agent mode.
+guarded_tools: [Bash]                    # Optional. Tools requiring human approval before execution.
 work_dir: ~/projects/foo                 # Optional. Extra working directory for subprocess.
 ---
 ```
@@ -107,6 +108,21 @@ Every bash script MUST:
 - Skill name: lowercase, hyphens for word separation (e.g. `ffmpeg-video`, `aws-s3`)
 - Script names: lowercase, underscores, descriptive (e.g. `convert.sh`, `batch_process.sh`)
 - Keep script count to 3-6 per skill — each script should do one thing well
+
+### Guarded Tools (Maker-Checker)
+
+Use `guarded_tools` in frontmatter to require human approval before specific tools execute. When a guarded tool is called, execution suspends for that task while the agent continues other work. The user approves or rejects via the mobile approval queue or Telegram inline buttons.
+
+```yaml
+---
+name: deploy
+description: Deploy services to production
+tools: [Bash, Read]
+guarded_tools: [Bash]
+---
+```
+
+Only add `guarded_tools` for skills that perform side-effects where a mistake is costly (deployments, destructive operations, financial transactions). The tools listed must be a subset of the tools available to the skill.
 
 ### Model Selection (delegate skills)
 

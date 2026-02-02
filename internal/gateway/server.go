@@ -53,7 +53,12 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 	if f, ok := sessionService.(ThreadForker); ok {
 		forker = f
 	}
-	handler := NewHandler(AppName, ag, sessionService, logger, forker, memService...)
+	// Extract InFlightStore from the agent if available.
+	var inFlight *kaggenAgent.InFlightStore
+	if ap, ok := ag.(*kaggenAgent.AgentProvider); ok {
+		inFlight = ap.InFlightStore()
+	}
+	handler := NewHandler(AppName, ag, sessionService, logger, forker, inFlight, memService...)
 	router := channel.NewRouter(handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Gateway.Bind, cfg.Gateway.Port)
@@ -81,6 +86,7 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 
 	// Register dashboard routes if provided.
 	if dashboard != nil {
+		dashboard.SetHandler(handler)
 		dashboard.RegisterRoutes(wsChannel.HandleFunc)
 	}
 

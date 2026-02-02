@@ -22,6 +22,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
+	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
 )
@@ -74,10 +75,11 @@ type Handler struct {
 	logger     *slog.Logger
 	responders *SessionResponder
 	forker     ThreadForker
+	inFlight   *kaggenAgent.InFlightStore
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
-func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, memService ...memory.Service) *Handler {
+func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, inFlight *kaggenAgent.InFlightStore, memService ...memory.Service) *Handler {
 	var opts []runner.Option
 	if sessionService != nil {
 		opts = append(opts, runner.WithSessionService(sessionService))
@@ -93,6 +95,7 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 		logger:     logger,
 		responders: NewSessionResponder(),
 		forker:     forker,
+		inFlight:   inFlight,
 	}
 }
 
@@ -102,6 +105,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		"session_id", msg.SessionID,
 		"channel", msg.Channel,
 		"content_length", len(msg.Content))
+
+	// Handle approval actions (approve/reject from Telegram inline keyboard or REST API).
+	if action, ok := msg.Metadata["approval_action"].(string); ok {
+		return h.handleApprovalAction(ctx, msg, action)
+	}
 
 	// Register the respond callback so async completions can route back.
 	h.responders.Register(msg.SessionID, respond, msg.Metadata)
@@ -482,6 +490,40 @@ func extractSendFiles(text string, meta map[string]any) (string, map[string]any)
 // isImageMime returns true if the MIME type is a supported image format.
 func isImageMime(mime string) bool {
 	return strings.HasPrefix(mime, "image/")
+}
+
+// handleApprovalAction processes an approval or rejection from a channel.
+func (h *Handler) handleApprovalAction(ctx context.Context, msg *channel.Message, action string) error {
+	approvalID, _ := msg.Metadata["approval_id"].(string)
+	if approvalID == "" || h.inFlight == nil {
+		return nil
+	}
+
+	task, ok := h.inFlight.Get(approvalID)
+	if !ok || task.Status != kaggenAgent.TaskPendingApproval {
+		h.logger.Warn("approval action for unknown/resolved task", "approval_id", approvalID, "action", action)
+		return nil
+	}
+
+	var result string
+	switch action {
+	case "approve":
+		h.inFlight.Complete(approvalID, "approved")
+		result = fmt.Sprintf("Tool %s was APPROVED by user. You may now retry the action.", task.ApprovalRequest.ToolName)
+	case "reject":
+		h.inFlight.Fail(approvalID, "rejected by user")
+		result = fmt.Sprintf("Tool %s was REJECTED by user. Find an alternative approach.", task.ApprovalRequest.ToolName)
+	default:
+		return nil
+	}
+
+	h.logger.Info("approval action processed",
+		"approval_id", approvalID,
+		"action", action,
+		"tool", task.ApprovalRequest.ToolName,
+		"session_id", task.SessionID)
+
+	return h.InjectCompletion(ctx, task.SessionID, task.UserID, approvalID, task.AgentName, result)
 }
 
 // InjectCompletion injects a task completion event into the coordinator's
