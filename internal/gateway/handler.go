@@ -62,15 +62,22 @@ func (sr *SessionResponder) Get(sessionID string) (RespondFunc, map[string]any, 
 	return fn, meta, ok
 }
 
+// ThreadForker creates a new thread session by forking an existing session at a
+// specific event. Implemented by session.FileService.
+type ThreadForker interface {
+	ForkSession(parentKey session.Key, upToEventID, threadName string) (session.Key, error)
+}
+
 // Handler processes messages from channels using the trpc-agent-go Runner.
 type Handler struct {
 	runner     runner.Runner
 	logger     *slog.Logger
 	responders *SessionResponder
+	forker     ThreadForker
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
-func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, memService ...memory.Service) *Handler {
+func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, memService ...memory.Service) *Handler {
 	var opts []runner.Option
 	if sessionService != nil {
 		opts = append(opts, runner.WithSessionService(sessionService))
@@ -85,6 +92,7 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 		runner:     r,
 		logger:     logger,
 		responders: NewSessionResponder(),
+		forker:     forker,
 	}
 }
 
@@ -97,6 +105,50 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 
 	// Register the respond callback so async completions can route back.
 	h.responders.Register(msg.SessionID, respond, msg.Metadata)
+
+	// Thread forking: if the message replies to a specific event, create a thread session.
+	if msg.ReplyToEventID != "" && h.forker != nil {
+		parentKey := session.Key{
+			AppName:   AppName,
+			UserID:    msg.UserID,
+			SessionID: msg.SessionID,
+		}
+		threadKey, err := h.forker.ForkSession(parentKey, msg.ReplyToEventID, "")
+		if err != nil {
+			h.logger.Warn("thread fork failed", "error", err, "reply_to", msg.ReplyToEventID)
+			// Fall through — process in the original session.
+		} else {
+			h.logger.Info("forked thread session",
+				"parent_session", msg.SessionID,
+				"thread_session", threadKey.SessionID,
+				"reply_to_event", msg.ReplyToEventID)
+
+			// Notify client of the new thread before processing.
+			_ = respond(&channel.Response{
+				ID:        uuid.New().String(),
+				MessageID: msg.ID,
+				SessionID: threadKey.SessionID,
+				Type:      "thread_created",
+				Metadata: map[string]any{
+					"thread_session_id": threadKey.SessionID,
+					"parent_session_id": msg.SessionID,
+				},
+			})
+
+			// Redirect this message to the new thread session.
+			originalSessionID := msg.SessionID
+			msg.SessionID = threadKey.SessionID
+
+			// Register responder for the thread session too, using parent_session_id
+			// metadata so WebSocket Send can route to the originating client.
+			threadMeta := copyMetadata(msg.Metadata)
+			if threadMeta == nil {
+				threadMeta = make(map[string]any)
+			}
+			threadMeta["parent_session_id"] = originalSessionID
+			h.responders.Register(threadKey.SessionID, respond, threadMeta)
+		}
+	}
 
 	// Create a user message for the runner, attaching any uploaded files.
 	userMessage := model.NewUserMessage(msg.Content)
@@ -113,6 +165,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 	}
 
 	// Run the agent using the trpc-agent-go Runner
+	h.logger.Info("handler:run starting",
+		"session_id", msg.SessionID,
+		"user_id", msg.UserID,
+		"channel", msg.Channel)
+
 	events, err := h.runner.Run(
 		ctx,
 		msg.UserID,
@@ -121,7 +178,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		agent.WithRequestID(uuid.New().String()),
 	)
 	if err != nil {
-		h.logger.Error("agent run failed",
+		h.logger.Error("handler:run failed",
 			"error", err,
 			"session_id", msg.SessionID,
 			"user_id", msg.UserID,
@@ -141,15 +198,71 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		return fmt.Errorf("run agent: %w", err)
 	}
 
+	h.logger.Info("handler:run started, consuming events",
+		"session_id", msg.SessionID)
+
 	// Consume all events and send each text response immediately so the
 	// user sees progress messages (e.g. "I'm building your dashboard...")
 	// as they happen rather than only the final response.
 
+	sentDone := false
+	evtCount := 0
 	for evt := range events {
+		evtCount++
+
+		// Log raw event details
+		evtType := "nil"
+		evtDone := false
+		evtPartial := false
+		evtRunnerCompletion := false
+		hasContent := false
+		hasDelta := false
+		hasToolCalls := false
+		hasError := false
+		choiceCount := 0
+		if evt != nil {
+			evtDone = evt.Done
+			evtPartial = evt.IsPartial
+			evtRunnerCompletion = evt.IsRunnerCompletion()
+			if evt.Response != nil {
+				evtType = "response"
+				choiceCount = len(evt.Response.Choices)
+				if evt.Response.Error != nil {
+					hasError = true
+				}
+				if choiceCount > 0 {
+					c := evt.Response.Choices[0]
+					hasContent = c.Message.Content != ""
+					hasDelta = c.Delta.Content != ""
+					hasToolCalls = len(c.Message.ToolCalls) > 0
+				}
+			}
+		}
+		h.logger.Info("handler:event",
+			"session_id", msg.SessionID,
+			"evt_num", evtCount,
+			"evt_type", evtType,
+			"done", evtDone,
+			"partial", evtPartial,
+			"runner_completion", evtRunnerCompletion,
+			"choices", choiceCount,
+			"has_content", hasContent,
+			"has_delta", hasDelta,
+			"has_tool_calls", hasToolCalls,
+			"has_error", hasError)
+
 		resp := h.eventToResponse(evt, msg)
 		if resp == nil {
+			h.logger.Info("handler:event skipped (nil response)", "evt_num", evtCount)
 			continue
 		}
+
+		h.logger.Info("handler:response",
+			"session_id", msg.SessionID,
+			"evt_num", evtCount,
+			"resp_type", resp.Type,
+			"resp_done", resp.Done,
+			"content_len", len(resp.Content))
 
 		switch resp.Type {
 		case "tool_call", "tool_result":
@@ -158,21 +271,52 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 			}
 			continue
 		case "error":
+			resp.Done = true
+			sentDone = true
 			if err := respond(resp); err != nil {
 				h.logger.Warn("failed to send error response", "error", err)
 			}
 			continue
 		}
 
-		// Send text responses immediately.
-		if resp.Content != "" {
+		// Send text/done responses immediately.
+		if resp.Content != "" || resp.Done {
 			resp.Content, resp.Metadata = extractSendFiles(resp.Content, resp.Metadata)
 			if err := respond(resp); err != nil {
 				h.logger.Warn("failed to send response", "error", err)
 			}
+			if resp.Done {
+				sentDone = true
+			}
+		} else {
+			h.logger.Info("handler:response skipped (no content, not done)",
+				"evt_num", evtCount, "resp_type", resp.Type)
 		}
 	}
 
+	h.logger.Info("handler:events exhausted",
+		"session_id", msg.SessionID,
+		"total_events", evtCount,
+		"sent_done", sentDone)
+
+	// Guarantee clients always receive a "done" sentinel so they can
+	// stop showing a typing indicator.
+	if !sentDone {
+		h.logger.Info("handler:sending done sentinel", "session_id", msg.SessionID)
+		doneResp := &channel.Response{
+			ID:        uuid.New().String(),
+			MessageID: msg.ID,
+			SessionID: msg.SessionID,
+			Type:      "done",
+			Done:      true,
+			Metadata:  copyMetadata(msg.Metadata),
+		}
+		if err := respond(doneResp); err != nil {
+			h.logger.Warn("failed to send done sentinel", "error", err)
+		}
+	}
+
+	h.logger.Info("handler:complete", "session_id", msg.SessionID)
 	return nil
 }
 
@@ -188,6 +332,11 @@ func (h *Handler) eventToResponse(evt *event.Event, msg *channel.Message) *chann
 		SessionID: msg.SessionID,
 		Done:      evt.Done,
 		Metadata:  copyMetadata(msg.Metadata),
+	}
+
+	// Include event ID so clients can reference specific messages for threading.
+	if evt.ID != "" {
+		resp.Metadata["event_id"] = evt.ID
 	}
 
 	// Handle error responses

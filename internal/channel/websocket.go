@@ -2,10 +2,13 @@ package channel
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -51,6 +54,7 @@ type WebSocketChannel struct {
 // wsClient represents a connected WebSocket client.
 type wsClient struct {
 	id        string
+	userID    string
 	sessionID string
 	conn      *websocket.Conn
 	send      chan []byte
@@ -145,14 +149,32 @@ func (w *WebSocketChannel) Send(ctx context.Context, resp *Response) error {
 	defer w.mu.RUnlock()
 
 	// Find clients for this session
+	// Also match clients whose session is the parent of a thread response.
+	parentSessionID, _ := resp.Metadata["parent_session_id"].(string)
+
+	matched := 0
 	for _, client := range w.clients {
-		if client.sessionID == resp.SessionID {
-			select {
-			case client.send <- data:
-			default:
-				w.logger.Warn("client send buffer full", "client_id", client.id)
-			}
+		if client.sessionID != resp.SessionID && (parentSessionID == "" || client.sessionID != parentSessionID) {
+			continue
 		}
+		matched++
+		select {
+		case client.send <- data:
+			w.logger.Info("ws:send queued",
+				"client_id", client.id,
+				"session_id", resp.SessionID,
+				"type", resp.Type,
+				"done", resp.Done,
+				"content_len", len(resp.Content))
+		default:
+			w.logger.Warn("client send buffer full", "client_id", client.id)
+		}
+	}
+	if matched == 0 {
+		w.logger.Warn("ws:send no matching client",
+			"session_id", resp.SessionID,
+			"type", resp.Type,
+			"total_clients", len(w.clients))
 	}
 
 	return nil
@@ -179,9 +201,14 @@ func (w *WebSocketChannel) handleWebSocket(rw http.ResponseWriter, r *http.Reque
 		sessionID = uuid.New().String()
 	}
 
+	// Get user ID from query param so the runner can locate
+	// the correct session directory for history continuity.
+	userID := r.URL.Query().Get("user_id")
+
 	clientID := uuid.New().String()
 	client := &wsClient{
 		id:        clientID,
+		userID:    userID,
 		sessionID: sessionID,
 		conn:      conn,
 		send:      make(chan []byte, 256),
@@ -192,6 +219,13 @@ func (w *WebSocketChannel) handleWebSocket(rw http.ResponseWriter, r *http.Reque
 	w.mu.Unlock()
 
 	w.logger.Info("client connected", "client_id", clientID, "session_id", sessionID)
+
+	// Notify client of assigned session ID so it can track/resume.
+	welcome, _ := json.Marshal(map[string]any{
+		"type":       "session",
+		"session_id": sessionID,
+	})
+	client.send <- welcome
 
 	// Start reader and writer goroutines
 	go w.readPump(client)
@@ -226,30 +260,73 @@ func (w *WebSocketChannel) readPump(client *wsClient) {
 
 		// Parse incoming message
 		var wsMsg struct {
-			Content   string         `json:"content"`
-			SessionID string         `json:"session_id,omitempty"`
-			Metadata  map[string]any `json:"metadata,omitempty"`
+			Content        string         `json:"content"`
+			SessionID      string         `json:"session_id,omitempty"`
+			ReplyToEventID string         `json:"reply_to_event_id,omitempty"`
+			Metadata       map[string]any `json:"metadata,omitempty"`
 		}
 		if err := json.Unmarshal(data, &wsMsg); err != nil {
 			w.logger.Warn("invalid message format", "error", err)
 			continue
 		}
 
-		// Use provided session ID or client's default
+		// Use provided session ID or client's default.
+		// If the client specifies a session, update the client's association
+		// so that Send() can route responses back correctly.
 		sessionID := wsMsg.SessionID
 		if sessionID == "" {
 			sessionID = client.sessionID
+		} else if sessionID != client.sessionID {
+			w.mu.Lock()
+			client.sessionID = sessionID
+			w.mu.Unlock()
+			w.logger.Debug("client session updated", "client_id", client.id, "session_id", sessionID)
 		}
 
-		// Create and queue message
-		msg := &Message{
-			ID:        uuid.New().String(),
-			SessionID: sessionID,
-			UserID:    client.id,
-			Content:   wsMsg.Content,
-			Channel:   "websocket",
-			Metadata:  wsMsg.Metadata,
+		// Create and queue message.
+		// Use the authenticated userID when available so the runner
+		// can locate the correct session history on disk.
+		msgUserID := client.userID
+		if msgUserID == "" {
+			msgUserID = client.id
 		}
+		msg := &Message{
+			ID:             uuid.New().String(),
+			SessionID:      sessionID,
+			UserID:         msgUserID,
+			Content:        wsMsg.Content,
+			Channel:        "websocket",
+			Metadata:       wsMsg.Metadata,
+			ReplyToEventID: wsMsg.ReplyToEventID,
+		}
+
+		// Extract base64-encoded image from metadata and convert to attachment.
+		if imgB64, ok := wsMsg.Metadata["image"].(string); ok && imgB64 != "" {
+			imgData, err := base64.StdEncoding.DecodeString(imgB64)
+			if err == nil {
+				tmpDir := filepath.Join(os.TempDir(), "kaggen-uploads")
+				os.MkdirAll(tmpDir, 0755)
+				tmpFile := filepath.Join(tmpDir, uuid.New().String()+".jpg")
+				if err := os.WriteFile(tmpFile, imgData, 0644); err == nil {
+					msg.Attachments = append(msg.Attachments, Attachment{
+						Path:     tmpFile,
+						MimeType: "image/jpeg",
+						FileName: "uploaded-image.jpg",
+					})
+					w.logger.Info("ws:image attachment saved", "path", tmpFile, "size", len(imgData))
+				}
+			} else {
+				w.logger.Warn("ws:image base64 decode failed", "error", err)
+			}
+			delete(msg.Metadata, "image")
+		}
+
+		w.logger.Info("ws:recv message",
+			"client_id", client.id,
+			"client_session", client.sessionID,
+			"msg_session", sessionID,
+			"ws_session_field", wsMsg.SessionID,
+			"content_len", len(wsMsg.Content))
 
 		select {
 		case w.messages <- msg:

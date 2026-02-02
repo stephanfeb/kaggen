@@ -48,7 +48,12 @@ type Server struct {
 
 // NewServer creates a new gateway server.
 func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agent, logger *slog.Logger, dashboard *DashboardAPI, memService ...memory.Service) *Server {
-	handler := NewHandler(AppName, ag, sessionService, logger, memService...)
+	// Extract ThreadForker from the session service if it supports forking.
+	var forker ThreadForker
+	if f, ok := sessionService.(ThreadForker); ok {
+		forker = f
+	}
+	handler := NewHandler(AppName, ag, sessionService, logger, forker, memService...)
 	router := channel.NewRouter(handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Gateway.Bind, cfg.Gateway.Port)

@@ -30,6 +30,17 @@ func (w *SanitizeWrapper) AppendEvent(ctx context.Context, sess *trpcsession.Ses
 	return w.Service.AppendEvent(ctx, sess, evt, opts...)
 }
 
+// ForkSession delegates to the inner service if it supports forking.
+func (w *SanitizeWrapper) ForkSession(parentKey trpcsession.Key, upToEventID, threadName string) (trpcsession.Key, error) {
+	type forker interface {
+		ForkSession(trpcsession.Key, string, string) (trpcsession.Key, error)
+	}
+	if f, ok := w.Service.(forker); ok {
+		return f.ForkSession(parentKey, upToEventID, threadName)
+	}
+	return trpcsession.Key{}, fmt.Errorf("inner session service does not support forking")
+}
+
 // sanitizeEvent replaces binary ContentParts with text references in-place.
 func sanitizeEvent(evt *event.Event) {
 	if evt == nil || evt.Response == nil {

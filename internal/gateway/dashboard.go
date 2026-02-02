@@ -232,17 +232,22 @@ func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 	sessionsDir := d.config.SessionsPath()
 	appDir := filepath.Join(sessionsDir, AppName)
 
+	includeThreads := r.URL.Query().Get("include_threads") == "true"
+
 	type sessionInfo struct {
-		ID           string `json:"id"`
-		Name         string `json:"name,omitempty"`
-		UserID       string `json:"user_id"`
-		Channel      string `json:"channel,omitempty"`
-		CreatedAt    string `json:"created_at,omitempty"`
-		UpdatedAt    string `json:"updated_at"`
-		MessageCount int    `json:"message_count"`
+		ID              string        `json:"id"`
+		Name            string        `json:"name,omitempty"`
+		UserID          string        `json:"user_id"`
+		Channel         string        `json:"channel,omitempty"`
+		CreatedAt       string        `json:"created_at,omitempty"`
+		UpdatedAt       string        `json:"updated_at"`
+		MessageCount    int           `json:"message_count"`
+		IsThread        bool          `json:"is_thread,omitempty"`
+		ParentSessionID string        `json:"parent_session_id,omitempty"`
+		Threads         []sessionInfo `json:"threads,omitempty"`
 	}
 
-	var sessions []sessionInfo
+	var allSessions []sessionInfo
 
 	userDirs, err := os.ReadDir(appDir)
 	if err != nil {
@@ -279,8 +284,14 @@ func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 			// Try to read metadata.json for richer info.
 			key := session.Key{AppName: AppName, UserID: userDir.Name(), SessionID: sessDir.Name()}
 			if meta, err := fs.ReadMetadata(key); err == nil && meta != nil {
+				// Skip archived sessions.
+				if !meta.ArchivedAt.IsZero() {
+					continue
+				}
 				si.Name = meta.Name
 				si.Channel = meta.Channel
+				si.IsThread = meta.IsThread
+				si.ParentSessionID = meta.ParentSessionID
 				if !meta.CreatedAt.IsZero() {
 					si.CreatedAt = meta.CreatedAt.Format(time.RFC3339)
 				}
@@ -294,19 +305,44 @@ func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 				si.UpdatedAt = dirInfo.ModTime().Format(time.RFC3339)
 			}
 
-			sessions = append(sessions, si)
+			allSessions = append(allSessions, si)
 		}
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
+	sort.Slice(allSessions, func(i, j int) bool {
+		return allSessions[i].UpdatedAt > allSessions[j].UpdatedAt
 	})
 
-	if len(sessions) > 100 {
-		sessions = sessions[:100]
+	// Nest threads under their parent sessions unless flat listing requested.
+	if !includeThreads {
+		parentMap := make(map[string]*sessionInfo)
+		var topLevel []sessionInfo
+		// First pass: collect top-level sessions.
+		for i := range allSessions {
+			if !allSessions[i].IsThread {
+				topLevel = append(topLevel, allSessions[i])
+				parentMap[allSessions[i].ID] = &topLevel[len(topLevel)-1]
+			}
+		}
+		// Second pass: attach threads to parents.
+		for _, s := range allSessions {
+			if s.IsThread {
+				if parent, ok := parentMap[s.ParentSessionID]; ok {
+					parent.Threads = append(parent.Threads, s)
+				} else {
+					// Orphaned thread — include at top level.
+					topLevel = append(topLevel, s)
+				}
+			}
+		}
+		allSessions = topLevel
 	}
 
-	writeJSON(w, sessions)
+	if len(allSessions) > 100 {
+		allSessions = allSessions[:100]
+	}
+
+	writeJSON(w, allSessions)
 }
 
 // HandleSessionMessages returns chat history for a specific session.
@@ -336,6 +372,7 @@ func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Requ
 	}
 
 	type msgOut struct {
+		EventID   string   `json:"event_id"`
 		Role      string   `json:"role"`
 		Content   string   `json:"content"`
 		Timestamp string   `json:"timestamp,omitempty"`
@@ -367,6 +404,7 @@ func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Requ
 					continue
 				}
 				messages = append(messages, msgOut{
+					EventID:   evt.ID,
 					Role:      string(msg.Role),
 					Content:   msg.Content,
 					Timestamp: ts,
@@ -374,6 +412,7 @@ func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Requ
 			} else {
 				// Full mode: include everything.
 				m := msgOut{
+					EventID:   evt.ID,
 					Role:      string(msg.Role),
 					Content:   msg.Content,
 					Timestamp: ts,
@@ -500,6 +539,84 @@ func (d *DashboardAPI) HandleSessionRename(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, map[string]string{"status": "ok", "name": meta.Name})
+}
+
+// HandleSessionDelete deletes a session permanently.
+// Expects POST with JSON body: {"user_id": "...", "session_id": "..."}.
+func (d *DashboardAPI) HandleSessionDelete(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, `{"error":"POST or DELETE required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserID    string `json:"user_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if req.UserID == "" || req.SessionID == "" {
+		http.Error(w, `{"error":"user_id and session_id are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	sessionsDir := d.config.SessionsPath()
+	fs := kaggenSession.NewFileService(sessionsDir)
+	key := session.Key{AppName: AppName, UserID: req.UserID, SessionID: req.SessionID}
+
+	if err := fs.DeleteSession(r.Context(), key); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to delete session: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// HandleSessionArchive marks a session as archived by setting archived_at in metadata.
+// Expects POST with JSON body: {"user_id": "...", "session_id": "..."}.
+func (d *DashboardAPI) HandleSessionArchive(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserID    string `json:"user_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if req.UserID == "" || req.SessionID == "" {
+		http.Error(w, `{"error":"user_id and session_id are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	sessionsDir := d.config.SessionsPath()
+	fs := kaggenSession.NewFileService(sessionsDir)
+	key := session.Key{AppName: AppName, UserID: req.UserID, SessionID: req.SessionID}
+
+	meta, err := fs.ReadMetadata(key)
+	if err != nil || meta == nil {
+		meta = &kaggenSession.SessionMetadata{
+			ID:     req.SessionID,
+			UserID: req.UserID,
+		}
+	}
+	meta.ArchivedAt = time.Now().UTC()
+	meta.UpdatedAt = time.Now().UTC()
+
+	if err := fs.WriteMetadata(key, meta); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to archive session: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 // HandleConfig returns sanitized configuration.
@@ -671,6 +788,8 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/sessions", d.HandleSessions)
 	handleFunc("/api/sessions/messages", d.HandleSessionMessages)
 	handleFunc("/api/sessions/rename", d.HandleSessionRename)
+	handleFunc("/api/sessions/delete", d.HandleSessionDelete)
+	handleFunc("/api/sessions/archive", d.HandleSessionArchive)
 	handleFunc("/api/config", d.HandleConfig)
 	handleFunc("/api/pipelines", d.HandlePipelines)
 	handleFunc("/api/tasks/cancel", d.HandleCancelTask)

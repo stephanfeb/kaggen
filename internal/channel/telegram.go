@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +43,8 @@ type TelegramChannel struct {
 	rateLimitMessage string
 	sessionService   trpcsession.Service
 	sttBaseURL       string
+	// msgEventMap maps Telegram message_id → event ID for thread reply detection.
+	msgEventMap sync.Map // int (tg msg id) -> string (event id)
 }
 
 // NewTelegramChannel creates a new Telegram channel.
@@ -241,8 +244,14 @@ func (t *TelegramChannel) Send(_ context.Context, resp *Response) error {
 		if i == 0 && replyToID != 0 {
 			msg.ReplyToMessageID = replyToID
 		}
-		if _, err := t.bot.Send(msg); err != nil {
+		sentMsg, err := t.bot.Send(msg)
+		if err != nil {
 			return fmt.Errorf("send telegram message: %w", err)
+		}
+
+		// Store Telegram message_id → event_id mapping for thread detection.
+		if eventID, ok := resp.Metadata["event_id"].(string); ok && eventID != "" {
+			t.msgEventMap.Store(sentMsg.MessageID, eventID)
 		}
 	}
 
@@ -444,6 +453,17 @@ func (t *TelegramChannel) telegramUpdateToMessage(update tgbotapi.Update) *Messa
 			"message_id": fmt.Sprintf("%d", m.MessageID),
 			"chat_type":  m.Chat.Type,
 		},
+	}
+
+	// Detect reply-to-bot-message for threading.
+	if m.ReplyToMessage != nil && t.bot != nil && m.ReplyToMessage.From != nil && m.ReplyToMessage.From.ID == t.bot.Self.ID {
+		tgMsgID := m.ReplyToMessage.MessageID
+		if eventID, ok := t.msgEventMap.Load(tgMsgID); ok {
+			msg.ReplyToEventID = eventID.(string)
+			t.logger.Info("telegram thread detected",
+				"reply_to_tg_msg", tgMsgID,
+				"event_id", eventID)
+		}
 	}
 
 	// Download attached photo (pick largest resolution).

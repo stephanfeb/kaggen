@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -18,12 +21,17 @@ import (
 
 // SessionMetadata holds human-readable session info persisted in metadata.json.
 type SessionMetadata struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Channel   string    `json:"channel,omitempty"`
-	UserID    string    `json:"user_id"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	ArchivedAt time.Time `json:"archived_at,omitempty"`
+	Channel    string    `json:"channel,omitempty"`
+	UserID     string    `json:"user_id"`
+	// Thread fields — set when this session is a forked thread.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	ParentEventID   string `json:"parent_event_id,omitempty"`
+	IsThread        bool   `json:"is_thread,omitempty"`
 }
 
 // ContextCache stores the last LLM messages array for fast session reload.
@@ -499,6 +507,168 @@ func (s *FileService) cacheContext(sess *trpcsession.Session, key trpcsession.Ke
 	defer s.mu.Unlock()
 	if err := writeJSON(s.contextCachePath(key), cache); err != nil {
 		s.logger.Warn("failed to write context cache", "error", err)
+	}
+}
+
+// maxForkEvents is the maximum number of events copied when forking a session.
+// If the parent has more events up to the fork point, only the last maxForkEvents
+// are copied (along with any existing summary).
+const maxForkEvents = 100
+
+// ForkSession creates a new thread session by copying events from parentKey up to
+// (and including) the event with the given ID. A thread context system event is
+// appended to orient the agent. Returns the key for the new thread session.
+func (s *FileService) ForkSession(parentKey trpcsession.Key, upToEventID, threadName string) (trpcsession.Key, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Read parent events.
+	events, _, err := ReadEventJSONL(s.eventsPath(parentKey))
+	if err != nil {
+		return trpcsession.Key{}, fmt.Errorf("read parent events: %w", err)
+	}
+
+	// Find the target event.
+	cutIdx := -1
+	for i := range events {
+		if events[i].ID == upToEventID {
+			cutIdx = i
+			break
+		}
+	}
+	if cutIdx < 0 {
+		return trpcsession.Key{}, fmt.Errorf("event %s not found in session %s", upToEventID, parentKey.SessionID)
+	}
+
+	// Slice events up to and including the target.
+	forked := events[:cutIdx+1]
+
+	// Extract content of the replied-to event for the context injection.
+	var quotedContent string
+	targetEvt := events[cutIdx]
+	if targetEvt.Response != nil {
+		for _, choice := range targetEvt.Response.Choices {
+			if choice.Message.Content != "" {
+				quotedContent = choice.Message.Content
+				break
+			}
+		}
+	}
+
+	// If too many events, keep only the tail + copy parent summary.
+	var parentSummary *trpcsession.Summary
+	if len(forked) > maxForkEvents {
+		forked = forked[len(forked)-maxForkEvents:]
+		// Read parent summary if it exists.
+		var sum trpcsession.Summary
+		if err := readJSON(s.summaryPath(parentKey), &sum); err == nil && sum.Summary != "" {
+			parentSummary = &sum
+		}
+	}
+
+	// Create new thread session.
+	threadID := uuid.New().String()
+	threadKey := trpcsession.Key{
+		AppName:   parentKey.AppName,
+		UserID:    parentKey.UserID,
+		SessionID: threadID,
+	}
+	threadDir := s.sessionDir(threadKey)
+	if err := os.MkdirAll(threadDir, 0755); err != nil {
+		return trpcsession.Key{}, fmt.Errorf("create thread directory: %w", err)
+	}
+
+	// Write forked events.
+	for i := range forked {
+		if err := AppendEventJSONL(s.eventsPath(threadKey), &forked[i]); err != nil {
+			os.RemoveAll(threadDir)
+			return trpcsession.Key{}, fmt.Errorf("write forked event %d: %w", i, err)
+		}
+	}
+
+	// Append thread context event.
+	contextEvt := makeThreadContextEvent(quotedContent)
+	if err := AppendEventJSONL(s.eventsPath(threadKey), contextEvt); err != nil {
+		os.RemoveAll(threadDir)
+		return trpcsession.Key{}, fmt.Errorf("write thread context event: %w", err)
+	}
+
+	// Copy parent summary if we truncated.
+	if parentSummary != nil {
+		_ = writeJSON(s.summaryPath(threadKey), parentSummary)
+	}
+
+	// Copy state.json from parent.
+	if src, err := os.Open(s.sessionStatePath(parentKey)); err == nil {
+		defer src.Close()
+		if dst, err := os.Create(s.sessionStatePath(threadKey)); err == nil {
+			io.Copy(dst, src)
+			dst.Close()
+		}
+	}
+
+	// Auto-generate thread name.
+	if threadName == "" && quotedContent != "" {
+		threadName = quotedContent
+		if len(threadName) > 50 {
+			threadName = threadName[:50] + "…"
+		}
+		threadName = "Re: " + threadName
+	}
+	if threadName == "" {
+		threadName = "Thread " + time.Now().Format("Jan 2 15:04")
+	}
+
+	// Write metadata.
+	now := time.Now().UTC()
+	meta := &SessionMetadata{
+		ID:              threadID,
+		Name:            threadName,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		UserID:          parentKey.UserID,
+		ParentSessionID: parentKey.SessionID,
+		ParentEventID:   upToEventID,
+		IsThread:        true,
+	}
+	if err := writeJSON(s.metadataPath(threadKey), meta); err != nil {
+		s.logger.Warn("failed to write thread metadata", "error", err)
+	}
+
+	// Fire async naming if namer is available (will refine the auto-name).
+	if s.namer != nil && quotedContent != "" {
+		go s.asyncInferName(threadKey, "Thread about: "+quotedContent)
+	}
+
+	s.logger.Info("session forked",
+		"parent", parentKey.SessionID,
+		"thread", threadID,
+		"events_copied", len(forked),
+		"reply_to_event", upToEventID)
+
+	return threadKey, nil
+}
+
+// makeThreadContextEvent creates a system event injected at the start of a
+// thread to orient the agent about the conversation branch.
+func makeThreadContextEvent(quotedContent string) *event.Event {
+	content := "[Thread Context] This conversation is a focused thread branching from an earlier discussion."
+	if quotedContent != "" {
+		content += fmt.Sprintf(
+			"\nThe user is replying to this specific message:\n---\n%s\n---\n"+
+				"Stay focused on this topic. The user wants to dive deeper into this particular point.",
+			quotedContent,
+		)
+	}
+	return &event.Event{
+		ID:        uuid.New().String(),
+		Author:    "system",
+		Timestamp: time.Now().UTC(),
+		Response: &model.Response{
+			Choices: []model.Choice{
+				{Message: model.Message{Role: model.RoleUser, Content: content}},
+			},
+		},
 	}
 }
 

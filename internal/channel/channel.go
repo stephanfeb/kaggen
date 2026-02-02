@@ -37,6 +37,10 @@ type Message struct {
 
 	// Metadata contains channel-specific additional data.
 	Metadata map[string]any `json:"metadata,omitempty"`
+
+	// ReplyToEventID, when set, indicates the user is replying to a specific
+	// event in the session. The handler uses this to fork a thread session.
+	ReplyToEventID string `json:"reply_to_event_id,omitempty"`
 }
 
 // Response represents an outgoing response to a channel.
