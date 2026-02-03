@@ -36,6 +36,7 @@ claude_model: sonnet              # Optional. CLI alias: opus, sonnet, haiku.
 claude_tools: Bash,Read,Edit,Write,Glob,Grep  # Optional. Comma-separated.
 tools: [browser, memory_search]   # Optional. Tool filter for LLM agent mode.
 guarded_tools: [Bash]             # Optional. Tools requiring human approval.
+notify_tools: [Write]             # Optional. Tools that auto-execute with notification.
 work_dir: ~/projects/foo          # Optional. --add-dir for claude subprocess.
 ---
 ```
@@ -49,6 +50,7 @@ work_dir: ~/projects/foo          # Optional. --add-dir for claude subprocess.
 | `claude_tools` | Claude agent | Tools available to the subprocess. Defaults to config `claude_tools`. |
 | `tools` | LLM agent | Restricts which coordinator tools the agent can use. Omit for all tools. |
 | `guarded_tools` | Both | Tools that require human approval before execution. See [Guarded Tools](#guarded-tools). |
+| `notify_tools` | Both | Tools that auto-execute but send a notification. See [Guarded Tools](#guarded-tools). |
 | `work_dir` | Claude agent | Working directory added via `--add-dir`. Supports `~` expansion. |
 
 ### Body (Instructions)
@@ -189,6 +191,54 @@ Approvals time out after 30 minutes if no action is taken.
 - Destructive operations (delete, drop, truncate)
 - Financial transactions or external API calls with real consequences
 - Any action where a mistake is costly to reverse
+
+### Notify Tools (Lower-Risk Tier)
+
+For tools where visibility is sufficient but blocking is unnecessary, use `notify_tools`. These auto-execute but send a notification to the user:
+
+```yaml
+---
+name: deploy
+description: Deploy services to production
+tools: [Bash, Read, Write]
+guarded_tools: [Bash]
+notify_tools: [Write]
+---
+```
+
+Notify-tier tool calls are logged to the audit trail with resolution `"notified"`.
+
+### Auto-Approval Rules
+
+To reduce approval fatigue for safe patterns, configure auto-approval rules in `~/.kaggen/config.json`:
+
+```json
+{
+  "approval": {
+    "auto_approve": [
+      {"tool": "Bash", "pattern": "^Run command: git (status|log|diff)"},
+      {"tool": "Read"}
+    ]
+  }
+}
+```
+
+- `tool` — the tool name to match
+- `pattern` — regex matched against the human-readable description (e.g., `Run command: git status`). Omit for match-all.
+
+Auto-approved calls are logged to the audit trail with resolution `"auto_approved"`.
+
+### Audit Trail
+
+All approval events (requested, approved, rejected, timed out, auto-approved, notified) are persisted in `~/.kaggen/audit.db`. Configure the path:
+
+```json
+{
+  "approval": {
+    "audit_db_path": "~/.kaggen/audit.db"
+  }
+}
+```
 
 ### REST API
 

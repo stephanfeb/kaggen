@@ -89,6 +89,7 @@ claude_model: sonnet                     # Optional. opus, sonnet, or haiku. Def
 claude_tools: Bash,Read,Edit,Write,Glob,Grep  # Optional. Tools for subprocess.
 tools: [browser, memory_search]          # Optional. Tool filter for LLM agent mode.
 guarded_tools: [Bash]                    # Optional. Tools requiring human approval before execution.
+notify_tools: [Write]                    # Optional. Tools that auto-execute but send a notification.
 work_dir: ~/projects/foo                 # Optional. Extra working directory for subprocess.
 ---
 ```
@@ -122,7 +123,19 @@ guarded_tools: [Bash]
 ---
 ```
 
-Only add `guarded_tools` for skills that perform side-effects where a mistake is costly (deployments, destructive operations, financial transactions). The tools listed must be a subset of the tools available to the skill.
+For lower-risk tools that should still be visible to the user, use `notify_tools` — these auto-execute but send a notification:
+
+```yaml
+---
+name: deploy
+description: Deploy services to production
+tools: [Bash, Read, Write]
+guarded_tools: [Bash]
+notify_tools: [Write]
+---
+```
+
+Only add `guarded_tools` for skills that perform side-effects where a mistake is costly (deployments, destructive operations, financial transactions). Use `notify_tools` for lower-risk mutations where visibility is enough. The tools listed must be a subset of the tools available to the skill.
 
 ### Model Selection (delegate skills)
 

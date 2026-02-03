@@ -19,6 +19,19 @@ type Config struct {
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
 	Telemetry TelemetryConfig `json:"telemetry,omitempty"`
 	STT       STTConfig       `json:"stt,omitempty"`
+	Approval  ApprovalConfig  `json:"approval,omitempty"`
+}
+
+// ApprovalConfig configures the maker-checker approval system.
+type ApprovalConfig struct {
+	AuditDBPath string             `json:"audit_db_path,omitempty"` // default ~/.kaggen/audit.db
+	AutoApprove []AutoApproveRule  `json:"auto_approve,omitempty"`  // rules that bypass approval
+}
+
+// AutoApproveRule defines a pattern for auto-approving guarded tool calls.
+type AutoApproveRule struct {
+	Tool    string `json:"tool"`              // tool name, e.g. "Bash"
+	Pattern string `json:"pattern,omitempty"` // regex matched against description; empty = match all
 }
 
 // STTConfig configures speech-to-text transcription for voice messages.
@@ -334,6 +347,14 @@ func (c *Config) ProactiveDBPath() string {
 		return ExpandPath(c.Proactive.HistoryDBPath)
 	}
 	return ExpandPath("~/.kaggen/proactive.db")
+}
+
+// AuditDBPath returns the expanded path to the approval audit database.
+func (c *Config) AuditDBPath() string {
+	if c.Approval.AuditDBPath != "" {
+		return ExpandPath(c.Approval.AuditDBPath)
+	}
+	return ExpandPath("~/.kaggen/audit.db")
 }
 
 // BacklogDBPath returns the expanded path to the backlog database.

@@ -238,6 +238,30 @@ func runGateway(cmd *cobra.Command, args []string) error {
 			"check_interval", cfg.Agent.Supervisor.CheckInterval)
 	}
 
+	// Create approval audit store.
+	auditStore, err := kaggenAgent.NewAuditStore(cfg.AuditDBPath())
+	if err != nil {
+		logger.Warn("failed to open audit store", "error", err)
+	} else {
+		agentOpts = append(agentOpts, kaggenAgent.WithAuditStore(auditStore))
+		defer auditStore.Close()
+	}
+
+	// Compile auto-approval rules from config.
+	if len(cfg.Approval.AutoApprove) > 0 {
+		rules := make([]kaggenAgent.AutoApproveRule, len(cfg.Approval.AutoApprove))
+		for i, r := range cfg.Approval.AutoApprove {
+			rules[i] = kaggenAgent.AutoApproveRule{Tool: r.Tool, Pattern: r.Pattern}
+		}
+		compiled, err := kaggenAgent.CompileAutoRules(rules)
+		if err != nil {
+			logger.Warn("failed to compile auto-approve rules", "error", err)
+		} else {
+			agentOpts = append(agentOpts, kaggenAgent.WithAutoRules(compiled))
+			logger.Info("auto-approve rules loaded", "count", len(compiled))
+		}
+	}
+
 	// Build the initial agent via the factory/provider pattern.
 	// This enables hot-reload of skills on SIGHUP without restarting.
 	initialAgent, err := kaggenAgent.BuildInitialAgentWithOpts(modelAdapter, toolList, fileMemory, skillDirs, memService, backlogStore, logger, []int{cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask}, agentOpts...)
@@ -248,6 +272,9 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	factory := kaggenAgent.NewAgentFactory(modelAdapter, toolList, fileMemory, memService, backlogStore, skillDirs, provider, logger, cfg.Agent.MaxHistoryRuns, cfg.Agent.PreloadMemory, cfg.Agent.MaxTurnsPerTask)
 	if supervisor != nil {
 		factory.SetSupervisor(supervisor)
+	}
+	if auditStore != nil {
+		factory.SetAuditStore(auditStore)
 	}
 
 	// Create session service with appropriate backend
@@ -327,6 +354,12 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Start the external task timeout reaper.
 	provider.InFlightStore().StartExternalReaper(ctx, func(taskID string, state *kaggenAgent.TaskState) {
 		logger.Warn("external task timed out", "task_id", taskID, "name", state.Task)
+		// Log approval timeout to audit store.
+		if state.ApprovalRequest != nil {
+			if as := provider.AuditStore(); as != nil {
+				_ = as.RecordResolution(taskID, "timed_out", "system", time.Now())
+			}
+		}
 		// Inject timeout notification into the originating session.
 		if err := server.Handler().InjectCompletion(
 			context.Background(), state.SessionID, state.UserID, taskID, "external",

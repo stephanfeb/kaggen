@@ -71,6 +71,11 @@ func (p *AgentProvider) InFlightStore() *InFlightStore {
 	return p.current.Load().InFlightStore()
 }
 
+// AuditStore returns the approval audit store from the current agent.
+func (p *AgentProvider) AuditStore() *AuditStore {
+	return p.current.Load().AuditStore()
+}
+
 // SetCompletionFunc sets the completion callback on the current agent.
 func (p *AgentProvider) SetCompletionFunc(fn CompletionFunc) {
 	p.current.Load().SetCompletionFunc(fn)

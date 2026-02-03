@@ -32,10 +32,10 @@ func BuildInitialAgent(
 	skillsRepo := loadSkills(skillDirs, logger)
 
 	var subAgents []trpcagent.Agent
-	var guardedTools map[string]string
+	var guardedTools, notifyTools map[string]string
 	if skillsRepo != nil {
 		var err error
-		subAgents, guardedTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
+		subAgents, guardedTools, notifyTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
 		if err != nil {
 			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
 		}
@@ -44,7 +44,7 @@ func BuildInitialAgent(
 		}
 	}
 
-	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, WithGuardedTools(guardedTools))
+	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, WithGuardedTools(guardedTools), WithNotifyTools(notifyTools))
 }
 
 // BuildInitialAgentWithOpts is like BuildInitialAgent but accepts AgentOption values
@@ -63,10 +63,10 @@ func BuildInitialAgentWithOpts(
 	skillsRepo := loadSkills(skillDirs, logger)
 
 	var subAgents []trpcagent.Agent
-	var guardedTools map[string]string
+	var guardedTools, notifyTools map[string]string
 	if skillsRepo != nil {
 		var err error
-		subAgents, guardedTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
+		subAgents, guardedTools, notifyTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
 		if err != nil {
 			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
 		}
@@ -75,7 +75,7 @@ func BuildInitialAgentWithOpts(
 		}
 	}
 
-	opts = append(opts, WithGuardedTools(guardedTools))
+	opts = append(opts, WithGuardedTools(guardedTools), WithNotifyTools(notifyTools))
 	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, opts...)
 }
 
@@ -125,6 +125,7 @@ type AgentFactory struct {
 	extConfig       *ExternalDeliveryConfig
 	extraCoordTools []tool.Tool
 	supervisor      *Supervisor
+	auditStore      *AuditStore
 	mu              sync.Mutex // serializes rebuilds
 }
 
@@ -184,6 +185,13 @@ func (f *AgentFactory) SetSupervisor(s *Supervisor) {
 	f.mu.Unlock()
 }
 
+// SetAuditStore stores the approval audit store for persistence across rebuilds.
+func (f *AgentFactory) SetAuditStore(a *AuditStore) {
+	f.mu.Lock()
+	f.auditStore = a
+	f.mu.Unlock()
+}
+
 // SetExtraCoordinatorTools stores additional tools for the coordinator
 // (e.g. external_task_register). Applied on the next Rebuild().
 func (f *AgentFactory) SetExtraCoordinatorTools(tools ...tool.Tool) {
@@ -215,10 +223,10 @@ func (f *AgentFactory) Rebuild() error {
 
 	// Build sub-agents from skills.
 	var subAgents []trpcagent.Agent
-	var guardedTools map[string]string
+	var guardedTools, notifyTools map[string]string
 	if skillsRepo != nil {
 		var err error
-		subAgents, guardedTools, err = BuildSubAgents(f.model, skillsRepo, f.tools, f.logger)
+		subAgents, guardedTools, notifyTools, err = BuildSubAgents(f.model, skillsRepo, f.tools, f.logger)
 		if err != nil {
 			f.logger.Warn("failed to build sub-agents", "error", err)
 		}
@@ -242,7 +250,10 @@ func (f *AgentFactory) Rebuild() error {
 	if f.supervisor != nil {
 		agentOpts = append(agentOpts, WithSupervisor(f.supervisor))
 	}
-	agentOpts = append(agentOpts, WithGuardedTools(guardedTools))
+	agentOpts = append(agentOpts, WithGuardedTools(guardedTools), WithNotifyTools(notifyTools))
+	if f.auditStore != nil {
+		agentOpts = append(agentOpts, WithAuditStore(f.auditStore))
+	}
 	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.backlogStore, f.logger, []int{f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask}, agentOpts...)
 	if err != nil {
 		return fmt.Errorf("rebuild agent: %w", err)

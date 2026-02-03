@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -76,10 +77,11 @@ type Handler struct {
 	responders *SessionResponder
 	forker     ThreadForker
 	inFlight   *kaggenAgent.InFlightStore
+	auditStore *kaggenAgent.AuditStore
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
-func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, inFlight *kaggenAgent.InFlightStore, memService ...memory.Service) *Handler {
+func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, inFlight *kaggenAgent.InFlightStore, auditStore *kaggenAgent.AuditStore, memService ...memory.Service) *Handler {
 	var opts []runner.Option
 	if sessionService != nil {
 		opts = append(opts, runner.WithSessionService(sessionService))
@@ -96,6 +98,7 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 		responders: NewSessionResponder(),
 		forker:     forker,
 		inFlight:   inFlight,
+		auditStore: auditStore,
 	}
 }
 
@@ -509,9 +512,15 @@ func (h *Handler) handleApprovalAction(ctx context.Context, msg *channel.Message
 	switch action {
 	case "approve":
 		h.inFlight.Complete(approvalID, "approved")
+		if h.auditStore != nil {
+			_ = h.auditStore.RecordResolution(approvalID, "approved", task.UserID, time.Now())
+		}
 		result = fmt.Sprintf("Tool %s was APPROVED by user. You may now retry the action.", task.ApprovalRequest.ToolName)
 	case "reject":
 		h.inFlight.Fail(approvalID, "rejected by user")
+		if h.auditStore != nil {
+			_ = h.auditStore.RecordResolution(approvalID, "rejected", task.UserID, time.Now())
+		}
 		result = fmt.Sprintf("Tool %s was REJECTED by user. Find an alternative approach.", task.ApprovalRequest.ToolName)
 	default:
 		return nil

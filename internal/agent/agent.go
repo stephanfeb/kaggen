@@ -62,6 +62,7 @@ type Agent struct {
 	guardedTools        map[string]string    // tool name -> skill name
 	approvalNotify      ApprovalNotifyFunc
 	setApprovalNotifyRef func(ApprovalNotifyFunc) // wires closure-captured ref
+	auditStore          *AuditStore
 }
 
 // AgentOption configures optional aspects of the Agent.
@@ -72,6 +73,9 @@ type agentOptions struct {
 	extraCoordTools     []tool.Tool
 	supervisor          *Supervisor
 	guardedTools        map[string]string // tool name -> skill name
+	notifyTools         map[string]string // tool name -> skill name (auto-execute with notification)
+	auditStore          *AuditStore
+	autoRules           []CompiledAutoRule
 }
 
 // WithExternalConfig injects external delivery configuration into the
@@ -96,6 +100,22 @@ func WithSupervisor(s *Supervisor) AgentOption {
 // require human approval before execution.
 func WithGuardedTools(gt map[string]string) AgentOption {
 	return func(o *agentOptions) { o.guardedTools = gt }
+}
+
+// WithAuditStore sets the persistent audit store for approval events.
+func WithAuditStore(a *AuditStore) AgentOption {
+	return func(o *agentOptions) { o.auditStore = a }
+}
+
+// WithNotifyTools sets the tool-name-to-skill-name mapping for tools that
+// auto-execute but send a notification to the user.
+func WithNotifyTools(nt map[string]string) AgentOption {
+	return func(o *agentOptions) { o.notifyTools = nt }
+}
+
+// WithAutoRules sets pre-compiled auto-approval rules.
+func WithAutoRules(rules []CompiledAutoRule) AgentOption {
+	return func(o *agentOptions) { o.autoRules = rules }
 }
 
 // NewAgent creates a new Kaggen agent using the Coordinator Team pattern.
@@ -206,6 +226,12 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	if guardedTools == nil {
 		guardedTools = make(map[string]string)
 	}
+	notifyTools := ao.notifyTools
+	if notifyTools == nil {
+		notifyTools = make(map[string]string)
+	}
+	autoRules := ao.autoRules
+	auditStore := ao.auditStore
 	var approvalNotifyMu sync.RWMutex
 	var approvalNotifyRef ApprovalNotifyFunc
 
@@ -239,15 +265,26 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 					uID = inv.Session.UserID
 				}
 
-				approvalID := uuid.New().String()
-
 				// Build human-readable description from tool args.
-				desc := fmt.Sprintf("%s: %s", args.ToolName, string(args.Arguments))
-				if len(desc) > 200 {
-					desc = desc[:200] + "..."
+				desc := formatApprovalDescription(args.ToolName, args.Arguments)
+
+				// Check auto-approval rules before requiring manual approval.
+				if MatchAutoRule(autoRules, args.ToolName, desc) {
+					autoID := uuid.New().String()
+					if auditStore != nil {
+						_ = auditStore.RecordRequest(autoID, args.ToolName, skillName, string(args.Arguments), desc, sessID, uID, time.Now())
+						_ = auditStore.RecordResolution(autoID, "auto_approved", "rule", time.Now())
+					}
+					logger.Info("auto-approved", "tool", args.ToolName, "description", desc)
+					return &tool.BeforeToolResult{}, nil // allow execution
 				}
 
+				approvalID := uuid.New().String()
+
 				store.RegisterApproval(approvalID, skillName, args.ToolName, string(args.Arguments), desc, sessID, uID, 30*time.Minute)
+				if auditStore != nil {
+					_ = auditStore.RecordRequest(approvalID, args.ToolName, skillName, string(args.Arguments), desc, sessID, uID, time.Now())
+				}
 				logger.Info("approval required",
 					"approval_id", approvalID,
 					"tool", args.ToolName,
@@ -274,6 +311,38 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				}
 
 				return &tool.BeforeToolResult{}, fmt.Errorf("Approval required for %s (ID: %s). This action is pending human approval. Continue with other tasks while waiting.", args.ToolName, approvalID)
+			}
+
+			// Notify tier: auto-execute but send notification.
+			if skillName, notify := notifyTools[args.ToolName]; notify {
+				desc := formatApprovalDescription(args.ToolName, args.Arguments)
+				notifyID := uuid.New().String()
+				var nSessID, nUID string
+				if inv, ok := agent.InvocationFromContext(ctx); ok && inv.Session != nil {
+					nSessID = inv.Session.ID
+					nUID = inv.Session.UserID
+				}
+				if auditStore != nil {
+					_ = auditStore.RecordRequest(notifyID, args.ToolName, skillName, string(args.Arguments), desc, nSessID, nUID, time.Now())
+					_ = auditStore.RecordResolution(notifyID, "notified", "system", time.Now())
+				}
+				approvalNotifyMu.RLock()
+				notifyFn := approvalNotifyRef
+				approvalNotifyMu.RUnlock()
+				if notifyFn != nil {
+					_ = notifyFn(nSessID, &channel.Response{
+						ID:        notifyID,
+						SessionID: nSessID,
+						Type:      "tool_notification",
+						Metadata: map[string]any{
+							"tool_name":   args.ToolName,
+							"skill_name":  skillName,
+							"description": desc,
+						},
+					})
+				}
+				logger.Info("tool notification sent", "tool", args.ToolName, "skill", skillName)
+				return &tool.BeforeToolResult{}, nil // allow execution
 			}
 
 			var sessionID, userID, invID string
@@ -451,6 +520,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 		dispatcher:    dispatcher,
 		pipelines:     dispatchPipelines,
 		guardedTools:  gt,
+		auditStore:    auditStore,
 	}
 
 	// Wire the approval notify ref so BeforeTool closure can access it.
@@ -493,6 +563,11 @@ func (a *Agent) SetApprovalNotifyFunc(fn ApprovalNotifyFunc) {
 // GuardedTools returns the tool-name-to-skill-name mapping.
 func (a *Agent) GuardedTools() map[string]string {
 	return a.guardedTools
+}
+
+// AuditStore returns the approval audit store, or nil if not configured.
+func (a *Agent) AuditStore() *AuditStore {
+	return a.auditStore
 }
 
 // Run executes the agent with the given invocation.

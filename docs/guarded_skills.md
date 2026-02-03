@@ -81,7 +81,7 @@ The `GET` response returns an array of pending approval objects:
     "approval_request": {
       "tool_name": "Bash",
       "skill_name": "deploy",
-      "description": "Bash: {\"command\": \"kubectl apply -f deployment.yaml\"}",
+      "description": "Run command: kubectl apply -f deployment.yaml",
       "arguments": "{\"command\": \"kubectl apply -f deployment.yaml\"}",
       "requested_at": "2025-01-15T10:30:00Z"
     }
@@ -132,6 +132,66 @@ The agent is instructed to handle approvals gracefully:
 
 This means guarded tools do not block the agent — they block the specific task that triggered the tool call.
 
+## Notify Tools (Lower-Risk Tier)
+
+Not all tool gates need to block execution. For lower-risk mutations where visibility is sufficient, use `notify_tools`:
+
+```yaml
+---
+name: deploy
+description: Deploy services to production
+tools: [Bash, Read, Write]
+guarded_tools: [Bash]
+notify_tools: [Write]
+---
+```
+
+Notify-tier tools auto-execute but send a `tool_notification` event to the user's channel. They are logged in the audit trail with resolution `"notified"`.
+
+## Auto-Approval Rules
+
+To reduce approval fatigue for safe, repetitive patterns, define auto-approval rules in `~/.kaggen/config.json`:
+
+```json
+{
+  "approval": {
+    "auto_approve": [
+      {"tool": "Bash", "pattern": "^Run command: git (status|log|diff)"},
+      {"tool": "Read"}
+    ]
+  }
+}
+```
+
+- `tool` — tool name to match
+- `pattern` — regex matched against the human-readable description (e.g., `Run command: git status`). Omit to match all invocations of the tool.
+
+Rules are evaluated in `BeforeTool` before an approval is registered. If a rule matches, the tool executes immediately. Auto-approved calls are logged with resolution `"auto_approved"`.
+
+## Audit Trail
+
+All approval lifecycle events are persisted in SQLite (`~/.kaggen/audit.db`):
+
+| Event | Resolution Value |
+|-------|-----------------|
+| User approved | `approved` |
+| User rejected | `rejected` |
+| Timed out (30 min) | `timed_out` |
+| Auto-approval rule matched | `auto_approved` |
+| Notify-tier tool executed | `notified` |
+
+Configure the path in `~/.kaggen/config.json`:
+
+```json
+{
+  "approval": {
+    "audit_db_path": "~/.kaggen/audit.db"
+  }
+}
+```
+
+Each record captures: approval ID, tool name, skill name, arguments, human-readable description, session ID, user ID, timestamps, resolution, and who resolved it.
+
 ## Internals
 
 Guarded tool interception reuses the existing external task infrastructure:
@@ -150,16 +210,19 @@ During agent construction, `BuildSubAgents` collects `guarded_tools` from all sk
 
 | File | Role |
 |------|------|
-| `internal/agent/skills.go` | Parses `guarded_tools` from SKILL.md frontmatter |
+| `internal/agent/skills.go` | Parses `guarded_tools` and `notify_tools` from SKILL.md frontmatter |
 | `internal/agent/async.go` | `TaskPendingApproval` status, `ApprovalRequest` struct, `RegisterApproval()` |
-| `internal/agent/agent.go` | BeforeTool interception, `ApprovalNotifyFunc`, guarded tool registry |
-| `internal/agent/factory.go` | Wires guarded tools map through agent construction |
-| `internal/agent/provider.go` | Delegates `SetApprovalNotifyFunc` to current agent |
-| `internal/gateway/handler.go` | Processes approval action messages, calls InjectCompletion |
+| `internal/agent/agent.go` | BeforeTool interception, guarded/notify/auto-approve logic |
+| `internal/agent/approval.go` | `formatApprovalDescription()` — human-readable tool call summaries |
+| `internal/agent/autorule.go` | `CompileAutoRules()`, `MatchAutoRule()` — auto-approval rule engine |
+| `internal/agent/audit.go` | `AuditStore` — SQLite persistence for approval events |
+| `internal/agent/factory.go` | Wires guarded tools, notify tools, audit store through agent construction |
+| `internal/agent/provider.go` | Delegates `SetApprovalNotifyFunc`, `AuditStore()` to current agent |
+| `internal/gateway/handler.go` | Processes approval action messages, audit logging, calls InjectCompletion |
 | `internal/gateway/dashboard.go` | REST endpoints for listing/approving/rejecting |
-| `internal/gateway/server.go` | Wires InFlightStore and approval notify function |
+| `internal/gateway/server.go` | Wires InFlightStore, AuditStore, and approval notify function |
 | `internal/channel/telegram.go` | Inline keyboard rendering, CallbackQuery handling |
-| `cmd/kaggen/cmd/gateway.go` | Wires ApprovalNotifyFunc to channel responders |
+| `cmd/kaggen/cmd/gateway.go` | Wires ApprovalNotifyFunc, AuditStore, auto-approve rules |
 
 ## Examples
 
