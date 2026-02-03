@@ -76,6 +76,11 @@ func (p *AgentProvider) AuditStore() *AuditStore {
 	return p.current.Load().AuditStore()
 }
 
+// GuardedRunner returns the GuardedSkillRunner for graph-based approval flows.
+func (p *AgentProvider) GuardedRunner() *GuardedSkillRunner {
+	return p.current.Load().GuardedRunner()
+}
+
 // SetCompletionFunc sets the completion callback on the current agent.
 func (p *AgentProvider) SetCompletionFunc(fn CompletionFunc) {
 	p.current.Load().SetCompletionFunc(fn)

@@ -508,6 +508,7 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		}
 		return asyncDispatchResponse{}, fmt.Errorf("unknown agent %q, available: %s", req.AgentName, strings.Join(available, ", "))
 	}
+	d.logger.Info("ASYNC dispatch: using agent", "name", req.AgentName, "agent_ptr", fmt.Sprintf("%p", ag))
 
 	policy := TriggerPolicy(req.Policy)
 	if policy == "" {

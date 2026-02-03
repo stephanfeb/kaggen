@@ -53,14 +53,16 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 	if f, ok := sessionService.(ThreadForker); ok {
 		forker = f
 	}
-	// Extract InFlightStore and AuditStore from the agent if available.
+	// Extract InFlightStore, AuditStore, and GuardedRunner from the agent if available.
 	var inFlight *kaggenAgent.InFlightStore
 	var auditStore *kaggenAgent.AuditStore
+	var guardedRunner *kaggenAgent.GuardedSkillRunner
 	if ap, ok := ag.(*kaggenAgent.AgentProvider); ok {
 		inFlight = ap.InFlightStore()
 		auditStore = ap.AuditStore()
+		guardedRunner = ap.GuardedRunner()
 	}
-	handler := NewHandler(AppName, ag, sessionService, logger, forker, inFlight, auditStore, memService...)
+	handler := NewHandler(AppName, ag, sessionService, logger, forker, inFlight, auditStore, guardedRunner, memService...)
 	router := channel.NewRouter(handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Gateway.Bind, cfg.Gateway.Port)

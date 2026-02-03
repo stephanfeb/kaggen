@@ -894,7 +894,17 @@ func (d *DashboardAPI) HandleApprovalAction(w http.ResponseWriter, r *http.Reque
 		result = fmt.Sprintf("Tool %s was REJECTED by user. Reason: %s. Find an alternative approach.", task.ApprovalRequest.ToolName, reason)
 	}
 
-	// Inject completion back to the coordinator.
+	// Try graph-based SignalDecision first (for blocking goroutine pattern).
+	guardedRunner := d.agentProvider.GuardedRunner()
+	if guardedRunner != nil {
+		if signaled := guardedRunner.ExecutionStore().SignalDecision(req.ID, isApprove); signaled {
+			// Graph execution will resume and deliver results via the waiting goroutine.
+			writeJSON(w, map[string]string{"status": action, "id": req.ID})
+			return
+		}
+	}
+
+	// Fall back to legacy InjectCompletion for non-graph flows.
 	if d.handler != nil {
 		_ = d.handler.InjectCompletion(r.Context(), task.SessionID, task.UserID, req.ID, task.AgentName, result)
 	}

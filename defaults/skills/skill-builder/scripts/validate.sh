@@ -63,6 +63,46 @@ if echo "$FRONTMATTER" | grep -qi 'TODO'; then
     fail "SKILL.md frontmatter contains TODO placeholder"
 fi
 
+# Known valid tool names (must match Go tool declarations in internal/tools/)
+VALID_TOOLS="exec read write browser memory_search memory_store cron_schedules cron_add cron_update cron_delete backlog_list backlog_add backlog_update backlog_complete backlog_decompose backlog_plan_status external_task_register external_task_list"
+
+# Validate tools: field if present
+TOOLS_LINE=$(echo "$FRONTMATTER" | grep '^tools:' | sed 's/^tools://' | tr -d '[],' | xargs || true)
+if [[ -n "$TOOLS_LINE" ]]; then
+    for TOOL in $TOOLS_LINE; do
+        if ! echo "$VALID_TOOLS" | grep -qw "$TOOL"; then
+            fail "Unknown tool '$TOOL' in tools: field. Valid tools: $VALID_TOOLS"
+        fi
+    done
+fi
+
+# Validate guarded_tools: field if present
+GUARDED_LINE=$(echo "$FRONTMATTER" | grep '^guarded_tools:' | sed 's/^guarded_tools://' | tr -d '[],' | xargs || true)
+if [[ -n "$GUARDED_LINE" ]]; then
+    for GTOOL in $GUARDED_LINE; do
+        if ! echo "$VALID_TOOLS" | grep -qw "$GTOOL"; then
+            fail "Unknown tool '$GTOOL' in guarded_tools: field. Valid tools: $VALID_TOOLS"
+        fi
+        # Also check it's in the tools list
+        if [[ -n "$TOOLS_LINE" ]] && ! echo "$TOOLS_LINE" | grep -qw "$GTOOL"; then
+            fail "guarded_tool '$GTOOL' must also be listed in tools:"
+        fi
+    done
+fi
+
+# Validate notify_tools: field if present
+NOTIFY_LINE=$(echo "$FRONTMATTER" | grep '^notify_tools:' | sed 's/^notify_tools://' | tr -d '[],' | xargs || true)
+if [[ -n "$NOTIFY_LINE" ]]; then
+    for NTOOL in $NOTIFY_LINE; do
+        if ! echo "$VALID_TOOLS" | grep -qw "$NTOOL"; then
+            fail "Unknown tool '$NTOOL' in notify_tools: field. Valid tools: $VALID_TOOLS"
+        fi
+        if [[ -n "$TOOLS_LINE" ]] && ! echo "$TOOLS_LINE" | grep -qw "$NTOOL"; then
+            fail "notify_tool '$NTOOL' must also be listed in tools:"
+        fi
+    done
+fi
+
 # Determine agent type
 IS_DELEGATE=false
 if echo "$FRONTMATTER" | grep -q '^delegate:.*claude'; then

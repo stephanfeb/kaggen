@@ -21,8 +21,8 @@ import (
 // CaseInsensitiveRepository wraps a skill.Repository to provide case-insensitive lookups.
 // This handles LLMs like Gemini that may capitalize skill names (e.g., "Pandoc" vs "pandoc").
 type CaseInsensitiveRepository struct {
-	inner    skill.Repository
-	nameMap  map[string]string // lowercase -> actual name
+	inner   skill.Repository
+	nameMap map[string]string // lowercase -> actual name
 }
 
 // NewCaseInsensitiveRepository wraps an existing repository with case-insensitive lookup.
@@ -73,10 +73,16 @@ type skillFrontmatter struct {
 // plus a general-purpose sub-agent with the provided tools. These sub-agents are
 // used as members of the Coordinator Team.
 // It also returns a map of guarded tool names to their owning skill name.
-func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []tool.Tool, logger *slog.Logger) ([]agent.Agent, map[string]string, map[string]string, error) {
+// If guardedRunner is non-nil, skills with guarded_tools will use GuardedSkillAgent
+// which implements proper graph-based pause/resume semantics.
+// The callbacks parameter is kept for notify-tier tools on non-guarded agents.
+func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []tool.Tool, callbacks *tool.Callbacks, guardedRunner *GuardedSkillRunner, logger *slog.Logger) ([]agent.Agent, map[string]string, map[string]string, error) {
 	var agents []agent.Agent
 	guardedTools := make(map[string]string) // tool name -> skill name
 	notifyTools := make(map[string]string)  // tool name -> skill name
+
+	// Log callback status at entry
+	logger.Info("SKILLS BuildSubAgents called", "hasCallbacks", callbacks != nil, "callbacks_ptr", fmt.Sprintf("%p", callbacks))
 
 	// Load default claude config for sub-agents.
 	cfg, _ := config.Load()
@@ -150,14 +156,37 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill tool filter", "skill", summary.Name, "allowed", fm.Tools)
 			}
 
-			sa := llmagent.New(summary.Name,
+			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
+			// which implements proper graph-based pause/resume for approvals.
+			if len(fm.GuardedTools) > 0 && guardedRunner != nil {
+				sa := NewGuardedSkillAgent(
+					summary.Name,
+					summary.Description,
+					instruction,
+					agentTools,
+					guardedRunner,
+					logger,
+				)
+				agents = append(agents, sa)
+				logger.Info("created guarded skill sub-agent", "name", summary.Name, "tools", len(agentTools), "guarded", fm.GuardedTools)
+				continue
+			}
+
+			// For skills without guarded tools, use standard llmagent
+			opts := []llmagent.Option{
 				llmagent.WithModel(m),
 				llmagent.WithInstruction(instruction),
 				llmagent.WithDescription(summary.Description),
 				llmagent.WithTools(agentTools),
 				llmagent.WithMaxLLMCalls(25),
 				llmagent.WithMaxToolIterations(30),
-			)
+			}
+			if callbacks != nil {
+				opts = append(opts, llmagent.WithToolCallbacks(callbacks))
+				logger.Info("SKILLS: Attaching callbacks to skill sub-agent", "skill", summary.Name, "callbacks_ptr", fmt.Sprintf("%p", callbacks))
+			}
+			sa := llmagent.New(summary.Name, opts...)
+			logger.Info("SKILLS: Created sub-agent object", "skill", summary.Name, "agent_ptr", fmt.Sprintf("%p", sa))
 
 			agents = append(agents, sa)
 			logger.Info("created skill sub-agent", "name", summary.Name, "tools", len(agentTools))
@@ -165,14 +194,22 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	}
 
 	// Create a general-purpose sub-agent with the standard tools (read, write, exec, etc.).
-	gp := llmagent.New("general",
+	gpOpts := []llmagent.Option{
 		llmagent.WithModel(m),
 		llmagent.WithTools(generalTools),
 		llmagent.WithInstruction("You are a general-purpose assistant. Use the available tools to complete tasks. Report your results clearly."),
 		llmagent.WithDescription("General-purpose agent with file read/write, exec, and other standard tools. Use for tasks that don't match a specific skill."),
 		llmagent.WithMaxLLMCalls(25),
 		llmagent.WithMaxToolIterations(30),
-	)
+	}
+	if callbacks != nil {
+		gpOpts = append(gpOpts, llmagent.WithToolCallbacks(callbacks))
+		logger.Info("SKILLS: Attaching callbacks to general sub-agent", "callbacks_ptr", fmt.Sprintf("%p", callbacks))
+	} else {
+		logger.Info("SKILLS: NO callbacks for general sub-agent")
+	}
+	gp := llmagent.New("general", gpOpts...)
+	logger.Info("SKILLS: Created general sub-agent object", "agent_ptr", fmt.Sprintf("%p", gp))
 	agents = append(agents, gp)
 
 	if len(agents) == 0 {

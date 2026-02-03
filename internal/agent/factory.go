@@ -34,17 +34,48 @@ func BuildInitialAgent(
 	var subAgents []trpcagent.Agent
 	var guardedTools, notifyTools map[string]string
 	if skillsRepo != nil {
+		// Two-pass construction: first get the guarded/notify tool maps.
 		var err error
-		subAgents, guardedTools, notifyTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
+		_, guardedTools, notifyTools, err = BuildSubAgents(m, skillsRepo, tools, nil, nil, logger)
 		if err != nil {
-			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
+			logger.Warn("failed to build sub-agents (pass 1), falling back to single agent", "error", err)
 		}
+
+		// Create InFlightStore and GuardedSkillRunner for graph-based approvals.
+		store := NewInFlightStore()
+		var guardedRunner *GuardedSkillRunner
+		if len(guardedTools) > 0 {
+			guardedRunner = NewGuardedSkillRunner(m, tools, guardedTools, store, nil, logger)
+			logger.Info("FACTORY: Created GuardedSkillRunner for graph-based approvals",
+				"guardedTools", guardedTools)
+		}
+
+		// Build notify-only callbacks for non-guarded agents.
+		logger.Info("FACTORY BuildInitialAgent: Building callbacks",
+			"guardedTools", guardedTools,
+			"notifyTools", notifyTools)
+		approvalCallbacks := BuildApprovalCallbacks(&ApprovalCallbackDeps{
+			NotifyTools: notifyTools,
+			Logger:      logger,
+		})
+
+		// Second pass: build sub-agents WITH guarded runner and callbacks.
+		logger.Info("FACTORY BuildInitialAgent: Building sub-agents")
+		subAgents, _, _, err = BuildSubAgents(m, skillsRepo, tools, approvalCallbacks, guardedRunner, logger)
+		if err != nil {
+			logger.Warn("failed to build sub-agents (pass 2), falling back to single agent", "error", err)
+		}
+
 		if n := len(skillsRepo.Summaries()); n > 0 {
 			logger.Info("skills loaded", "count", n)
 		}
+
+		return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns,
+			WithGuardedTools(guardedTools), WithNotifyTools(notifyTools), WithInFlightStore(store), WithGuardedRunner(guardedRunner))
 	}
 
-	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, WithGuardedTools(guardedTools), WithNotifyTools(notifyTools))
+	return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns,
+		WithGuardedTools(guardedTools), WithNotifyTools(notifyTools))
 }
 
 // BuildInitialAgentWithOpts is like BuildInitialAgent but accepts AgentOption values
@@ -62,17 +93,53 @@ func BuildInitialAgentWithOpts(
 ) (*Agent, error) {
 	skillsRepo := loadSkills(skillDirs, logger)
 
+	// Extract auditStore and autoRules from opts if provided.
+	var ao agentOptions
+	for _, o := range opts {
+		o(&ao)
+	}
+
 	var subAgents []trpcagent.Agent
 	var guardedTools, notifyTools map[string]string
 	if skillsRepo != nil {
+		// Two-pass construction: first get the guarded/notify tool maps.
 		var err error
-		subAgents, guardedTools, notifyTools, err = BuildSubAgents(m, skillsRepo, tools, logger)
+		_, guardedTools, notifyTools, err = BuildSubAgents(m, skillsRepo, tools, nil, nil, logger)
 		if err != nil {
-			logger.Warn("failed to build sub-agents, falling back to single agent", "error", err)
+			logger.Warn("failed to build sub-agents (pass 1), falling back to single agent", "error", err)
 		}
+
+		// Create InFlightStore and GuardedSkillRunner for graph-based approvals.
+		store := NewInFlightStore()
+		var guardedRunner *GuardedSkillRunner
+		if len(guardedTools) > 0 {
+			guardedRunner = NewGuardedSkillRunner(m, tools, guardedTools, store, ao.auditStore, logger)
+			logger.Info("FACTORY: Created GuardedSkillRunner for graph-based approvals",
+				"guardedTools", guardedTools)
+		}
+
+		// Build notify-only callbacks for non-guarded agents.
+		logger.Info("FACTORY: Building callbacks",
+			"guardedTools", guardedTools,
+			"notifyTools", notifyTools)
+		approvalCallbacks := BuildApprovalCallbacks(&ApprovalCallbackDeps{
+			NotifyTools: notifyTools,
+			AuditStore:  ao.auditStore,
+			Logger:      logger,
+		})
+
+		// Second pass: build sub-agents WITH guarded runner and callbacks.
+		subAgents, _, _, err = BuildSubAgents(m, skillsRepo, tools, approvalCallbacks, guardedRunner, logger)
+		if err != nil {
+			logger.Warn("failed to build sub-agents (pass 2), falling back to single agent", "error", err)
+		}
+
 		if n := len(skillsRepo.Summaries()); n > 0 {
 			logger.Info("skills loaded", "count", n)
 		}
+
+		opts = append(opts, WithGuardedTools(guardedTools), WithNotifyTools(notifyTools), WithInFlightStore(store), WithGuardedRunner(guardedRunner))
+		return NewAgent(m, tools, fileMemory, subAgents, nil, memService, bStore, logger, maxHistoryRuns, opts...)
 	}
 
 	opts = append(opts, WithGuardedTools(guardedTools), WithNotifyTools(notifyTools))
@@ -221,14 +288,41 @@ func (f *AgentFactory) Rebuild() error {
 	// Load skills from filesystem.
 	skillsRepo := loadSkills(f.skillDirs, f.logger)
 
-	// Build sub-agents from skills.
+	// Build sub-agents from skills using two-pass construction.
 	var subAgents []trpcagent.Agent
 	var guardedTools, notifyTools map[string]string
+	var store *InFlightStore
+	var guardedRunner *GuardedSkillRunner
 	if skillsRepo != nil {
+		// Pass 1: get guarded/notify tool maps.
 		var err error
-		subAgents, guardedTools, notifyTools, err = BuildSubAgents(f.model, skillsRepo, f.tools, f.logger)
+		_, guardedTools, notifyTools, err = BuildSubAgents(f.model, skillsRepo, f.tools, nil, nil, f.logger)
 		if err != nil {
-			f.logger.Warn("failed to build sub-agents", "error", err)
+			f.logger.Warn("failed to build sub-agents (pass 1)", "error", err)
+		}
+
+		// Create InFlightStore and GuardedSkillRunner for graph-based approvals.
+		store = NewInFlightStore()
+		if len(guardedTools) > 0 {
+			guardedRunner = NewGuardedSkillRunner(f.model, f.tools, guardedTools, store, f.auditStore, f.logger)
+			f.logger.Info("FACTORY Rebuild: Created GuardedSkillRunner",
+				"guardedTools", guardedTools)
+		}
+
+		// Build notify-only callbacks for non-guarded agents.
+		f.logger.Info("FACTORY Rebuild: Building callbacks",
+			"guardedTools", guardedTools,
+			"notifyTools", notifyTools)
+		approvalCallbacks := BuildApprovalCallbacks(&ApprovalCallbackDeps{
+			NotifyTools: notifyTools,
+			AuditStore:  f.auditStore,
+			Logger:      f.logger,
+		})
+
+		// Pass 2: build sub-agents WITH guarded runner and callbacks.
+		subAgents, _, _, err = BuildSubAgents(f.model, skillsRepo, f.tools, approvalCallbacks, guardedRunner, f.logger)
+		if err != nil {
+			f.logger.Warn("failed to build sub-agents (pass 2)", "error", err)
 		}
 	}
 
@@ -253,6 +347,12 @@ func (f *AgentFactory) Rebuild() error {
 	agentOpts = append(agentOpts, WithGuardedTools(guardedTools), WithNotifyTools(notifyTools))
 	if f.auditStore != nil {
 		agentOpts = append(agentOpts, WithAuditStore(f.auditStore))
+	}
+	if store != nil {
+		agentOpts = append(agentOpts, WithInFlightStore(store))
+	}
+	if guardedRunner != nil {
+		agentOpts = append(agentOpts, WithGuardedRunner(guardedRunner))
 	}
 	ag, err := NewAgent(f.model, f.tools, f.fileMemory, subAgents, f.completeFn, f.memService, f.backlogStore, f.logger, []int{f.maxHistoryRuns, f.preloadMemory, f.maxTurnsPerTask}, agentOpts...)
 	if err != nil {

@@ -72,16 +72,17 @@ type ThreadForker interface {
 
 // Handler processes messages from channels using the trpc-agent-go Runner.
 type Handler struct {
-	runner     runner.Runner
-	logger     *slog.Logger
-	responders *SessionResponder
-	forker     ThreadForker
-	inFlight   *kaggenAgent.InFlightStore
-	auditStore *kaggenAgent.AuditStore
+	runner        runner.Runner
+	logger        *slog.Logger
+	responders    *SessionResponder
+	forker        ThreadForker
+	inFlight      *kaggenAgent.InFlightStore
+	auditStore    *kaggenAgent.AuditStore
+	guardedRunner *kaggenAgent.GuardedSkillRunner
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
-func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, inFlight *kaggenAgent.InFlightStore, auditStore *kaggenAgent.AuditStore, memService ...memory.Service) *Handler {
+func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, inFlight *kaggenAgent.InFlightStore, auditStore *kaggenAgent.AuditStore, guardedRunner *kaggenAgent.GuardedSkillRunner, memService ...memory.Service) *Handler {
 	var opts []runner.Option
 	if sessionService != nil {
 		opts = append(opts, runner.WithSessionService(sessionService))
@@ -93,12 +94,13 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 	r := runner.NewRunner(appName, ag, opts...)
 
 	return &Handler{
-		runner:     r,
-		logger:     logger,
-		responders: NewSessionResponder(),
-		forker:     forker,
-		inFlight:   inFlight,
-		auditStore: auditStore,
+		runner:        r,
+		logger:        logger,
+		responders:    NewSessionResponder(),
+		forker:        forker,
+		inFlight:      inFlight,
+		auditStore:    auditStore,
+		guardedRunner: guardedRunner,
 	}
 }
 
@@ -413,6 +415,21 @@ func (h *Handler) eventToResponse(evt *event.Event, msg *channel.Message) *chann
 	return nil
 }
 
+// eventToResponseBySession converts a trpc-agent-go event to a channel response using only a session ID.
+// Used for resumed executions where we don't have the original message context.
+func (h *Handler) eventToResponseBySession(evt *event.Event, sessionID string) *channel.Response {
+	if evt == nil || evt.Response == nil {
+		return nil
+	}
+	// Create a synthetic message with just the session ID
+	msg := &channel.Message{
+		ID:        uuid.New().String(),
+		SessionID: sessionID,
+		Metadata:  make(map[string]any),
+	}
+	return h.eventToResponse(evt, msg)
+}
+
 // copyMetadata returns a shallow copy of the metadata map, preserving
 // channel-specific keys (e.g. chat_id) so they are available when sending
 // the response back through the originating channel.
@@ -496,9 +513,61 @@ func isImageMime(mime string) bool {
 }
 
 // handleApprovalAction processes an approval or rejection from a channel.
+// This signals the waiting graph execution to continue via the DecisionCh.
+// The actual resume happens in GuardedSkillRunner.Run()'s goroutine, which
+// keeps the coordinator call in progress until the tool execution completes.
 func (h *Handler) handleApprovalAction(ctx context.Context, msg *channel.Message, action string) error {
 	approvalID, _ := msg.Metadata["approval_id"].(string)
-	if approvalID == "" || h.inFlight == nil {
+	if approvalID == "" {
+		return nil
+	}
+
+	// Determine approval decision
+	var approved bool
+	switch action {
+	case "approve":
+		approved = true
+	case "reject":
+		approved = false
+	default:
+		return nil
+	}
+
+	h.logger.Info("handling approval action",
+		"approval_id", approvalID,
+		"action", action,
+		"approved", approved)
+
+	// Use graph-based signal if guardedRunner is available
+	if h.guardedRunner != nil {
+		h.logger.Info("attempting to signal approval decision",
+			"approval_id", approvalID,
+			"approved", approved,
+			"session_id", msg.SessionID)
+
+		// Signal the waiting execution's decision channel
+		// The execution's goroutine in GuardedSkillRunner.Run() will handle the resume
+		if signaled := h.guardedRunner.ExecutionStore().SignalDecision(approvalID, approved); signaled {
+			h.logger.Info("approval decision signaled to waiting execution",
+				"approval_id", approvalID,
+				"approved", approved)
+			return nil
+		}
+
+		h.logger.Warn("failed to signal approval decision, falling back to legacy",
+			"approval_id", approvalID,
+			"session_id", msg.SessionID)
+		// Fall back to legacy InjectCompletion if signal fails
+		return h.handleApprovalActionLegacy(ctx, approvalID, action)
+	}
+
+	// No guardedRunner available - fall back to legacy flow
+	return h.handleApprovalActionLegacy(ctx, approvalID, action)
+}
+
+// handleApprovalActionLegacy uses the old InjectCompletion flow when guardedRunner is unavailable.
+func (h *Handler) handleApprovalActionLegacy(ctx context.Context, approvalID, action string) error {
+	if h.inFlight == nil {
 		return nil
 	}
 
@@ -526,7 +595,7 @@ func (h *Handler) handleApprovalAction(ctx context.Context, msg *channel.Message
 		return nil
 	}
 
-	h.logger.Info("approval action processed",
+	h.logger.Info("approval action processed (legacy)",
 		"approval_id", approvalID,
 		"action", action,
 		"tool", task.ApprovalRequest.ToolName,
