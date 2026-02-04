@@ -50,6 +50,15 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 | `kaggen agent` | Start an interactive CLI agent session |
 | `kaggen gateway` | Start the WebSocket + Telegram gateway server |
 | `kaggen status` | Show current configuration and workspace status |
+| `kaggen token generate` | Generate a new authentication token |
+| `kaggen token list` | List configured authentication tokens |
+| `kaggen token revoke` | Revoke an authentication token |
+| `kaggen secrets set` | Store a secret securely |
+| `kaggen secrets get` | Retrieve a stored secret |
+| `kaggen secrets list` | List stored secret keys |
+| `kaggen secrets delete` | Delete a stored secret |
+| `kaggen secrets import-env` | Import a secret from an environment variable |
+| `kaggen security-audit` | Run security checks on the installation |
 
 ### Agent flags
 
@@ -118,6 +127,7 @@ The prefix determines which provider is used regardless of which API keys are se
 | `GEMINI_API_KEY` | Google Gemini API key. |
 | `ANTHROPIC_API_KEY` | Anthropic API key. |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (alternative to config file). |
+| `KAGGEN_MASTER_KEY` | Master key for encrypted secrets storage (required on headless servers). |
 
 ## Telegram Bot Setup
 
@@ -285,6 +295,409 @@ go build -tags "fts5" -o kaggen ./cmd/kaggen
 ```
 
 Without this tag the build succeeds but FTS5 tables won't be created, and hybrid search falls back to vector-only results.
+
+## Secrets Management
+
+Kaggen provides secure storage for sensitive credentials like API keys, database passwords, and tokens. Secrets are stored using the OS keychain when available, with an encrypted file fallback for headless/server environments.
+
+### Storage Backends
+
+| Backend | Platform | Security | Use Case |
+|---------|----------|----------|----------|
+| **Keychain** | macOS Keychain, Linux Secret Service, Windows Credential Manager | OS-level encryption, protected by user login | Desktop/development |
+| **Encrypted File** | All platforms | AES-256-GCM + Argon2 key derivation | Servers, containers, CI/CD |
+| **Memory** | All platforms | None (not persistent) | Testing only |
+
+Kaggen automatically selects the best available backend. On servers without a keychain service, set the `KAGGEN_MASTER_KEY` environment variable to enable encrypted file storage.
+
+### CLI Commands
+
+```bash
+# Store a secret (prompts for value securely)
+kaggen secrets set anthropic-key
+
+# Store with inline value (for scripts)
+kaggen secrets set telegram-token --value="123456:ABC..."
+
+# Import from environment variable
+kaggen secrets import-env ANTHROPIC_API_KEY --as=anthropic-key
+
+# List stored secret keys (values are never displayed)
+kaggen secrets list
+
+# Retrieve a secret (for use in scripts)
+export API_KEY=$(kaggen secrets get anthropic-key)
+
+# Delete a secret
+kaggen secrets delete old-key
+```
+
+### Using Secrets in Config
+
+Reference stored secrets in `~/.kaggen/config.json` using the `secret:` prefix:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "bot_token": "secret:telegram-token"
+    }
+  },
+  "session": {
+    "redis": {
+      "password": "secret:redis-password"
+    },
+    "postgres": {
+      "password": "secret:postgres-password"
+    }
+  }
+}
+```
+
+When Kaggen loads the config, `secret:key-name` values are automatically resolved from the secrets store.
+
+### Dashboard UI
+
+The web dashboard at `http://localhost:18789/` includes a Settings panel where you can:
+
+- View secrets storage status and backend type
+- Add new secrets via the web interface
+- See which secrets are configured (keys only, values are never exposed)
+- Delete secrets
+
+### Server/Container Setup
+
+For headless environments without a keychain service:
+
+```bash
+# Generate a strong master key
+export KAGGEN_MASTER_KEY=$(openssl rand -base64 32)
+
+# Store the master key securely (e.g., in your secrets manager, K8s secret, etc.)
+# Then start kaggen
+./kaggen gateway
+```
+
+Secrets are stored encrypted at `~/.kaggen/secrets.enc`. The file uses:
+- **AES-256-GCM** for authenticated encryption
+- **Argon2id** for key derivation from the master key
+- Unique salt and nonce per save operation
+
+### Supported Credential Types
+
+| Key Name | Description | Config Reference |
+|----------|-------------|------------------|
+| `anthropic-key` | Anthropic API key | Use env var instead |
+| `gemini-key` | Google Gemini API key | Use env var instead |
+| `telegram-token` | Telegram bot token | `secret:telegram-token` |
+| `postgres-password` | PostgreSQL password | `secret:postgres-password` |
+| `redis-password` | Redis password | `secret:redis-password` |
+| `webhook-*` | Webhook secrets | `secret:webhook-github` |
+
+> **Note:** LLM API keys (Anthropic, Gemini, ZAI) should be set via environment variables rather than the secrets store, as they're checked before the secrets system initializes.
+
+## Security Hardening
+
+Kaggen includes multiple security features for production deployments. This section covers authentication, command sandboxing, approval workflows, and security auditing.
+
+### Token Authentication
+
+Protect WebSocket and API access with token-based authentication. Tokens are hashed using Argon2-ID and validated with constant-time comparison to prevent timing attacks.
+
+#### Enable Authentication
+
+```json
+{
+  "security": {
+    "auth": {
+      "enabled": true,
+      "token_file": "~/.kaggen/tokens.json"
+    }
+  }
+}
+```
+
+#### Generate Tokens
+
+**CLI:**
+```bash
+# Generate a token (displayed once, save it!)
+kaggen token generate -n "My iPhone" -e 30d
+
+# List configured tokens (metadata only, hashes never exposed)
+kaggen token list
+
+# Revoke a token
+kaggen token revoke <token-id>
+```
+
+**Dashboard:** Navigate to Settings > Generate Access Token in the web UI.
+
+#### Connect with a Token
+
+```bash
+# WebSocket query parameter
+ws://localhost:18789/ws?token=kag_xxxxx
+
+# HTTP Authorization header
+curl -H "Authorization: Bearer kag_xxxxx" http://localhost:18789/api/overview
+```
+
+#### Token Security Details
+
+- 32 bytes of cryptographic randomness, base64-encoded
+- Stored as Argon2-ID hashes (Time=1, Memory=64MB, Threads=4)
+- Unique 16-byte salt per token
+- Token file permissions: 0600 (owner-only)
+- Optional expiration with automatic rejection of expired tokens
+
+---
+
+### Command Sandbox
+
+Block dangerous shell commands before execution. The sandbox uses regex pattern matching to reject destructive operations.
+
+#### Enable the Sandbox
+
+```json
+{
+  "security": {
+    "command_sandbox": {
+      "enabled": true,
+      "blocked_patterns": []
+    }
+  }
+}
+```
+
+#### Default Blocked Patterns
+
+The sandbox blocks 25+ dangerous patterns by default:
+
+| Category | Examples |
+|----------|----------|
+| **Destructive filesystem** | `rm -rf /`, `rm -rf ~`, `mkfs`, `dd if=/dev/zero of=/dev/sda` |
+| **Fork bombs** | `:(){ :\|:& };:` |
+| **Privilege escalation** | `sudo`, `su`, `chmod 777`, `chown root` |
+| **Remote code execution** | `curl \| sh`, `wget \| sh`, `nc -e`, `bash -i` |
+| **Credential access** | `cat ~/.ssh/`, `cat ~/.aws/credentials`, `cat /etc/shadow` |
+| **System modification** | `> /etc/`, `systemctl stop`, `shutdown`, `reboot` |
+
+#### Custom Blocked Patterns
+
+Add additional regex patterns to block:
+
+```json
+{
+  "security": {
+    "command_sandbox": {
+      "enabled": true,
+      "blocked_patterns": [
+        "docker\\s+run.*--privileged",
+        "kubectl\\s+delete\\s+namespace"
+      ]
+    }
+  }
+}
+```
+
+---
+
+### Guarded Skills & Approval System
+
+Require human approval for dangerous operations before execution. The agent pauses and waits for approval via the dashboard or Telegram.
+
+#### How It Works
+
+1. Agent attempts to execute a guarded tool (e.g., Bash command)
+2. Execution pauses, approval request sent to dashboard/Telegram
+3. Human reviews the operation and approves or rejects
+4. Agent resumes with approval or finds alternative approach
+
+#### Approve via Dashboard
+
+Navigate to the Approvals panel in the web dashboard to see pending requests with full context (tool name, arguments, description).
+
+#### Auto-Approve Rules
+
+Skip approval for safe operations:
+
+```json
+{
+  "approval": {
+    "auto_approve": [
+      {"tool": "Read", "pattern": ""},
+      {"tool": "Bash", "pattern": "^(ls|cat|grep|find)\\s"}
+    ]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tool` | Tool name: `Bash`, `Read`, `Write`, `Edit` |
+| `pattern` | Regex matched against operation description (empty = match all) |
+
+#### Audit Database
+
+All approval decisions are logged to `~/.kaggen/audit.db` (SQLite) with:
+- Tool name, arguments, and human-readable description
+- Session and user context
+- Request and resolution timestamps
+- Resolution status: `approved`, `rejected`, `timed_out`, `auto_approved`
+- Who resolved the request
+
+---
+
+### Security Audit
+
+Run automated security checks on your Kaggen installation:
+
+```bash
+# Check for issues
+kaggen security-audit
+
+# Auto-fix permission issues
+kaggen security-audit --fix
+```
+
+#### Audit Checks
+
+| Check | Severity | Description |
+|-------|----------|-------------|
+| **File permissions** | CRITICAL/HIGH | Detects world/group-readable sensitive files |
+| **Gateway binding** | CRITICAL/MEDIUM | Warns if bound to 0.0.0.0 or non-localhost |
+| **CORS origins** | CRITICAL/LOW | Detects wildcard or non-localhost origins |
+| **Command sandbox** | MEDIUM | Warns if sandbox is disabled |
+| **Plaintext credentials** | MEDIUM/HIGH | Detects passwords in config file |
+| **PostgreSQL SSL** | HIGH | Warns if SSL disabled (credentials sent plaintext) |
+
+#### Example Output
+
+```
+Kaggen Security Audit
+=====================
+
+[CRITICAL] file_permissions: World-readable file: config.json (mode 0644)
+  → Fix: chmod 600 ~/.kaggen/config.json
+
+[MEDIUM] command_sandbox: Command sandbox is disabled
+  → Enable sandbox in config: security.command_sandbox.enabled = true
+
+[HIGH] credentials: PostgreSQL SSL mode is 'disable' - credentials transmitted in plaintext
+  → Set session.postgres.ssl_mode to 'require' or 'verify-full'
+
+Summary: 1 critical, 1 high, 1 medium, 0 low
+Fixed: 0 issues (run with --fix to auto-remediate)
+```
+
+---
+
+### CORS Configuration
+
+Control which origins can access the WebSocket and API endpoints.
+
+#### Default (Localhost Only)
+
+```json
+{
+  "gateway": {
+    "allowed_origins": [
+      "http://localhost",
+      "https://localhost",
+      "http://127.0.0.1",
+      "https://127.0.0.1"
+    ]
+  }
+}
+```
+
+#### Allow Additional Origins
+
+```json
+{
+  "gateway": {
+    "allowed_origins": [
+      "http://localhost",
+      "https://localhost",
+      "https://my-app.example.com"
+    ]
+  }
+}
+```
+
+> **Warning:** Never use `"*"` in production. The security audit flags wildcard origins as CRITICAL.
+
+---
+
+### Webhook HMAC Verification
+
+Secure incoming webhooks with HMAC-SHA256 signature verification (compatible with GitHub webhooks).
+
+```json
+{
+  "proactive": {
+    "webhooks": [
+      {
+        "name": "github-deploy",
+        "path": "/hooks/github",
+        "secret": "your-webhook-secret",
+        "prompt": "GitHub event received: {{.Payload}}",
+        "channel": "telegram",
+        "user_id": "default"
+      }
+    ]
+  }
+}
+```
+
+When `secret` is configured:
+- Incoming requests must include `X-Hub-Signature-256` header
+- Format: `sha256=<hex-encoded-hmac>`
+- Requests with invalid or missing signatures return 403 Forbidden
+
+---
+
+### Security Configuration Reference
+
+Complete security configuration block:
+
+```json
+{
+  "security": {
+    "auth": {
+      "enabled": true,
+      "token_file": "~/.kaggen/tokens.json"
+    },
+    "command_sandbox": {
+      "enabled": true,
+      "blocked_patterns": []
+    }
+  },
+  "approval": {
+    "audit_db_path": "~/.kaggen/audit.db",
+    "auto_approve": [
+      {"tool": "Read", "pattern": ""}
+    ]
+  },
+  "gateway": {
+    "bind": "127.0.0.1",
+    "port": 18789,
+    "allowed_origins": ["http://localhost", "https://localhost"]
+  }
+}
+```
+
+### Security Best Practices
+
+1. **Always enable auth** when exposing the gateway beyond localhost
+2. **Enable command sandbox** in production to block dangerous commands
+3. **Run security-audit** periodically and fix issues promptly
+4. **Use secrets store** for credentials instead of plaintext in config
+5. **Bind to 127.0.0.1** unless remote access is explicitly required
+6. **Configure CORS** with specific origins, never wildcards
+7. **Set webhook secrets** for all inbound webhooks
+8. **Review auto-approve rules** carefully - overly broad patterns reduce security
 
 ## External Task Orchestration
 
@@ -507,7 +920,8 @@ cmd/
   kaggen/                CLI entry point
   kaggen-pubsub-bridge/  Standalone Pub/Sub bridge sidecar
 internal/
-  agent/             Agent logic, async dispatch, in-flight task store
+  agent/             Agent logic, async dispatch, in-flight task store, approval system
+  auth/              Token authentication (Argon2-ID hashing)
   channel/           Channel interface + implementations
     channel.go         Router, Message, Response types
     websocket.go       WebSocket channel
@@ -520,6 +934,8 @@ internal/
   model/gemini/      Google Gemini adapter
   model/zai/         ZAI GLM adapter
   pubsub/            GCP Pub/Sub bridge
+  secrets/           Secure credential storage (keychain, encrypted file)
+  security/          Command sandbox and validation
   session/           File-backed session service
   tools/             Tool definitions (read, write, exec, memory, external tasks)
   tunnel/            Cloudflare Tunnel manager

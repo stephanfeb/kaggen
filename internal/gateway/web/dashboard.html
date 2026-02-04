@@ -376,6 +376,25 @@ tr:hover { background: var(--bg-secondary); }
           <div class="section-header">Active Tokens</div>
           <div id="token-list" class="settings-card">Loading...</div>
         </div>
+        <div class="settings-section">
+          <div class="section-header">Secure Credential Storage</div>
+          <div id="secrets-status" class="settings-card">Loading...</div>
+        </div>
+        <div class="settings-section">
+          <div class="section-header">Add Secret</div>
+          <div class="settings-card">
+            <p class="settings-help">Store API keys, tokens, and other credentials securely. Use "secret:key-name" in config files to reference stored secrets.</p>
+            <div class="token-form">
+              <input type="text" id="secret-key" placeholder="Key name (e.g., anthropic-key)" class="settings-input" style="min-width:180px">
+              <input type="password" id="secret-value" placeholder="Secret value" class="settings-input" style="min-width:250px">
+              <button class="settings-btn" onclick="addSecret()">Store Secret</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="section-header">Stored Secrets</div>
+          <div id="secrets-list" class="settings-card">Loading...</div>
+        </div>
       </div>
     </div>
   </main>
@@ -1026,8 +1045,13 @@ async function loadSettings() {
       <span class="auth-status-label">Command Sandbox</span>
       <span class="auth-status-value">${settings.sandbox_enabled ? '<span class="badge badge-green">Enabled</span>' : '<span class="badge badge-gray">Disabled</span>'}</span>
     </div>
+    <div class="auth-status-item">
+      <span class="auth-status-label">Secrets Storage</span>
+      <span class="auth-status-value">${settings.secrets_available ? `<span class="badge badge-green">${esc(settings.secrets_backend)}</span>` : '<span class="badge badge-yellow">Unavailable</span>'}</span>
+    </div>
   `;
   loadTokenList();
+  loadSecrets();
 }
 
 async function loadTokenList() {
@@ -1104,6 +1128,113 @@ async function revokeToken(id) {
     body: JSON.stringify({ id })
   });
   loadTokenList();
+}
+
+// --- Secrets Management ---
+async function loadSecrets() {
+  const data = await fetchJSON('/api/secrets');
+
+  // Update status
+  const statusEl = document.getElementById('secrets-status');
+  if (!data.available) {
+    statusEl.innerHTML = `
+      <div class="auth-status-item">
+        <span class="auth-status-label">Status</span>
+        <span class="auth-status-value"><span class="badge badge-yellow">Unavailable</span></span>
+      </div>
+      <div class="auth-status-item">
+        <span class="auth-status-label">Note</span>
+        <span class="auth-status-value" style="font-size:11px;color:var(--text-muted)">${esc(data.error || 'Set KAGGEN_MASTER_KEY for encrypted storage')}</span>
+      </div>
+    `;
+  } else {
+    statusEl.innerHTML = `
+      <div class="auth-status-item">
+        <span class="auth-status-label">Status</span>
+        <span class="auth-status-value"><span class="badge badge-green">Available</span></span>
+      </div>
+      <div class="auth-status-item">
+        <span class="auth-status-label">Backend</span>
+        <span class="auth-status-value">${esc(data.backend)}</span>
+      </div>
+      <div class="auth-status-item">
+        <span class="auth-status-label">Secrets Stored</span>
+        <span class="auth-status-value">${data.keys ? data.keys.length : 0}</span>
+      </div>
+    `;
+  }
+
+  // Update secrets list
+  const listEl = document.getElementById('secrets-list');
+  if (!data.available) {
+    listEl.innerHTML = '<div class="empty" style="padding:24px">Secret store not available</div>';
+    return;
+  }
+
+  if (!data.keys || data.keys.length === 0) {
+    listEl.innerHTML = '<div class="empty" style="padding:24px">No secrets stored</div>';
+    return;
+  }
+
+  listEl.innerHTML = `<table class="token-table">
+    <tr><th>Key Name</th><th>Usage in Config</th><th></th></tr>
+    ${data.keys.map(key => `<tr>
+      <td><code style="background:var(--bg);padding:2px 6px;border-radius:3px">${esc(key)}</code></td>
+      <td><code style="font-size:11px;color:var(--text-muted)">secret:${esc(key)}</code></td>
+      <td><button class="revoke-btn" onclick="deleteSecret('${esc(key)}')">Delete</button></td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+async function addSecret() {
+  const key = document.getElementById('secret-key').value.trim();
+  const value = document.getElementById('secret-value').value;
+
+  if (!key || !value) {
+    alert('Both key name and value are required');
+    return;
+  }
+
+  // Validate key format
+  if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
+    alert('Key name must be alphanumeric with dashes/underscores only');
+    return;
+  }
+
+  const resp = await fetch('/api/secrets/set', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value })
+  });
+  const data = await resp.json();
+
+  if (data.error) {
+    alert('Error: ' + data.error);
+    return;
+  }
+
+  // Clear form and refresh
+  document.getElementById('secret-key').value = '';
+  document.getElementById('secret-value').value = '';
+  loadSecrets();
+}
+
+async function deleteSecret(key) {
+  if (!confirm(`Delete secret "${key}"? Any config using "secret:${key}" will no longer work.`)) return;
+
+  const resp = await fetch('/api/secrets/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key })
+  });
+  const data = await resp.json();
+
+  if (data.error) {
+    alert('Error: ' + data.error);
+    return;
+  }
+
+  loadSecrets();
 }
 
 // --- Init ---

@@ -16,6 +16,7 @@ import (
 	"github.com/yourusername/kaggen/internal/auth"
 	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/secrets"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -823,6 +824,10 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/tokens", d.HandleTokens)
 	handleFunc("/api/tokens/generate", d.HandleTokenGenerate)
 	handleFunc("/api/tokens/revoke", d.HandleTokenRevoke)
+	// Secrets management
+	handleFunc("/api/secrets", d.HandleSecrets)
+	handleFunc("/api/secrets/set", d.HandleSecretsSet)
+	handleFunc("/api/secrets/delete", d.HandleSecretsDelete)
 }
 
 // SetHandler stores the message handler for approval completion injection.
@@ -1076,14 +1081,142 @@ func (d *DashboardAPI) HandleSettings(w http.ResponseWriter, r *http.Request) {
 
 	hasTokens := d.tokenStore != nil && d.tokenStore.HasTokens()
 
+	// Check secrets store availability
+	secretStore := secrets.DefaultStore()
+	secretsAvailable := secretStore != nil && secretStore.Available()
+	secretsBackend := ""
+	if secretStore != nil {
+		secretsBackend = secretStore.Name()
+	}
+
 	writeJSON(w, map[string]any{
-		"auth_enabled":     d.config.Security.Auth.Enabled,
-		"has_tokens":       hasTokens,
-		"gateway_bind":     d.config.Gateway.Bind,
-		"gateway_port":     d.config.Gateway.Port,
-		"allowed_origins":  d.config.Gateway.GetAllowedOrigins(),
-		"sandbox_enabled":  d.config.Security.CommandSandbox.Enabled,
+		"auth_enabled":      d.config.Security.Auth.Enabled,
+		"has_tokens":        hasTokens,
+		"gateway_bind":      d.config.Gateway.Bind,
+		"gateway_port":      d.config.Gateway.Port,
+		"allowed_origins":   d.config.Gateway.GetAllowedOrigins(),
+		"sandbox_enabled":   d.config.Security.CommandSandbox.Enabled,
+		"secrets_available": secretsAvailable,
+		"secrets_backend":   secretsBackend,
 	})
+}
+
+// HandleSecrets returns the list of stored secret keys (not values).
+func (d *DashboardAPI) HandleSecrets(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+
+	store := secrets.DefaultStore()
+	if store == nil || !store.Available() {
+		writeJSON(w, map[string]any{
+			"available": false,
+			"keys":      []string{},
+			"error":     "Secret store not available. Set KAGGEN_MASTER_KEY for encrypted file storage.",
+		})
+		return
+	}
+
+	keys, err := store.List()
+	if err != nil {
+		writeJSON(w, map[string]any{
+			"available": true,
+			"keys":      []string{},
+			"error":     err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"available": true,
+		"backend":   store.Name(),
+		"keys":      keys,
+	})
+}
+
+// HandleSecretsSet stores a new secret.
+// Expects POST with JSON body: {"key": "...", "value": "..."}
+func (d *DashboardAPI) HandleSecretsSet(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	store := secrets.DefaultStore()
+	if store == nil || !store.Available() {
+		http.Error(w, `{"error":"Secret store not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Key == "" || req.Value == "" {
+		http.Error(w, `{"error":"key and value are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate key name (alphanumeric, dashes, underscores only)
+	for _, c := range req.Key {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			http.Error(w, `{"error":"key must be alphanumeric with dashes/underscores only"}`, http.StatusBadRequest)
+			return
+		}
+	}
+
+	if err := store.Set(req.Key, req.Value); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to store secret: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "stored", "key": req.Key})
+}
+
+// HandleSecretsDelete deletes a secret by key.
+// Expects POST with JSON body: {"key": "..."}
+func (d *DashboardAPI) HandleSecretsDelete(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, `{"error":"POST or DELETE required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	store := secrets.DefaultStore()
+	if store == nil || !store.Available() {
+		http.Error(w, `{"error":"Secret store not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+		http.Error(w, `{"error":"key is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := store.Delete(req.Key); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to delete secret: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "deleted", "key": req.Key})
 }
 
 // --- helpers ---

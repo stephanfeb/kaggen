@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Config represents the top-level configuration.
@@ -429,4 +430,56 @@ func (c *Config) PubSubProjectID() string {
 		return c.Gateway.PubSub.ProjectID
 	}
 	return os.Getenv("GOOGLE_CLOUD_PROJECT")
+}
+
+// ResolveSecret resolves a configuration value that may be a secret reference.
+// Secret references have the format "secret:key-name".
+// If the value is not a secret reference, it is returned unchanged.
+// If the secret cannot be resolved, the original value is returned.
+func ResolveSecret(value string) string {
+	if !strings.HasPrefix(value, "secret:") {
+		return value
+	}
+
+	key := strings.TrimPrefix(value, "secret:")
+	if key == "" {
+		return value
+	}
+
+	// Import secrets package dynamically to avoid circular imports
+	// This is a simple resolution - actual implementation uses the secrets package
+	resolved, err := resolveSecretFromStore(key)
+	if err != nil {
+		return value // Return original on error
+	}
+	return resolved
+}
+
+// secretResolver is a function type for resolving secrets.
+// This allows the secrets package to register itself without circular imports.
+type secretResolver func(key string) (string, error)
+
+var (
+	registeredSecretResolver secretResolver
+	secretResolverMu         sync.RWMutex
+)
+
+// RegisterSecretResolver registers a secret resolution function.
+// This is called by the secrets package during initialization.
+func RegisterSecretResolver(resolver secretResolver) {
+	secretResolverMu.Lock()
+	defer secretResolverMu.Unlock()
+	registeredSecretResolver = resolver
+}
+
+// resolveSecretFromStore resolves a secret using the registered resolver.
+func resolveSecretFromStore(key string) (string, error) {
+	secretResolverMu.RLock()
+	resolver := registeredSecretResolver
+	secretResolverMu.RUnlock()
+
+	if resolver == nil {
+		return "", nil // No resolver registered
+	}
+	return resolver(key)
 }
