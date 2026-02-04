@@ -584,7 +584,7 @@ func (s *FileMemoryService) getEntryByID(ctx context.Context, id string) (*memor
 
 func (s *FileMemoryService) appendToMemoryFile(content string, topics []string) {
 	path := filepath.Join(s.workspace, "MEMORY.md")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // Secure: owner-only file
 	if err != nil {
 		s.logger.Warn("failed to open MEMORY.md", "error", err)
 		return

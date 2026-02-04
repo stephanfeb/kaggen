@@ -20,6 +20,33 @@ type Config struct {
 	Telemetry TelemetryConfig `json:"telemetry,omitempty"`
 	STT       STTConfig       `json:"stt,omitempty"`
 	Approval  ApprovalConfig  `json:"approval,omitempty"`
+	Security  SecurityConfig  `json:"security,omitempty"`
+}
+
+// SecurityConfig configures security hardening features.
+type SecurityConfig struct {
+	Auth           AuthConfig           `json:"auth,omitempty"`
+	CommandSandbox CommandSandboxConfig `json:"command_sandbox,omitempty"`
+}
+
+// AuthConfig configures gateway authentication.
+type AuthConfig struct {
+	Enabled   bool   `json:"enabled"`              // Enable token authentication for WebSocket/API
+	TokenFile string `json:"token_file,omitempty"` // Path to token store (default: ~/.kaggen/tokens.json)
+}
+
+// TokenFilePath returns the expanded path to the token store file.
+func (c *Config) TokenFilePath() string {
+	if c.Security.Auth.TokenFile != "" {
+		return ExpandPath(c.Security.Auth.TokenFile)
+	}
+	return ExpandPath("~/.kaggen/tokens.json")
+}
+
+// CommandSandboxConfig configures the command execution sandbox.
+type CommandSandboxConfig struct {
+	Enabled         bool     `json:"enabled"`                    // Enable command validation (default: false for backwards compat)
+	BlockedPatterns []string `json:"blocked_patterns,omitempty"` // Additional blocked patterns (regex)
 }
 
 // ApprovalConfig configures the maker-checker approval system.
@@ -174,8 +201,27 @@ type GatewayConfig struct {
 	Bind            string       `json:"bind"`
 	Port            int          `json:"port"`
 	CallbackBaseURL string       `json:"callback_base_url,omitempty"` // manual override for callback URLs (e.g. "https://kaggen.example.com")
+	AllowedOrigins  []string     `json:"allowed_origins,omitempty"`   // WebSocket/CORS allowed origins (default: localhost variants)
 	Tunnel          TunnelConfig `json:"tunnel,omitempty"`
 	PubSub          PubSubConfig `json:"pubsub,omitempty"`
+}
+
+// DefaultAllowedOrigins returns the default list of allowed origins for CORS/WebSocket.
+func DefaultAllowedOrigins() []string {
+	return []string{
+		"http://localhost",
+		"https://localhost",
+		"http://127.0.0.1",
+		"https://127.0.0.1",
+	}
+}
+
+// GetAllowedOrigins returns the configured allowed origins, or defaults if none configured.
+func (c *GatewayConfig) GetAllowedOrigins() []string {
+	if len(c.AllowedOrigins) > 0 {
+		return c.AllowedOrigins
+	}
+	return DefaultAllowedOrigins()
 }
 
 // PubSubConfig configures the GCP Pub/Sub bridge for receiving external task callbacks.
@@ -298,8 +344,8 @@ func Load() (*Config, error) {
 func (c *Config) Save() error {
 	configPath := ExpandPath("~/.kaggen/config.json")
 
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+	// Ensure directory exists with secure permissions
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		return err
 	}
 
@@ -308,7 +354,8 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	// Secure: owner-only file (config may contain sensitive data)
+	return os.WriteFile(configPath, data, 0600)
 }
 
 // ExpandPath expands ~ to the user's home directory.

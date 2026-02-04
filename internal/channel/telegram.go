@@ -607,7 +607,7 @@ func downloadsDir() (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(home, ".kaggen", "downloads")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil { // Secure: owner-only directory
 		return "", err
 	}
 	return dir, nil

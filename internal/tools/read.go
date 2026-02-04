@@ -9,6 +9,8 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
+
+	"github.com/yourusername/kaggen/internal/security"
 )
 
 // ReadArgs defines the input arguments for the read tool.
@@ -30,9 +32,13 @@ func NewReadTool(workspace string) tool.CallableTool {
 }
 
 func newReadTool(workspace string) tool.CallableTool {
+	return newReadToolWithValidator(workspace, nil)
+}
+
+func newReadToolWithValidator(workspace string, validator *security.PathValidator) tool.CallableTool {
 	return function.NewFunctionTool(
 		func(ctx context.Context, args ReadArgs) (*ReadResult, error) {
-			return executeRead(workspace, args)
+			return executeRead(workspace, args, validator)
 		},
 		function.WithName("read"),
 		function.WithDescription("Read the contents of a file. Returns the file content as text. Use this to examine files in the workspace or filesystem."),
@@ -40,12 +46,21 @@ func newReadTool(workspace string) tool.CallableTool {
 }
 
 // executeRead performs the actual file read operation.
-func executeRead(workspace string, args ReadArgs) (*ReadResult, error) {
+func executeRead(workspace string, args ReadArgs, validator *security.PathValidator) (*ReadResult, error) {
 	result := &ReadResult{}
 
 	if args.Path == "" {
 		result.Message = "Error: path is required"
 		return result, fmt.Errorf("path is required")
+	}
+
+	// Validate path against security policy
+	if validator != nil {
+		validation := validator.ValidatePath(workspace, args.Path)
+		if !validation.Allowed {
+			result.Message = fmt.Sprintf("Access denied: %s", validation.Reason)
+			return result, fmt.Errorf("path blocked by security policy: %s", validation.Reason)
+		}
 	}
 
 	maxLines := 1000

@@ -447,7 +447,7 @@ var sendFileRe = regexp.MustCompile(`\[send_file:\s*([^\]]+)\]`)
 // publicDir returns the path to the public file-serving directory, creating it if needed.
 func publicDir() string {
 	dir := config.ExpandPath("~/.kaggen/public")
-	os.MkdirAll(dir, 0755)
+	os.MkdirAll(dir, 0700) // Secure: owner-only directory
 	return dir
 }
 

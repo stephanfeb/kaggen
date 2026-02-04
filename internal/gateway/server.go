@@ -10,6 +10,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
+	"github.com/yourusername/kaggen/internal/auth"
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/proactive"
@@ -66,7 +67,32 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 	router := channel.NewRouter(handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Gateway.Bind, cfg.Gateway.Port)
-	wsChannel := channel.NewWebSocketChannel(addr, logger)
+
+	// Configure WebSocket channel with auth if enabled
+	wsOpts := channel.WebSocketChannelOptions{
+		AllowedOrigins: cfg.Gateway.GetAllowedOrigins(),
+		AuthRequired:   cfg.Security.Auth.Enabled,
+	}
+
+	// Initialize token validator if auth is enabled
+	if cfg.Security.Auth.Enabled {
+		tokenFile := cfg.Security.Auth.TokenFile
+		if tokenFile == "" {
+			tokenFile = config.ExpandPath("~/.kaggen/tokens.json")
+		}
+		tokenStore, err := auth.NewTokenStore(tokenFile)
+		if err != nil {
+			logger.Warn("failed to initialize token store, auth disabled", "error", err)
+			wsOpts.AuthRequired = false
+		} else if !tokenStore.HasTokens() {
+			logger.Warn("auth enabled but no tokens configured - generate tokens with 'kaggen token generate'")
+		} else {
+			wsOpts.TokenValidator = tokenStore.ValidateToken
+			logger.Info("websocket authentication enabled", "token_file", tokenFile)
+		}
+	}
+
+	wsChannel := channel.NewWebSocketChannelWithOptions(addr, logger, wsOpts)
 
 	router.AddChannel(wsChannel)
 

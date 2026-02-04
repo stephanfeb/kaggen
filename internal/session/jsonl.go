@@ -99,7 +99,7 @@ func ReadEventJSONL(path string) ([]event.Event, *SessionWarning, error) {
 // AppendEventJSONL appends an event to a JSONL file.
 func AppendEventJSONL(path string, evt *event.Event) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil { // Secure: owner-only directory
 		return fmt.Errorf("create directory: %w", err)
 	}
 
@@ -108,7 +108,7 @@ func AppendEventJSONL(path string, evt *event.Event) error {
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // Secure: owner-only file
 	if err != nil {
 		return fmt.Errorf("open events file: %w", err)
 	}
@@ -136,7 +136,7 @@ func readJSON(path string, v any) error {
 // writeJSON writes a value as JSON to a file atomically.
 func writeJSON(path string, v any) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil { // Secure: owner-only directory
 		return err
 	}
 
@@ -146,7 +146,7 @@ func writeJSON(path string, v any) error {
 	}
 
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil { // Secure: owner-only file
 		return err
 	}
 

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,25 +32,21 @@ const (
 	maxMessageSize = 1024 * 1024 // 1MB
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// Allow all origins in development
-		// TODO: Make this configurable for production
-		return true
-	},
-}
+// TokenValidator is a function that validates an authentication token.
+type TokenValidator func(token string) bool
 
 // WebSocketChannel implements the Channel interface for WebSocket connections.
 type WebSocketChannel struct {
-	addr          string
-	server        *http.Server
-	messages      chan *Message
-	clients       map[string]*wsClient
-	mu            sync.RWMutex
-	logger        *slog.Logger
-	extraHandlers map[string]http.HandlerFunc
+	addr           string
+	server         *http.Server
+	messages       chan *Message
+	clients        map[string]*wsClient
+	mu             sync.RWMutex
+	logger         *slog.Logger
+	extraHandlers  map[string]http.HandlerFunc
+	allowedOrigins map[string]bool // map of allowed origin prefixes for CORS validation
+	authRequired   bool            // whether authentication is required
+	tokenValidator TokenValidator  // validates auth tokens
 }
 
 // wsClient represents a connected WebSocket client.
@@ -61,13 +59,92 @@ type wsClient struct {
 	mu        sync.Mutex
 }
 
+// WebSocketChannelOptions configures a WebSocket channel.
+type WebSocketChannelOptions struct {
+	AllowedOrigins []string       // Allowed CORS origins (defaults to localhost)
+	AuthRequired   bool           // Whether authentication is required
+	TokenValidator TokenValidator // Function to validate tokens (required if AuthRequired)
+}
+
 // NewWebSocketChannel creates a new WebSocket channel.
-func NewWebSocketChannel(addr string, logger *slog.Logger) *WebSocketChannel {
+// allowedOrigins is a list of origin prefixes (e.g., "http://localhost", "https://example.com").
+// If empty, defaults to localhost variants only.
+func NewWebSocketChannel(addr string, logger *slog.Logger, allowedOrigins []string) *WebSocketChannel {
+	return NewWebSocketChannelWithOptions(addr, logger, WebSocketChannelOptions{
+		AllowedOrigins: allowedOrigins,
+	})
+}
+
+// NewWebSocketChannelWithOptions creates a new WebSocket channel with full options.
+func NewWebSocketChannelWithOptions(addr string, logger *slog.Logger, opts WebSocketChannelOptions) *WebSocketChannel {
+	// Build allowed origins map
+	origins := make(map[string]bool)
+	allowedOrigins := opts.AllowedOrigins
+	if len(allowedOrigins) == 0 {
+		// Default to localhost only
+		allowedOrigins = []string{
+			"http://localhost",
+			"https://localhost",
+			"http://127.0.0.1",
+			"https://127.0.0.1",
+		}
+	}
+	for _, o := range allowedOrigins {
+		origins[o] = true
+	}
+
 	return &WebSocketChannel{
-		addr:     addr,
-		messages: make(chan *Message, 100),
-		clients:  make(map[string]*wsClient),
-		logger:   logger,
+		addr:           addr,
+		messages:       make(chan *Message, 100),
+		clients:        make(map[string]*wsClient),
+		logger:         logger,
+		allowedOrigins: origins,
+		authRequired:   opts.AuthRequired,
+		tokenValidator: opts.TokenValidator,
+	}
+}
+
+// checkOrigin validates the Origin header against the allowed origins list.
+// Returns true if the origin is allowed or if there's no Origin header (same-origin request).
+func (w *WebSocketChannel) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// No Origin header typically means same-origin request
+		return true
+	}
+
+	// Parse the origin to get scheme and host
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		w.logger.Warn("invalid origin header", "origin", origin, "error", err)
+		return false
+	}
+
+	// Build origin key (scheme://host, without path)
+	originKey := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+
+	// Check exact match first
+	if w.allowedOrigins[originKey] {
+		return true
+	}
+
+	// Check prefix match (to handle ports like localhost:3000)
+	for allowed := range w.allowedOrigins {
+		if strings.HasPrefix(originKey, allowed) {
+			return true
+		}
+	}
+
+	w.logger.Warn("origin not allowed", "origin", origin, "allowed", w.allowedOrigins)
+	return false
+}
+
+// upgrader returns a configured WebSocket upgrader with origin checking.
+func (w *WebSocketChannel) upgrader() *websocket.Upgrader {
+	return &websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     w.checkOrigin,
 	}
 }
 
@@ -95,8 +172,12 @@ func (w *WebSocketChannel) Start(ctx context.Context) error {
 	}
 
 	w.server = &http.Server{
-		Addr:    w.addr,
-		Handler: mux,
+		Addr:              w.addr,
+		Handler:           mux,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	w.logger.Info("starting WebSocket server", "addr", w.addr)
@@ -188,7 +269,25 @@ func (w *WebSocketChannel) handleHealth(rw http.ResponseWriter, r *http.Request)
 
 // handleWebSocket handles incoming WebSocket connections.
 func (w *WebSocketChannel) handleWebSocket(rw http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(rw, r, nil)
+	// Check authentication if required
+	if w.authRequired {
+		token := w.extractToken(r)
+		if token == "" {
+			w.logger.Warn("websocket auth: no token provided", "remote", r.RemoteAddr)
+			http.Error(rw, "Unauthorized: token required", http.StatusUnauthorized)
+			return
+		}
+
+		if w.tokenValidator == nil || !w.tokenValidator(token) {
+			w.logger.Warn("websocket auth: invalid token", "remote", r.RemoteAddr)
+			http.Error(rw, "Unauthorized: invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		w.logger.Debug("websocket auth: token validated", "remote", r.RemoteAddr)
+	}
+
+	conn, err := w.upgrader().Upgrade(rw, r, nil)
 	if err != nil {
 		w.logger.Error("websocket upgrade failed", "error", err)
 		return
@@ -305,9 +404,9 @@ func (w *WebSocketChannel) readPump(client *wsClient) {
 			imgData, err := base64.StdEncoding.DecodeString(imgB64)
 			if err == nil {
 				tmpDir := filepath.Join(os.TempDir(), "kaggen-uploads")
-				os.MkdirAll(tmpDir, 0755)
+				os.MkdirAll(tmpDir, 0700) // Secure: owner-only directory
 				tmpFile := filepath.Join(tmpDir, uuid.New().String()+".jpg")
-				if err := os.WriteFile(tmpFile, imgData, 0644); err == nil {
+				if err := os.WriteFile(tmpFile, imgData, 0600); err == nil { // Secure: owner-only file
 					msg.Attachments = append(msg.Attachments, Attachment{
 						Path:     tmpFile,
 						MimeType: "image/jpeg",
@@ -390,4 +489,27 @@ func (w *WebSocketChannel) ClientCount() int {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return len(w.clients)
+}
+
+// extractToken extracts the authentication token from the request.
+// Checks query parameter "token" first, then Authorization header.
+func (w *WebSocketChannel) extractToken(r *http.Request) string {
+	// Check query parameter first (for WebSocket connections)
+	if token := r.URL.Query().Get("token"); token != "" {
+		return token
+	}
+
+	// Check Authorization header
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return ""
+	}
+
+	// Support "Bearer <token>" format
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+
+	// Also support plain token in Authorization header
+	return auth
 }

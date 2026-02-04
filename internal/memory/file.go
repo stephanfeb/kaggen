@@ -117,14 +117,14 @@ func (m *FileMemory) readFileFromDir(dir, filename string) (string, error) {
 // AppendToDaily appends content to today's daily log.
 func (m *FileMemory) AppendToDaily(content string) error {
 	memoryDir := filepath.Join(m.workspace, "memory")
-	if err := os.MkdirAll(memoryDir, 0755); err != nil {
+	if err := os.MkdirAll(memoryDir, 0700); err != nil { // Secure: owner-only directory
 		return fmt.Errorf("create memory directory: %w", err)
 	}
 
 	today := time.Now().Format("2006-01-02")
 	path := filepath.Join(memoryDir, today+".md")
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // Secure: owner-only file
 	if err != nil {
 		return fmt.Errorf("open daily log: %w", err)
 	}
@@ -142,7 +142,7 @@ func (m *FileMemory) AppendToDaily(content string) error {
 func (m *FileMemory) UpdateMemory(content string) error {
 	path := filepath.Join(m.workspace, "MEMORY.md")
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // Secure: owner-only file
 	if err != nil {
 		return fmt.Errorf("open MEMORY.md: %w", err)
 	}

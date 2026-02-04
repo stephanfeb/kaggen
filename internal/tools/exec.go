@@ -10,6 +10,8 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
+
+	"github.com/yourusername/kaggen/internal/security"
 )
 
 const (
@@ -32,9 +34,14 @@ type ExecResult struct {
 
 // newExecTool creates a new exec tool using trpc-agent-go's function tool.
 func newExecTool(workspace string) tool.CallableTool {
+	return newExecToolWithSandbox(workspace, nil)
+}
+
+// newExecToolWithSandbox creates a new exec tool with optional command sandbox.
+func newExecToolWithSandbox(workspace string, sandbox *security.CommandSandbox) tool.CallableTool {
 	return function.NewFunctionTool(
 		func(ctx context.Context, args ExecArgs) (*ExecResult, error) {
-			return executeExec(ctx, workspace, args)
+			return executeExec(ctx, workspace, args, sandbox)
 		},
 		function.WithName("exec"),
 		function.WithDescription("Execute a shell command and return its output. Commands run in a bash shell with the workspace as the working directory. Use this for running programs, listing files, or other system operations."),
@@ -42,12 +49,23 @@ func newExecTool(workspace string) tool.CallableTool {
 }
 
 // executeExec performs the actual command execution.
-func executeExec(ctx context.Context, workspace string, args ExecArgs) (*ExecResult, error) {
+func executeExec(ctx context.Context, workspace string, args ExecArgs, sandbox *security.CommandSandbox) (*ExecResult, error) {
 	result := &ExecResult{}
 
 	if args.Command == "" {
 		result.Message = "Error: command is required"
 		return result, fmt.Errorf("command is required")
+	}
+
+	// Validate command against security sandbox
+	if sandbox != nil {
+		validation := sandbox.Validate(args.Command)
+		if !validation.Allowed {
+			result.Message = fmt.Sprintf("Command blocked: %s", validation.Reason)
+			result.Output = fmt.Sprintf("Security: command blocked by sandbox policy\nPattern: %s", validation.Pattern)
+			result.ExitCode = -2
+			return result, fmt.Errorf("command blocked by security policy")
+		}
 	}
 
 	timeout := defaultTimeout

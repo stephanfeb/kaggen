@@ -179,7 +179,7 @@ func (s *FileService) CreateSession(ctx context.Context, key trpcsession.Key, st
 	defer s.mu.Unlock()
 
 	dir := s.sessionDir(key)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create session directory: %w", err)
 	}
 
@@ -574,7 +574,7 @@ func (s *FileService) ForkSession(parentKey trpcsession.Key, upToEventID, thread
 		SessionID: threadID,
 	}
 	threadDir := s.sessionDir(threadKey)
-	if err := os.MkdirAll(threadDir, 0755); err != nil {
+	if err := os.MkdirAll(threadDir, 0700); err != nil { // Secure: owner-only directory
 		return trpcsession.Key{}, fmt.Errorf("create thread directory: %w", err)
 	}
 

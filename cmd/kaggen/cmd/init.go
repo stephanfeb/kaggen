@@ -47,7 +47,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil { // Secure: owner-only directory
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 		fmt.Printf("Created: %s\n", dir)
@@ -78,7 +78,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	for filename, content := range bootstrapFiles {
 		path := filepath.Join(workspace, filename)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil { // Secure: owner-only file
 				return fmt.Errorf("create %s: %w", filename, err)
 			}
 			fmt.Printf("Created: %s\n", path)

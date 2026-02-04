@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yourusername/kaggen/internal/agent"
+	"github.com/yourusername/kaggen/internal/auth"
 	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/config"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
@@ -29,11 +30,12 @@ type DashboardAPI struct {
 	backlogStore   *backlog.Store
 	sessionService session.Service
 	config         *config.Config
-	logStreamer     *LogStreamer
+	logStreamer    *LogStreamer
+	tokenStore     *auth.TokenStore
 	startTime      time.Time
 	wsClientCount  func() int
 	taskBroadcast  func(data []byte) // broadcasts to all WS clients
-	handler        *Handler           // for approval InjectCompletion; set via SetHandler
+	handler        *Handler          // for approval InjectCompletion; set via SetHandler
 }
 
 // NewDashboardAPI creates a new dashboard API.
@@ -45,14 +47,22 @@ func NewDashboardAPI(
 	ls *LogStreamer,
 	clientCount func() int,
 ) *DashboardAPI {
+	// Initialize token store for settings UI
+	tokenFile := cfg.Security.Auth.TokenFile
+	if tokenFile == "" {
+		tokenFile = config.ExpandPath("~/.kaggen/tokens.json")
+	}
+	tokenStore, _ := auth.NewTokenStore(tokenFile)
+
 	return &DashboardAPI{
-		agentProvider:  provider,
-		backlogStore:   store,
+		agentProvider: provider,
+		backlogStore:  store,
 		sessionService: ss,
-		config:         cfg,
-		logStreamer:     ls,
-		startTime:      time.Now(),
-		wsClientCount:  clientCount,
+		config:        cfg,
+		logStreamer:   ls,
+		tokenStore:    tokenStore,
+		startTime:     time.Now(),
+		wsClientCount: clientCount,
 	}
 }
 
@@ -349,7 +359,7 @@ func (d *DashboardAPI) HandleSessions(w http.ResponseWriter, r *http.Request) {
 // HandleSessionMessages returns chat history for a specific session.
 // Query params: user_id, session_id (required), detail=chat|full, limit, offset.
 func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 
 	userID := r.URL.Query().Get("user_id")
 	sessionID := r.URL.Query().Get("session_id")
@@ -508,7 +518,7 @@ func (d *DashboardAPI) HandleSessionMessages(w http.ResponseWriter, r *http.Requ
 // HandleSessionRename renames a session (updates metadata.json name field).
 // Expects POST with JSON body: {"user_id": "...", "session_id": "...", "name": "..."}.
 func (d *DashboardAPI) HandleSessionRename(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
 		http.Error(w, `{"error":"POST or PATCH required"}`, http.StatusMethodNotAllowed)
 		return
@@ -554,7 +564,7 @@ func (d *DashboardAPI) HandleSessionRename(w http.ResponseWriter, r *http.Reques
 // HandleSessionDelete deletes a session permanently.
 // Expects POST with JSON body: {"user_id": "...", "session_id": "..."}.
 func (d *DashboardAPI) HandleSessionDelete(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		http.Error(w, `{"error":"POST or DELETE required"}`, http.StatusMethodNotAllowed)
 		return
@@ -588,7 +598,7 @@ func (d *DashboardAPI) HandleSessionDelete(w http.ResponseWriter, r *http.Reques
 // HandleSessionArchive marks a session as archived by setting archived_at in metadata.
 // Expects POST with JSON body: {"user_id": "...", "session_id": "..."}.
 func (d *DashboardAPI) HandleSessionArchive(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"POST required"}`, http.StatusMethodNotAllowed)
 		return
@@ -656,7 +666,7 @@ func (d *DashboardAPI) HandleLogsSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 
 	ctx := r.Context()
 	d.logStreamer.ServeSSE(ctx, func(data []byte) error {
@@ -808,6 +818,11 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/approvals/approve", d.HandleApprovalAction)
 	handleFunc("/api/approvals/reject", d.HandleApprovalAction)
 	handleFunc("/api/files/", d.HandleFiles)
+	// Settings & Token management
+	handleFunc("/api/settings", d.HandleSettings)
+	handleFunc("/api/tokens", d.HandleTokens)
+	handleFunc("/api/tokens/generate", d.HandleTokenGenerate)
+	handleFunc("/api/tokens/revoke", d.HandleTokenRevoke)
 }
 
 // SetHandler stores the message handler for approval completion injection.
@@ -817,7 +832,7 @@ func (d *DashboardAPI) SetHandler(h *Handler) {
 
 // HandleApprovals returns pending approval requests.
 func (d *DashboardAPI) HandleApprovals(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 
 	store := d.agentProvider.InFlightStore()
 	all := store.List(agent.TaskPendingApproval)
@@ -856,7 +871,7 @@ func (d *DashboardAPI) HandleApprovals(w http.ResponseWriter, r *http.Request) {
 
 // HandleApprovalAction handles POST /api/approvals/approve and /api/approvals/reject.
 func (d *DashboardAPI) HandleApprovalAction(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"POST required"}`, http.StatusMethodNotAllowed)
 		return
@@ -916,7 +931,7 @@ func (d *DashboardAPI) HandleApprovalAction(w http.ResponseWriter, r *http.Reque
 // Only files that have been explicitly published via extractSendFiles are accessible.
 // No server filesystem paths are exposed — clients request by filename only.
 func (d *DashboardAPI) HandleFiles(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	d.setCORSHeaders(w, r)
 
 	// Extract filename from /api/files/<name>
 	name := strings.TrimPrefix(r.URL.Path, "/api/files/")
@@ -943,11 +958,158 @@ func (d *DashboardAPI) HandleFiles(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, absPath)
 }
 
+// HandleTokens returns the list of configured tokens (metadata only, not secrets).
+func (d *DashboardAPI) HandleTokens(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+	if d.tokenStore == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	tokens := d.tokenStore.ListTokens()
+	writeJSON(w, tokens)
+}
+
+// HandleTokenGenerate generates a new authentication token.
+// Expects POST with JSON body: {"name": "...", "expires_in": "24h"}
+func (d *DashboardAPI) HandleTokenGenerate(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if d.tokenStore == nil {
+		http.Error(w, `{"error":"token store not configured"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		Name      string `json:"name"`
+		ExpiresIn string `json:"expires_in"` // e.g., "24h", "7d", ""
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Parse expiration duration
+	var expiresIn time.Duration
+	if req.ExpiresIn != "" {
+		var err error
+		expiresIn, err = time.ParseDuration(req.ExpiresIn)
+		if err != nil {
+			// Try parsing as days (e.g., "7d")
+			if strings.HasSuffix(req.ExpiresIn, "d") {
+				days := strings.TrimSuffix(req.ExpiresIn, "d")
+				var n int
+				fmt.Sscanf(days, "%d", &n)
+				expiresIn = time.Duration(n) * 24 * time.Hour
+			}
+		}
+	}
+
+	plaintext, id, err := d.tokenStore.GenerateToken(req.Name, expiresIn)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to generate token: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build WebSocket URL for QR code
+	wsURL := fmt.Sprintf("ws://%s:%d/ws?token=%s", d.config.Gateway.Bind, d.config.Gateway.Port, plaintext)
+	if d.config.Gateway.Bind == "0.0.0.0" || d.config.Gateway.Bind == "" {
+		// Use local IP if bound to all interfaces
+		wsURL = fmt.Sprintf("ws://YOUR_IP:%d/ws?token=%s", d.config.Gateway.Port, plaintext)
+	}
+
+	writeJSON(w, map[string]any{
+		"id":        id,
+		"token":     plaintext,
+		"name":      req.Name,
+		"ws_url":    wsURL,
+		"message":   "Save this token now - it cannot be retrieved again!",
+	})
+}
+
+// HandleTokenRevoke revokes a token by ID.
+// Expects POST with JSON body: {"id": "..."}
+func (d *DashboardAPI) HandleTokenRevoke(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, `{"error":"POST or DELETE required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if d.tokenStore == nil {
+		http.Error(w, `{"error":"token store not configured"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, `{"error":"id is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := d.tokenStore.RevokeToken(req.ID); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to revoke token: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "revoked", "id": req.ID})
+}
+
+// HandleSettings returns current security settings.
+func (d *DashboardAPI) HandleSettings(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+
+	hasTokens := d.tokenStore != nil && d.tokenStore.HasTokens()
+
+	writeJSON(w, map[string]any{
+		"auth_enabled":     d.config.Security.Auth.Enabled,
+		"has_tokens":       hasTokens,
+		"gateway_bind":     d.config.Gateway.Bind,
+		"gateway_port":     d.config.Gateway.Port,
+		"allowed_origins":  d.config.Gateway.GetAllowedOrigins(),
+		"sandbox_enabled":  d.config.Security.CommandSandbox.Enabled,
+	})
+}
+
 // --- helpers ---
+
+// setCORSHeaders sets the CORS headers based on the configured allowed origins.
+// If no allowed origins are configured, defaults to localhost variants only.
+func (d *DashboardAPI) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return // Same-origin request, no CORS headers needed
+	}
+
+	allowedOrigins := d.config.Gateway.GetAllowedOrigins()
+	for _, allowed := range allowedOrigins {
+		if strings.HasPrefix(origin, allowed) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			return
+		}
+	}
+	// Origin not allowed - don't set CORS headers
+}
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Note: CORS headers should be set by the handler before calling writeJSON
 	json.NewEncoder(w).Encode(v)
 }
 

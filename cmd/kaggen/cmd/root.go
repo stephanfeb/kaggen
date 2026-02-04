@@ -30,4 +30,5 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(gatewayCmd)
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(securityAuditCmd)
 }

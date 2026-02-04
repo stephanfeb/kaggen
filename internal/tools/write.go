@@ -8,6 +8,8 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
+
+	"github.com/yourusername/kaggen/internal/security"
 )
 
 // WriteArgs defines the input arguments for the write tool.
@@ -26,9 +28,13 @@ type WriteResult struct {
 
 // newWriteTool creates a new write tool using trpc-agent-go's function tool.
 func newWriteTool(workspace string) tool.CallableTool {
+	return newWriteToolWithValidator(workspace, nil)
+}
+
+func newWriteToolWithValidator(workspace string, validator *security.PathValidator) tool.CallableTool {
 	return function.NewFunctionTool(
 		func(ctx context.Context, args WriteArgs) (*WriteResult, error) {
-			return executeWrite(workspace, args)
+			return executeWrite(workspace, args, validator)
 		},
 		function.WithName("write"),
 		function.WithDescription("Write content to a file. Creates the file if it doesn't exist, or overwrites it if it does. Creates parent directories as needed."),
@@ -36,7 +42,7 @@ func newWriteTool(workspace string) tool.CallableTool {
 }
 
 // executeWrite performs the actual file write operation.
-func executeWrite(workspace string, args WriteArgs) (*WriteResult, error) {
+func executeWrite(workspace string, args WriteArgs, validator *security.PathValidator) (*WriteResult, error) {
 	result := &WriteResult{
 		Path: args.Path,
 	}
@@ -44,6 +50,15 @@ func executeWrite(workspace string, args WriteArgs) (*WriteResult, error) {
 	if args.Path == "" {
 		result.Message = "Error: path is required"
 		return result, fmt.Errorf("path is required")
+	}
+
+	// Validate path against security policy
+	if validator != nil {
+		validation := validator.ValidatePath(workspace, args.Path)
+		if !validation.Allowed {
+			result.Message = fmt.Sprintf("Access denied: %s", validation.Reason)
+			return result, fmt.Errorf("path blocked by security policy: %s", validation.Reason)
+		}
 	}
 
 	// Reject empty content for non-append writes to prevent silent 0-byte files
