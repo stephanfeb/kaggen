@@ -1,0 +1,90 @@
+# Basic instruction following test cases
+# These test whether the agent understands and executes simple instructions.
+
+- id: "if-001"
+  name: "Simple task execution"
+  description: "Agent should list Go files in the current directory"
+  user_message: "List all Go files in the current directory"
+  assert:
+    - type: tool-called
+      tool: exec
+      params:
+        command: {regex: "(ls|find).*\\.go"}
+    - type: llm-rubric
+      rubric: "Response contains a list of .go filenames or indicates no Go files exist"
+      min_score: 0.7
+
+- id: "if-002"
+  name: "Read and extract information"
+  description: "Agent should read a file and extract specific information"
+  user_message: "Read config.yaml and tell me the port number"
+  context:
+    files:
+      "config.yaml": |
+        server:
+          port: 8080
+          host: localhost
+        database:
+          port: 5432
+  assert:
+    - type: tool-called
+      tool: read
+      params:
+        path: {contains: "config.yaml"}
+    - type: contains
+      value: "8080"
+    - type: llm-rubric
+      rubric: "Correctly identifies 8080 as the server port (not 5432 which is the database port)"
+      min_score: 0.8
+
+- id: "if-003"
+  name: "Multi-step task"
+  description: "Agent should perform multiple steps in sequence"
+  user_message: "Read config.yaml, find the database port, and tell me what service typically runs on that port"
+  context:
+    files:
+      "config.yaml": |
+        database:
+          port: 5432
+          host: db.example.com
+  assert:
+    - type: tool-called
+      tool: read
+    - type: contains
+      value: "5432"
+    - type: llm-rubric
+      rubric: "Correctly identifies PostgreSQL as the database service that typically runs on port 5432"
+      min_score: 0.8
+
+- id: "if-004"
+  name: "Negative instruction"
+  description: "Agent should understand what NOT to do"
+  user_message: "List the files in the current directory, but do NOT show hidden files"
+  assert:
+    - type: tool-called
+      tool: exec
+    - type: not-contains
+      value: "-a"
+    - type: llm-rubric
+      rubric: "Uses a command that lists files without showing hidden files (no -a or -A flag)"
+      min_score: 0.7
+
+- id: "if-005"
+  name: "Conditional task"
+  description: "Agent should handle conditional logic"
+  user_message: "Check if requirements.txt exists. If it does, show its contents. If not, tell me it doesn't exist."
+  context:
+    files:
+      "requirements.txt": |
+        flask==2.0.0
+        requests==2.28.0
+  assert:
+    - type: tool-called
+      tool: read
+      params:
+        path: {contains: "requirements.txt"}
+    - type: contains
+      value: "flask"
+    - type: llm-rubric
+      rubric: "Shows the contents of requirements.txt including the package names"
+      min_score: 0.8

@@ -1,0 +1,107 @@
+# Tool calling test cases
+# These test whether the agent calls the right tools with correct parameters.
+
+- id: "tc-001"
+  name: "Read tool with path"
+  description: "Agent should use read tool with correct path"
+  user_message: "Show me the contents of main.go"
+  context:
+    files:
+      "main.go": |
+        package main
+
+        func main() {
+            println("Hello, World!")
+        }
+  assert:
+    - type: tool-called
+      tool: read
+      count: 1
+      params:
+        path: {contains: "main.go"}
+    - type: contains
+      value: "Hello, World"
+
+- id: "tc-002"
+  name: "Write tool creates file"
+  description: "Agent should use write tool to create a new file"
+  user_message: "Create a file called hello.txt with the content 'Hello, World!'"
+  assert:
+    - type: tool-called
+      tool: write
+      params:
+        path: {contains: "hello.txt"}
+        content: {contains: "Hello"}
+
+- id: "tc-003"
+  name: "Exec tool for commands"
+  description: "Agent should use exec tool for shell commands"
+  user_message: "Run git status"
+  assert:
+    - type: tool-called
+      tool: exec
+      params:
+        command: {contains: "git status"}
+
+- id: "tc-004"
+  name: "Tool sequence - read before write"
+  description: "Agent should read a file before modifying it"
+  user_message: "Read config.yaml and add a new field 'debug: true' to it"
+  context:
+    files:
+      "config.yaml": |
+        port: 8080
+        host: localhost
+  assert:
+    - type: tool-sequence
+      sequence: ["read", "write"]
+    - type: tool-called
+      tool: write
+      params:
+        content: {contains: "debug"}
+
+- id: "tc-005"
+  name: "Avoid unnecessary tool calls"
+  description: "Agent should not use tools when not needed"
+  user_message: "What is 2 + 2?"
+  assert:
+    - type: tool-called
+      tool: exec
+      count: 0
+    - type: tool-called
+      tool: read
+      count: 0
+    - type: contains
+      value: "4"
+
+- id: "tc-006"
+  name: "Multiple file reads"
+  description: "Agent should read multiple files when asked"
+  user_message: "Read both config.yaml and main.go and summarize what the project does"
+  context:
+    files:
+      "config.yaml": |
+        port: 8080
+        database: postgres
+      "main.go": |
+        package main
+        // A web server that connects to postgres
+        func main() {}
+  assert:
+    - type: tool-called
+      tool: read
+      min_count: 2
+    - type: llm-rubric
+      rubric: "Summarizes that it's a web server on port 8080 that uses PostgreSQL"
+      min_score: 0.7
+
+- id: "tc-007"
+  name: "Exec with timeout"
+  description: "Agent should use timeout for potentially long-running commands"
+  user_message: "Run the tests with a 60 second timeout"
+  assert:
+    - type: tool-called
+      tool: exec
+      params:
+        command: {regex: "test|go test"}
+        timeout_seconds: {regex: "60"}
