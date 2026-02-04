@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,12 +107,21 @@ func (r *Runner) RunCase(ctx context.Context, tc EvalCase) (*EvalResult, error) 
 		systemInstruction = tc.SystemPrompt
 	}
 
+	// Determine max turns - use test case value if specified, otherwise use config default
+	maxTurns := tc.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = r.config.MaxTurns
+	}
+	if maxTurns <= 0 {
+		maxTurns = 10 // Hard fallback
+	}
+
 	// Create agent
 	ag := llmagent.New("eval-agent",
 		llmagent.WithModel(r.model),
 		llmagent.WithTools(wrappedTools),
 		llmagent.WithInstruction(systemInstruction),
-		llmagent.WithMaxLLMCalls(tc.MaxTurns),
+		llmagent.WithMaxLLMCalls(maxTurns),
 	)
 
 	// Set up timeout
@@ -156,9 +166,25 @@ func (r *Runner) RunCase(ctx context.Context, tc EvalCase) (*EvalResult, error) 
 		if evt != nil && evt.Response != nil {
 			turnCount++
 			if len(evt.Response.Choices) > 0 {
-				content := evt.Response.Choices[0].Message.Content
-				if content != "" && !evt.Response.IsToolCallResponse() {
-					finalOutput = content
+				msg := evt.Response.Choices[0].Message
+
+				// Extract tool calls from response and record them
+				for _, tc := range msg.ToolCalls {
+					// Parse arguments from JSON bytes to map
+					var args map[string]any
+					if len(tc.Function.Arguments) > 0 {
+						json.Unmarshal(tc.Function.Arguments, &args)
+					}
+					collector.record(RecordedToolCall{
+						ID:   tc.ID,
+						Name: tc.Function.Name,
+						Args: args,
+					})
+				}
+
+				// Extract text content
+				if msg.Content != "" && !evt.Response.IsToolCallResponse() {
+					finalOutput = msg.Content
 				}
 			}
 		}
@@ -292,11 +318,10 @@ func (r *Runner) setupWorkspace(tc EvalCase) (string, error) {
 	return workspace, nil
 }
 
-// wrapToolsWithCollector wraps tools to capture calls.
+// wrapToolsWithCollector returns tools for the agent.
+// Tool calls are now captured directly from response events in RunCase,
+// so no wrapping is needed here.
 func (r *Runner) wrapToolsWithCollector(collector *toolCollector, workspace string) []tool.Tool {
-	// For now, return the original tools
-	// In a full implementation, we'd wrap each tool to intercept calls
-	// The collector is populated via the session events
 	return r.tools
 }
 
