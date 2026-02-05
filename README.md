@@ -50,6 +50,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 | `kaggen agent` | Start an interactive CLI agent session |
 | `kaggen gateway` | Start the WebSocket + Telegram gateway server |
 | `kaggen status` | Show current configuration and workspace status |
+| `kaggen eval` | Run evaluation tests for agent performance |
 | `kaggen token generate` | Generate a new authentication token |
 | `kaggen token list` | List configured authentication tokens |
 | `kaggen token revoke` | Revoke an authentication token |
@@ -898,6 +899,303 @@ Optional HMAC-SHA256 signature verification is supported via the `X-Callback-Sig
 
 Task status can be polled at `GET /callbacks/{taskID}/status`.
 
+## Agent Evaluation
+
+Kaggen includes a built-in evaluation framework for measuring agent performance. The system supports two evaluation modes:
+
+| Mode | Flag | Purpose |
+|------|------|---------|
+| **Default (V1)** | (none) | Basic tool calling tests for development |
+| **Coordinator (V2)** | `--coordinator` | Full production system tests — coordinator + skills |
+
+The **Coordinator mode** tests what actually matters: whether the coordinator selects the right skill, asks for clarification when instructions are ambiguous, and delegates appropriately.
+
+### Quick Start
+
+```bash
+# Basic tool calling tests (V1)
+kaggen eval -s testdata/eval
+
+# Coordinator behavior tests (V2) — tests the full production system
+kaggen eval -s testdata/eval/coordinator --coordinator --skills testdata/eval/skills
+
+# Run with specific model
+kaggen eval -s testdata/eval/coordinator --coordinator --model anthropic/claude-sonnet-4-20250514
+
+# Run specific category
+kaggen eval -s testdata/eval/coordinator --coordinator --category skill_selection
+
+# Run specific test cases
+kaggen eval -s testdata/eval/coordinator --coordinator --case skill-001 --case clarify-001
+
+# Output results to JSON
+kaggen eval -s testdata/eval/coordinator --coordinator -o results.json
+```
+
+### Test Case Format
+
+#### Coordinator Tests (V2)
+
+Coordinator tests verify skill selection, clarification behavior, and delegation patterns:
+
+```yaml
+# testdata/eval/coordinator/skill_selection.yaml
+- id: "skill-001"
+  name: "Select calculator for math"
+  category: skill_selection
+  user_message: "What is 15 multiplied by 23?"
+  assert:
+    - type: skill-selected
+      skill: calculator
+      required: true
+    - type: contains
+      value: "345"
+
+# testdata/eval/coordinator/clarification.yaml
+- id: "clarify-001"
+  name: "Ask clarification for ambiguous file"
+  category: clarification
+  user_message: "Update the config file"
+  context:
+    files:
+      "config.yaml": "port: 8080"
+      "config.json": '{"port": 8080}'
+      "config.toml": "port = 8080"
+  assert:
+    - type: asked-clarification
+      required: true
+      about: "which"
+
+- id: "clarify-004"
+  name: "Don't ask for clear request"
+  category: clarification
+  user_message: "Read README.md and tell me what it says"
+  context:
+    files:
+      "README.md": "# Hello World"
+  assert:
+    - type: asked-clarification
+      forbidden: true
+    - type: skill-selected
+      skill: file_reader
+      required: true
+```
+
+#### Basic Tool Tests (V1)
+
+Basic tests verify direct tool calling behavior:
+
+```yaml
+# testdata/eval/instruction_following/basic.yaml
+- id: "if-001"
+  name: "Read and extract information"
+  user_message: "Read config.yaml and tell me the port number"
+  context:
+    files:
+      "config.yaml": |
+        server:
+          port: 8080
+          host: localhost
+  assert:
+    - type: tool-called
+      tool: read
+      params:
+        path: {contains: "config.yaml"}
+    - type: contains
+      value: "8080"
+```
+
+### Assertion Types
+
+#### Coordinator Assertions (V2)
+
+| Type | Description | Fields |
+|------|-------------|--------|
+| `skill-selected` | Coordinator delegated to a skill | `skill`, `required`, `forbidden` |
+| `asked-clarification` | Coordinator asked for clarification | `required`, `forbidden`, `about` |
+
+**skill-selected examples:**
+```yaml
+# Skill MUST be selected
+- type: skill-selected
+  skill: calculator
+  required: true
+
+# Skill must NOT be selected
+- type: skill-selected
+  skill: file_writer
+  forbidden: true
+```
+
+**asked-clarification examples:**
+```yaml
+# MUST ask for clarification
+- type: asked-clarification
+  required: true
+
+# Must NOT ask for clarification
+- type: asked-clarification
+  forbidden: true
+
+# MUST ask clarification about a specific topic
+- type: asked-clarification
+  required: true
+  about: "which file"
+```
+
+#### Common Assertions
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `contains` | Response contains string | `value: "8080"` |
+| `not-contains` | Response doesn't contain string | `value: "error"` |
+| `regex` | Response matches pattern | `value: "port.*\\d+"` |
+| `tool-called` | Tool was invoked | `tool: read`, `params: {path: {contains: "config"}}` |
+| `tool-sequence` | Tools called in order | `sequence: ["read", "write"]` |
+| `llm-rubric` | LLM-as-judge evaluation | `rubric: "Correctly explains...", min_score: 0.7` |
+
+### Test Skills
+
+For coordinator testing, create minimal test skills in `testdata/eval/skills/`:
+
+```markdown
+<!-- testdata/eval/skills/calculator/SKILL.md -->
+---
+name: calculator
+description: Performs mathematical calculations
+tools: [exec]
+---
+
+Perform calculations using Python or bc.
+```
+
+```markdown
+<!-- testdata/eval/skills/file_reader/SKILL.md -->
+---
+name: file_reader
+description: Reads and summarizes file contents
+tools: [read]
+---
+
+Read files and extract information as requested.
+```
+
+### Reproducible Testing
+
+Record model interactions for deterministic replay:
+
+```bash
+# Record a baseline
+kaggen eval -s testdata/eval/coordinator --coordinator --record golden/baseline.jsonl
+
+# Replay without API calls (deterministic)
+kaggen eval -s testdata/eval/coordinator --coordinator --replay golden/baseline.jsonl
+
+# Compare new model against baseline
+kaggen eval -s testdata/eval/coordinator --coordinator --model gemini/gemini-2.5-pro --compare golden/baseline.jsonl
+```
+
+### Eval Flags
+
+```
+-s, --suite string      Path to test suite directory (default "testdata/eval")
+    --model string      Model to evaluate (e.g., anthropic/claude-sonnet-4)
+    --judge string      Model for LLM-as-judge (defaults to same as --model)
+    --category string   Filter to specific category
+    --case strings      Run specific test case(s) by ID
+    --coordinator       Use V2 runner for coordinator testing (full production system)
+    --skills string     Skills directory for coordinator tests
+    --trace string      Directory to write execution traces (for debugging)
+    --timeout duration  Timeout per test case (default 5m, e.g., 30s, 1m)
+    --record string     Record interactions to file for later replay
+    --replay string     Replay from recorded file (deterministic)
+    --compare string    Compare results against baseline file
+-o, --output string     Output results to JSON file
+-v, --verbose           Verbose output
+```
+
+### Example Output
+
+```
+═══════════════════════════════════════════════════════════════
+                     EVALUATION RESULTS
+═══════════════════════════════════════════════════════════════
+
+  ✓ Pass Rate: 83.3% (10/12)
+    Avg Score: 0.87
+
+  By Category:
+    ✓ skill_selection: 100.0% (5/5), avg=0.94
+    ✗ clarification: 71.4% (5/7), avg=0.81
+
+  Results:
+    ✓ [skill-001] Select calculator for math (score=1.00, turns=3)
+    ✓ [skill-002] Select file_reader for reading (score=0.95, turns=4)
+    ✓ [clarify-001] Ask clarification for ambiguous file (score=1.00, turns=2)
+    ✗ [clarify-003] Ask clarification for vague task (score=0.00, turns=5)
+        └─ asked-clarification: coordinator should have asked for clarification but didn't
+```
+
+### Directory Structure
+
+```
+testdata/eval/
+  coordinator/              # Coordinator behavior tests (V2)
+    skill_selection.yaml    # Skill selection tests
+    clarification.yaml      # Clarification behavior tests
+  skills/                   # Test-specific skills
+    calculator/SKILL.md
+    file_reader/SKILL.md
+    file_writer/SKILL.md
+    summarizer/SKILL.md
+  instruction_following/    # Basic instruction tests (V1)
+  tool_calling/             # Basic tool calling tests (V1)
+```
+
+### Writing Test Cases
+
+**For coordinator tests (V2):**
+1. Create YAML files under `testdata/eval/coordinator/`
+2. Test skill selection with `skill-selected` assertions
+3. Test clarification behavior with `asked-clarification` assertions
+4. Use `context.files` to create workspace files for context-dependent tests
+5. Combine with `contains` or `llm-rubric` to verify output quality
+
+**For basic tests (V1):**
+1. Create YAML files under `testdata/eval/<category>/`
+2. Test tool calling with `tool-called` assertions
+3. Category is inferred from directory name
+
+### CI Integration
+
+```yaml
+# .github/workflows/eval.yml
+name: Agent Evaluation
+
+on:
+  pull_request:
+    paths:
+      - 'internal/agent/**'
+      - 'defaults/skills/**'
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Run Coordinator Eval Suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          go build -tags fts5 -o kaggen ./cmd/kaggen
+          ./kaggen eval -s testdata/eval/coordinator --coordinator --skills testdata/eval/skills
+```
+
+---
+
 ## Workspace
 
 The workspace at `~/.kaggen/workspace/` contains bootstrap Markdown files that shape the agent's personality and behavior:
@@ -919,10 +1217,13 @@ Edit these files to customize the agent to your needs.
 cmd/
   kaggen/                CLI entry point
   kaggen-pubsub-bridge/  Standalone Pub/Sub bridge sidecar
+testdata/
+  eval/                  Evaluation test cases and golden baselines
 internal/
   agent/             Agent logic, async dispatch, in-flight task store, approval system
   auth/              Token authentication (Argon2-ID hashing)
   channel/           Channel interface + implementations
+  eval/              Agent evaluation framework (assertions, replay, runner)
     channel.go         Router, Message, Response types
     websocket.go       WebSocket channel
     telegram.go        Telegram bot channel

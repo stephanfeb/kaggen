@@ -49,6 +49,17 @@ type CaseContext struct {
 	WorkDir string `yaml:"work_dir,omitempty" json:"work_dir,omitempty"`
 }
 
+// TraceEvent represents a single event in the coordinator's execution trace.
+// Used for debugging excessive turn counts and understanding coordinator behavior.
+type TraceEvent struct {
+	Turn      int            `json:"turn"`
+	Timestamp time.Time      `json:"timestamp"`
+	Type      string         `json:"type"` // "text", "tool_call"
+	Content   string         `json:"content,omitempty"`
+	ToolName  string         `json:"tool_name,omitempty"`
+	ToolArgs  map[string]any `json:"tool_args,omitempty"`
+}
+
 // EvalResult captures the outcome of running one test case.
 type EvalResult struct {
 	CaseID   string `json:"case_id"`
@@ -69,6 +80,9 @@ type EvalResult struct {
 	// Recorded data for debugging
 	ToolCalls   []RecordedToolCall `json:"tool_calls"`
 	FinalOutput string             `json:"final_output"`
+
+	// Execution trace for debugging (turn-by-turn log of coordinator behavior)
+	ExecutionTrace []TraceEvent `json:"execution_trace,omitempty"`
 
 	// Errors during execution (not assertion failures)
 	Errors []string `json:"errors,omitempty"`

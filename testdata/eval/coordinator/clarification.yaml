@@ -1,0 +1,80 @@
+# Clarification Tests
+# Tests whether the coordinator asks for clarification when instructions are ambiguous
+
+- id: "clarify-001"
+  name: "Ask clarification for ambiguous file"
+  description: "Coordinator should ask which file when multiple configs exist"
+  category: clarification
+  user_message: "Update the config file"
+  context:
+    files:
+      "config.yaml": "port: 8080"
+      "config.json": '{"port": 8080}'
+      "config.toml": "port = 8080"
+  assert:
+    - type: asked-clarification
+      required: true
+      about: "which"
+
+- id: "clarify-002"
+  name: "Ask clarification for incomplete request"
+  description: "Coordinator should ask what to write when content not specified"
+  category: clarification
+  user_message: "Create a new file"
+  assert:
+    - type: asked-clarification
+      required: true
+
+- id: "clarify-003"
+  name: "Ask clarification for vague task"
+  description: "Coordinator should ask for details when task is too vague"
+  category: clarification
+  user_message: "Fix it"
+  assert:
+    - type: asked-clarification
+      required: true
+
+- id: "clarify-004"
+  name: "Don't ask for clear file read"
+  description: "Coordinator should NOT ask clarification when request is clear"
+  category: clarification
+  user_message: "Read the contents of README.md and tell me what it says"
+  context:
+    files:
+      "README.md": "# Hello World\nThis is a test project."
+  assert:
+    - type: asked-clarification
+      forbidden: true
+    - type: skill-selected
+      skill: file_reader
+      required: true
+
+- id: "clarify-005"
+  name: "Don't ask for clear math"
+  description: "Coordinator should NOT ask clarification for clear math problem"
+  category: clarification
+  user_message: "Calculate 100 divided by 4"
+  assert:
+    - type: asked-clarification
+      forbidden: true
+    - type: contains
+      value: "25"
+
+- id: "clarify-006"
+  name: "Ask about missing file details"
+  description: "Coordinator should ask about file location or name when ambiguous"
+  category: clarification
+  user_message: "Save this information"
+  assert:
+    - type: asked-clarification
+      required: true
+      about: "file"
+
+- id: "clarify-007"
+  name: "Ask about calculation details"
+  description: "Coordinator should ask for clarification when math is ambiguous"
+  category: clarification
+  user_message: "Calculate the total"
+  assert:
+    - type: asked-clarification
+      required: true

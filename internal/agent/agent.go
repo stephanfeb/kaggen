@@ -216,7 +216,8 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	// Write and exec remain on sub-agents to prevent the coordinator from
 	// bypassing specialists for mutating operations.
 	readTool := newCoordinatorReadTool(mem.Workspace())
-	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool, readTool}
+	lsTool := newCoordinatorLsTool(mem.Workspace())
+	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool, readTool, lsTool}
 	coordinatorTools = append(coordinatorTools, ao.extraCoordTools...)
 
 	// Build tool callbacks to track synchronous Team delegations in InFlightStore.
@@ -686,8 +687,11 @@ func (a *Agent) FindSubAgent(name string) agent.Agent {
 	return a.team.FindSubAgent(name)
 }
 
-// buildInstruction constructs the system instruction from bootstrap files.
-func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig *ExternalDeliveryConfig) (string, error) {
+// BuildCoreInstruction builds the system instruction from bootstrap files.
+// This is the core instruction without sub-agent listings or external delivery config.
+// Useful for eval runners that need to test with production-equivalent instructions.
+func BuildCoreInstruction(workspace string) (string, error) {
+	mem := memory.NewFileMemory(workspace)
 	bootstrap, err := mem.LoadBootstrap()
 	if err != nil {
 		return "", fmt.Errorf("load bootstrap: %w", err)
@@ -707,8 +711,53 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "- Use tools when needed to accomplish tasks\n"
 	instruction += "- Ask for clarification if a request is ambiguous\n"
 	instruction += "- When you complete a task, summarize what you did\n"
+	instruction += "\n"
+
+	return instruction, nil
+}
+
+// buildInstruction constructs the system instruction from bootstrap files.
+func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig *ExternalDeliveryConfig) (string, error) {
+	bootstrap, err := mem.LoadBootstrap()
+	if err != nil {
+		return "", fmt.Errorf("load bootstrap: %w", err)
+	}
+
+	var instruction string
+	instruction = "You are Kaggen, a personal AI assistant.\n\n"
+
+	if bootstrap != "" {
+		instruction += "## Context & Instructions\n\n"
+		instruction += bootstrap
+		instruction += "\n\n"
+	}
+
+	instruction += "## Operating Guidelines\n\n"
+	instruction += "- Be helpful, direct, and concise\n"
+	instruction += "- Use tools when needed to accomplish tasks\n"
+	instruction += "- When you complete a task, summarize what you did\n"
 	instruction += "- To send a file to the user (e.g. show an image, deliver a document), include [send_file: /path/to/file] in your response. The file will be delivered through the chat channel.\n"
 	instruction += "\n"
+
+	instruction += "## Handling Ambiguous Requests\n\n"
+	instruction += "BEFORE taking any action on an ambiguous request, ask the user for clarification.\n\n"
+	instruction += "### When to Ask for Clarification\n\n"
+	instruction += "Ask when the request is missing critical information:\n"
+	instruction += "- **Which file?** - \"Update the config file\" but multiple configs exist\n"
+	instruction += "- **What content?** - \"Create a file\" but no content specified\n"
+	instruction += "- **What action?** - \"Fix it\" with no context about what to fix\n"
+	instruction += "- **What parameters?** - \"Calculate the total\" but no numbers given\n"
+	instruction += "- **Which option?** - Multiple valid interpretations exist\n\n"
+	instruction += "### How to Ask\n\n"
+	instruction += "- Respond directly with a clarifying question - do NOT use tools to investigate first\n"
+	instruction += "- Be specific: \"I found 3 config files (config.yaml, config.json, config.toml). Which one would you like me to update?\"\n"
+	instruction += "- If you can offer options, list them for the user\n\n"
+	instruction += "### When NOT to Ask\n\n"
+	instruction += "Do not ask for clarification when:\n"
+	instruction += "- The request is clear and complete (e.g., \"Calculate 100 / 4\")\n"
+	instruction += "- Only one reasonable interpretation exists\n"
+	instruction += "- The user has provided all necessary details\n\n"
+
 	instruction += "## Task Orchestration\n\n"
 	instruction += "You have access to specialist sub-agents via `dispatch_task` (async) and team member tools (sync).\n\n"
 
@@ -830,6 +879,39 @@ func newCoordinatorReadTool(workspace string) tool.Tool {
 					resolved = filepath.Join(workspace, path)
 				}
 			}
+
+			// Check if path is a directory
+			info, err := os.Stat(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("failed to stat path: %w", err)
+			}
+
+			// Handle directories by listing contents
+			if info.IsDir() {
+				entries, err := os.ReadDir(resolved)
+				if err != nil {
+					return nil, fmt.Errorf("failed to read directory: %w", err)
+				}
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("Directory listing for: %s\n\n", path))
+				for _, entry := range entries {
+					if entry.IsDir() {
+						sb.WriteString(fmt.Sprintf("  [dir]  %s/\n", entry.Name()))
+					} else {
+						entryInfo, _ := entry.Info()
+						size := int64(0)
+						if entryInfo != nil {
+							size = entryInfo.Size()
+						}
+						sb.WriteString(fmt.Sprintf("  [file] %s (%d bytes)\n", entry.Name(), size))
+					}
+				}
+				return &coordinatorReadResult{
+					Content: sb.String(),
+					Message: fmt.Sprintf("Listed %d entries in %s (use 'ls' tool for directory listings)", len(entries), path),
+				}, nil
+			}
+
 			data, err := os.ReadFile(resolved)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read file: %w", err)
@@ -852,6 +934,69 @@ func newCoordinatorReadTool(workspace string) tool.Tool {
 		},
 		function.WithName("read"),
 		function.WithDescription("Read the contents of a file for investigation. Use this to examine logs, config files, or task outputs before deciding whether to delegate."),
+	)
+}
+
+// coordinatorLsArgs defines the input arguments for the coordinator ls tool.
+type coordinatorLsArgs struct {
+	Path string `json:"path" jsonschema:"description=The directory path to list. Can be absolute or relative to the workspace. Defaults to workspace root if not specified."`
+}
+
+type coordinatorLsResult struct {
+	Entries []string `json:"entries"`
+	Message string   `json:"message"`
+}
+
+// newCoordinatorLsTool creates a directory listing tool for the coordinator.
+func newCoordinatorLsTool(workspace string) tool.Tool {
+	return function.NewFunctionTool(
+		func(_ context.Context, args coordinatorLsArgs) (*coordinatorLsResult, error) {
+			path := args.Path
+			if path == "" {
+				path = "."
+			}
+			// Resolve path.
+			resolved := path
+			if !filepath.IsAbs(path) {
+				if strings.HasPrefix(path, "~/") {
+					if home, err := os.UserHomeDir(); err == nil {
+						resolved = filepath.Join(home, path[2:])
+					}
+				} else {
+					resolved = filepath.Join(workspace, path)
+				}
+			}
+
+			info, err := os.Stat(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("failed to stat path: %w", err)
+			}
+
+			if !info.IsDir() {
+				return nil, fmt.Errorf("path is not a directory: %s", path)
+			}
+
+			entries, err := os.ReadDir(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read directory: %w", err)
+			}
+
+			var result []string
+			for _, entry := range entries {
+				name := entry.Name()
+				if entry.IsDir() {
+					name += "/"
+				}
+				result = append(result, name)
+			}
+
+			return &coordinatorLsResult{
+				Entries: result,
+				Message: fmt.Sprintf("Listed %d entries in %s", len(result), path),
+			}, nil
+		},
+		function.WithName("ls"),
+		function.WithDescription("List the contents of a directory. Use this to explore the workspace structure before investigating specific files with read."),
 	)
 }
 

@@ -32,6 +32,24 @@ type Context struct {
 	TurnCount  int
 	TokensUsed int
 	Duration   time.Duration
+
+	// Coordinator-level behavior (for production system evals)
+	// Skills that were dispatched to (skill name -> dispatch records)
+	SkillsDispatched map[string][]DispatchRecord
+
+	// Clarification questions asked by the coordinator
+	Clarifications []string
+
+	// All text responses from the coordinator
+	AllResponses []string
+}
+
+// DispatchRecord captures a skill dispatch event.
+type DispatchRecord struct {
+	TaskID    string
+	SkillName string
+	Task      string
+	Timestamp time.Time
 }
 
 // Result is the outcome of evaluating one assertion.
@@ -49,6 +67,7 @@ type Config struct {
 	// Common fields used by multiple assertion types
 	Value    string         `yaml:"value,omitempty" json:"value,omitempty"`
 	Tool     string         `yaml:"tool,omitempty" json:"tool,omitempty"`
+	Skill    string         `yaml:"skill,omitempty" json:"skill,omitempty"` // for skill-selected assertions
 	Params   map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
 	Rubric   string         `yaml:"rubric,omitempty" json:"rubric,omitempty"`
 	MinScore float64        `yaml:"min_score,omitempty" json:"min_score,omitempty"`
@@ -56,6 +75,11 @@ type Config struct {
 	Count    *int           `yaml:"count,omitempty" json:"count,omitempty"`
 	MinCount *int           `yaml:"min_count,omitempty" json:"min_count,omitempty"`
 	MaxCount *int           `yaml:"max_count,omitempty" json:"max_count,omitempty"`
+
+	// Clarification assertion fields
+	Required  *bool `yaml:"required,omitempty" json:"required,omitempty"`
+	Forbidden *bool `yaml:"forbidden,omitempty" json:"forbidden,omitempty"`
+	About     string `yaml:"about,omitempty" json:"about,omitempty"` // topic for clarification
 }
 
 // Assertion evaluates one aspect of agent behavior.
@@ -69,12 +93,14 @@ type Assertion interface {
 
 // Registry maps assertion type names to factory functions.
 var Registry = map[string]func(config Config) (Assertion, error){
-	"contains":      NewContains,
-	"not-contains":  NewNotContains,
-	"regex":         NewRegex,
-	"tool-called":   NewToolCalled,
-	"tool-sequence": NewToolSequence,
-	"llm-rubric":    NewLLMRubric,
+	"contains":           NewContains,
+	"not-contains":       NewNotContains,
+	"regex":              NewRegex,
+	"tool-called":        NewToolCalled,
+	"tool-sequence":      NewToolSequence,
+	"llm-rubric":         NewLLMRubric,
+	"skill-selected":     NewSkillSelected,
+	"asked-clarification": NewAskedClarification,
 }
 
 // FromConfig creates an Assertion from a YAML config.

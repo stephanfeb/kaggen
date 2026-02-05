@@ -71,6 +71,40 @@ func executeRead(workspace string, args ReadArgs, validator *security.PathValida
 	// Resolve path
 	resolvedPath := resolvePath(workspace, args.Path)
 
+	// Check if path exists and get info
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		result.Message = fmt.Sprintf("Error: %v", err)
+		return result, fmt.Errorf("stat path: %w", err)
+	}
+
+	// Handle directories by listing contents
+	if info.IsDir() {
+		entries, err := os.ReadDir(resolvedPath)
+		if err != nil {
+			result.Message = fmt.Sprintf("Error: failed to read directory: %v", err)
+			return result, fmt.Errorf("read directory: %w", err)
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Directory listing for: %s\n\n", args.Path))
+		for _, entry := range entries {
+			if entry.IsDir() {
+				sb.WriteString(fmt.Sprintf("  [dir]  %s/\n", entry.Name()))
+			} else {
+				entryInfo, _ := entry.Info()
+				size := int64(0)
+				if entryInfo != nil {
+					size = entryInfo.Size()
+				}
+				sb.WriteString(fmt.Sprintf("  [file] %s (%d bytes)\n", entry.Name(), size))
+			}
+		}
+		result.Content = sb.String()
+		result.Message = fmt.Sprintf("Listed %d entries in %s", len(entries), args.Path)
+		return result, nil
+	}
+
 	// Read file
 	data, err := os.ReadFile(resolvedPath)
 	if err != nil {

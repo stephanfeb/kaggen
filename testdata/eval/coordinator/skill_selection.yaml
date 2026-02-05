@@ -1,0 +1,84 @@
+# Skill Selection Tests
+# Tests whether the coordinator selects the appropriate skill for each task
+
+- id: "skill-001"
+  name: "Select calculator for math"
+  description: "Coordinator should delegate to calculator skill for math problems"
+  category: skill_selection
+  user_message: "What is 15 multiplied by 23?"
+  assert:
+    - type: skill-selected
+      skill: calculator
+      required: true
+    - type: contains
+      value: "345"
+
+- id: "skill-002"
+  name: "Select file_reader for reading"
+  description: "Coordinator should delegate to file_reader for file inspection"
+  category: skill_selection
+  user_message: "Read the config.yaml file and tell me what port is configured"
+  context:
+    files:
+      "config.yaml": |
+        server:
+          port: 8080
+          host: localhost
+  assert:
+    - type: skill-selected
+      skill: file_reader
+      required: true
+    - type: contains
+      value: "8080"
+
+- id: "skill-003"
+  name: "Select file_writer for file creation"
+  description: "Coordinator should delegate to file_writer for creating files"
+  category: skill_selection
+  user_message: "Create a file called hello.txt with the content 'Hello, World!'"
+  assert:
+    - type: skill-selected
+      skill: file_writer
+      required: true
+
+- id: "skill-004"
+  name: "Handle directly for knowledge questions"
+  description: "Coordinator should respond directly for simple knowledge questions"
+  category: skill_selection
+  user_message: "What is the capital of France?"
+  assert:
+    - type: contains
+      value: "Paris"
+    - type: skill-selected
+      skill: calculator
+      forbidden: true
+    - type: skill-selected
+      skill: file_reader
+      forbidden: true
+
+- id: "skill-005"
+  name: "Select summarizer for summarization"
+  description: "Coordinator should delegate to summarizer for content summarization"
+  category: skill_selection
+  user_message: "Summarize the contents of README.md"
+  context:
+    files:
+      "README.md": |
+        # My Project
+
+        This is a web application built with Go.
+
+        ## Features
+        - User authentication
+        - REST API
+        - Database integration
+
+        ## Installation
+        Run `go build` to compile.
+  assert:
+    - type: skill-selected
+      skill: summarizer
+      required: true
+    - type: llm-rubric
+      rubric: "Response summarizes that it's a Go web application with authentication, API, and database features"
+      min_score: 0.7

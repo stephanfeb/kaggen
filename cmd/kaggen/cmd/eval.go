@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 
+	"github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/eval"
 	"github.com/yourusername/kaggen/internal/eval/replay"
@@ -22,26 +24,37 @@ import (
 )
 
 var (
-	evalSuitePath  string
-	evalModelName  string
-	evalJudgeModel string
-	evalReplayFile string
-	evalRecordFile string
-	evalCompare    string
-	evalOutputJSON string
-	evalCategory   string
-	evalCaseIDs    []string
-	evalVerbose    bool
+	evalSuitePath   string
+	evalModelName   string
+	evalJudgeModel  string
+	evalReplayFile  string
+	evalRecordFile  string
+	evalCompare     string
+	evalOutputJSON  string
+	evalCategory    string
+	evalCaseIDs     []string
+	evalVerbose     bool
+	evalCoordinator bool          // Use V2 runner for coordinator testing
+	evalSkillsDir   string        // Skills directory for coordinator tests
+	evalTraceDir    string        // Directory to write execution traces for debugging
+	evalTimeout     time.Duration // Timeout per test case
 )
 
 var evalCmd = &cobra.Command{
 	Use:   "eval",
 	Short: "Run evaluation test suite",
-	Long: `Run evaluation tests to measure agent performance on instruction following and tool calling.
+	Long: `Run evaluation tests to measure agent performance.
+
+Two modes are available:
+  - Default: Tests basic tool calling with a simple agent
+  - Coordinator (--coordinator): Tests the full production system with coordinator + skills
 
 Examples:
-  # Run all tests with default model
+  # Run basic tool calling tests
   kaggen eval -s testdata/eval
+
+  # Run coordinator tests (skill selection, clarification, delegation)
+  kaggen eval -s testdata/eval/coordinator --coordinator --skills testdata/eval/skills
 
   # Run with specific model
   kaggen eval -s testdata/eval --model anthropic/claude-sonnet-4-20250514
@@ -56,10 +69,10 @@ Examples:
   kaggen eval -s testdata/eval --compare baseline.jsonl
 
   # Run specific category
-  kaggen eval -s testdata/eval --category instruction_following
+  kaggen eval -s testdata/eval --category skill_selection
 
   # Run specific test cases
-  kaggen eval -s testdata/eval --case if-001 --case if-002
+  kaggen eval -s testdata/eval --case skill-001 --case skill-002
 `,
 	RunE: runEval,
 }
@@ -75,6 +88,10 @@ func init() {
 	evalCmd.Flags().StringVar(&evalCategory, "category", "", "Filter to specific category")
 	evalCmd.Flags().StringSliceVar(&evalCaseIDs, "case", nil, "Run specific test case(s) by ID")
 	evalCmd.Flags().BoolVarP(&evalVerbose, "verbose", "v", false, "Verbose output")
+	evalCmd.Flags().BoolVar(&evalCoordinator, "coordinator", false, "Use V2 runner for coordinator testing (full production system)")
+	evalCmd.Flags().StringVar(&evalSkillsDir, "skills", "", "Skills directory for coordinator tests")
+	evalCmd.Flags().StringVar(&evalTraceDir, "trace", "", "Directory to write execution traces for debugging (coordinator mode only)")
+	evalCmd.Flags().DurationVar(&evalTimeout, "timeout", 5*time.Minute, "Timeout per test case (e.g., 1m, 30s)")
 }
 
 func runEval(cmd *cobra.Command, args []string) error {
@@ -150,12 +167,126 @@ func runEval(cmd *cobra.Command, args []string) error {
 	}
 	workspace := cfg.WorkspacePath()
 
+	// V2 Coordinator mode - test the full production system
+	if evalCoordinator {
+		skillsDir := evalSkillsDir
+		if skillsDir == "" {
+			skillsDir = "testdata/eval/skills"
+		}
+
+		logger.Info("Running coordinator evaluation (V2)", "skillsDir", skillsDir, "timeout", evalTimeout)
+
+		// Create trace directory if specified
+		if evalTraceDir != "" {
+			if err := os.MkdirAll(evalTraceDir, 0755); err != nil {
+				return fmt.Errorf("create trace dir: %w", err)
+			}
+		}
+
+		// Create result callback for incremental trace writing
+		var resultCallback eval.ResultCallback
+		if evalTraceDir != "" {
+			resultCallback = func(result *eval.EvalResult, tc eval.EvalCase) {
+				tracePath := filepath.Join(evalTraceDir, result.CaseID+".json")
+				data, err := json.MarshalIndent(result, "", "  ")
+				if err != nil {
+					logger.Warn("Failed to marshal trace", "case", result.CaseID, "error", err)
+					return
+				}
+				if err := os.WriteFile(tracePath, data, 0644); err != nil {
+					logger.Warn("Failed to write trace", "path", tracePath, "error", err)
+					return
+				}
+				logger.Info("Trace written", "path", tracePath, "turns", result.TurnCount)
+			}
+		}
+
+		runnerV2 := eval.NewRunnerV2(
+			eval.WithModelV2(evalModel),
+			eval.WithJudgeModelV2(judgeModel),
+			eval.WithSkillsDir(skillsDir),
+			eval.WithConfigV2(eval.RunConfigV2{
+				ModelName: evalModel.Info().Name,
+				MaxTurns:  25,
+				Timeout:   evalTimeout,
+				SkillsDir: skillsDir,
+				SuitePath: evalSuitePath,
+			}),
+			eval.WithResultCallback(resultCallback),
+			eval.WithLoggerV2(logger),
+		)
+
+		// Run evaluation
+		ctx := context.Background()
+		logger.Info("Running coordinator evaluation...")
+
+		summary, err := runnerV2.RunSuiteV2(ctx, cases)
+		if err != nil {
+			return fmt.Errorf("run suite: %w", err)
+		}
+
+		// Save recording if requested
+		if recorder != nil && evalRecordFile != "" {
+			if err := recorder.SaveToFile(evalRecordFile); err != nil {
+				return fmt.Errorf("save recording: %w", err)
+			}
+			logger.Info("Saved recording", "path", evalRecordFile)
+		}
+
+		// Print results
+		printSummary(summary)
+
+		// Print trace summary for failing tests with high turn counts
+		if evalTraceDir != "" {
+			for _, result := range summary.Results {
+				if !result.Passed && result.TurnCount > 30 {
+					printTraceSummary(result)
+				}
+			}
+		}
+
+		// Compare against baseline if requested
+		if evalCompare != "" {
+			if err := compareBaseline(evalCompare, summary, logger); err != nil {
+				return fmt.Errorf("compare baseline: %w", err)
+			}
+		}
+
+		// Save JSON output if requested
+		if evalOutputJSON != "" {
+			data, err := json.MarshalIndent(summary, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal summary: %w", err)
+			}
+			if err := os.WriteFile(evalOutputJSON, data, 0644); err != nil {
+				return fmt.Errorf("write output: %w", err)
+			}
+			logger.Info("Saved results", "path", evalOutputJSON)
+		}
+
+		// Exit with error code if any tests failed
+		if summary.PassedCases < summary.TotalCases {
+			return fmt.Errorf("%d of %d tests failed", summary.TotalCases-summary.PassedCases, summary.TotalCases)
+		}
+
+		return nil
+	}
+
+	// V1 mode - basic tool calling tests (original behavior)
+
+	// Build system instruction from bootstrap files (same as production agent)
+	systemInstruction, err := agent.BuildCoreInstruction(workspace)
+	if err != nil {
+		return fmt.Errorf("build system instruction: %w", err)
+	}
+	logger.Info("Loaded system instruction from bootstrap files", "workspace", workspace)
+
 	// Create runner
 	runner := eval.NewRunner(
 		eval.WithModel(evalModel),
 		eval.WithJudgeModel(judgeModel),
 		eval.WithTools(tools.DefaultTools(workspace)),
-		eval.WithSystemInstruction("You are a helpful AI assistant. Use the available tools to complete tasks."),
+		eval.WithSystemInstruction(systemInstruction),
 		eval.WithConfig(eval.RunConfig{
 			ModelName: evalModel.Info().Name,
 			MaxTurns:  10,
@@ -362,4 +493,62 @@ func compareBaseline(baselinePath string, current *eval.EvalSummary, logger *slo
 	}
 
 	return nil
+}
+
+// printTraceSummary prints a summary of execution trace for a failing test with high turn count.
+func printTraceSummary(result eval.EvalResult) {
+	fmt.Println()
+	fmt.Printf("  ═══ Trace Summary: [%s] %s (FAILED, %d turns) ═══\n", result.CaseID, result.CaseName, result.TurnCount)
+
+	// Count tool call frequencies
+	toolCounts := make(map[string]int)
+	for _, evt := range result.ExecutionTrace {
+		if evt.Type == "tool_call" {
+			toolCounts[evt.ToolName]++
+		}
+	}
+
+	// Print first few events
+	fmt.Println("  First 10 events:")
+	limit := 10
+	if len(result.ExecutionTrace) < limit {
+		limit = len(result.ExecutionTrace)
+	}
+	for i := 0; i < limit; i++ {
+		evt := result.ExecutionTrace[i]
+		if evt.Type == "text" {
+			content := evt.Content
+			if len(content) > 80 {
+				content = content[:80] + "..."
+			}
+			content = strings.ReplaceAll(content, "\n", " ")
+			fmt.Printf("    Turn %d: [text] %q\n", evt.Turn, content)
+		} else if evt.Type == "tool_call" {
+			fmt.Printf("    Turn %d: [tool_call] %s(...)\n", evt.Turn, evt.ToolName)
+		}
+	}
+	if len(result.ExecutionTrace) > limit {
+		fmt.Printf("    ... (%d more events)\n", len(result.ExecutionTrace)-limit)
+	}
+
+	// Print tool call frequency analysis
+	if len(toolCounts) > 0 {
+		fmt.Println("  Tool call frequencies:")
+		for tool, count := range toolCounts {
+			pct := float64(count) / float64(len(result.ExecutionTrace)) * 100
+			fmt.Printf("    - %s: %d calls (%.1f%%)\n", tool, count, pct)
+		}
+	}
+
+	// Detect patterns
+	if toolCounts["read"] > 50 {
+		fmt.Println("  ⚠ Pattern detected: Excessive read calls - coordinator may be stuck in investigation loop")
+	}
+	if len(toolCounts) == 1 {
+		for tool := range toolCounts {
+			fmt.Printf("  ⚠ Pattern detected: Only calling %s - may be stuck in a loop\n", tool)
+		}
+	}
+
+	fmt.Println()
 }
