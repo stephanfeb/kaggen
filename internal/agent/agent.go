@@ -891,9 +891,17 @@ func newCoordinatorReadTool(workspace string) tool.Tool {
 				}
 			}
 
-			// Check if path is a directory
+			// Check if path exists and if it's a directory
 			info, err := os.Stat(resolved)
 			if err != nil {
+				if os.IsNotExist(err) {
+					// Return file-not-found as a clear message, not an error
+					// This allows the LLM to inform the user instead of retrying
+					return &coordinatorReadResult{
+						Content: "",
+						Message: fmt.Sprintf("File not found: %s does not exist", path),
+					}, nil
+				}
 				return nil, fmt.Errorf("failed to stat path: %w", err)
 			}
 
