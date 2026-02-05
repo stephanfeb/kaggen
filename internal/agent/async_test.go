@@ -160,6 +160,7 @@ func TestAsyncDispatchMultiTurn(t *testing.T) {
 		completeFn: completeFn,
 		model:      mockModel,
 		logger:     logger,
+		maxTurns:   75,
 	}
 
 	// Dispatch the task
@@ -265,6 +266,7 @@ func TestAsyncDispatchLoopDetection(t *testing.T) {
 		completeFn: completeFn,
 		model:      alwaysToolCall,
 		logger:     logger,
+		maxTurns:   75,
 	}
 
 	_, dispErr := d.dispatch(context.Background(), asyncDispatchRequest{

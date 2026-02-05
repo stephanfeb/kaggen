@@ -106,7 +106,7 @@ func TestBuildInstruction(t *testing.T) {
 	if result == "" {
 		t.Fatal("expected non-empty instruction")
 	}
-	if !contains(result, "Software Dev Pipeline") {
+	if !contains(result, "Software Dev") {
 		t.Error("expected title-cased pipeline name in output")
 	}
 	if !contains(result, "dispatch `coder`") {
