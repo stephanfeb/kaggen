@@ -1,0 +1,192 @@
+# About Kaggen
+
+The system as a whole behaves like a personal assistant to the User or Operator.
+  The User will prompt the Coordinator via the gateway with open-ended instructions. E.g. "take a screenshot of the cnn.com" website. Or build me a landing page for my
+  coffee beans business.
+  It is the coordinators job to assess the instruction given, look within the available skills at it's disposable and attempt a solution to the user prompt. If unsure on
+  details the coordinator is meant to ask for clarification.
+  The coordinator is meant to be versatile, clever and inventive. If it assesses that it lacks a skill, it should realise that it can research the web using the browser
+  skill, install additional tools or download software to allow it to assemble the requisite skill (if needed) that would complement it's existing skills, and allow it
+  to complete the task set by the user.
+
+  So kaggen is not a tool-calling agent. It's a complete open-ended system that is meant to reason, engage in forward-planning and creative problem-solving.
+
+---
+  Critical Assessment: Kaggen vs. Its Stated Purpose
+
+  The Stated Vision
+
+  Kaggen aims to be:
+  1. A versatile personal assistant accepting open-ended instructions
+  2. Capable of forward-planning and creative problem-solving
+  3. Able to acquire new skills (research, install tools, download software)
+  4. Not a tool-calling agent — a complete reasoning system
+
+  ---
+  ✅ Strengths: Where Kaggen Delivers
+
+  1. Solid Coordinator/Delegation Architecture
+
+  The coordinator-with-specialist-agents pattern is well-implemented:
+  - Routing model (fast/cheap) handles triage
+  - Specialist sub-agents handle domain work
+  - dispatch_task enables async parallel execution
+  - Tool filtering per-skill prevents shortcuts
+
+  This is a proven pattern for agentic systems and works well for multi-domain tasks.
+
+  2. Excellent Clarification Logic
+
+  The instruction-embedded clarification rules (internal/agent/agent.go:buildInstruction) explicitly tell the coordinator when to ask vs. when to proceed. The eval suite tests
+  this (clarification.yaml). This prevents the "helpful but wrong" failure mode.
+
+  3. Hot-Reload Skill System
+
+  Adding skills requires no code changes — just drop a SKILL.md file and SIGHUP. The two-pass loading with guarded_tools support shows good engineering.
+
+  4. Human-in-the-Loop Safety
+
+  The maker-checker approval system with graph-based pause/resume is production-grade:
+  - Three tiers: guarded (approval required), notify (auto-execute but alert), auto-approved
+  - Audit trail for all decisions
+  - Mobile approval flow integration
+
+  5. Memory & Context
+
+  Semantic memory with vector + FTS5 search, auto-extraction of facts, and synthesis jobs addresses the "stateless agent" problem. The bootstrap hierarchy (SOUL.md → IDENTITY.md
+  → USER.md → MEMORY.md) is thoughtful.
+
+  ---
+  ⚠️ Weaknesses: Where Kaggen Falls Short
+
+  1. Skill Acquisition is Passive, Not Active
+
+  The stated purpose claims Kaggen can:
+  "research the web using the browser skill, install additional tools or download software to allow it to assemble the requisite skill"
+
+  Reality: There's no evidence of autonomous skill synthesis. The system can:
+  - Use existing browser tools to research
+  - Execute exec to install packages
+
+  But there's no mechanism for:
+  - Dynamically creating a new SKILL.md file based on a discovered need
+  - Self-modifying its own skill library
+  - Evaluating whether a new capability would solve the current problem
+
+  The skill system is extensible by humans, not by the agent itself. This is a fundamental gap between aspiration and implementation.
+
+  Fix needed: A skill_create or skill_synthesize tool that allows the coordinator to:
+  1. Recognize a capability gap
+  2. Research how to fill it
+  3. Generate a new SKILL.md
+  4. Hot-reload itself
+
+  2. Forward-Planning is Structural, Not Strategic
+
+  The planning capabilities are:
+  - backlog_decompose — breaks tasks into subtasks
+  - Pipelines — predefined multi-stage workflows
+
+  This is operational planning (how to execute), not strategic reasoning (what approach to take). The coordinator's decision-making is reactive:
+
+  1. User says X
+  2. Match to skill or decompose
+  3. Execute
+
+  Missing: deliberation phases where the agent:
+  - Considers multiple solution approaches
+  - Evaluates trade-offs
+  - Selects based on constraints
+  - Revises plans based on intermediate results
+
+  The supervisor (internal/agent/supervisor.go) monitors for problems but doesn't enable plan revision — it just detects failure modes.
+
+  3. Coordinator is a Router, Not a Reasoner
+
+  The stated purpose says:
+  "not a tool-calling agent... a complete open-ended system that is meant to reason"
+
+  Reality: The coordinator is explicitly designed as a routing model (fast/cheap, like Haiku). From agent.go:
+
+  // Coordinator: routing model (fast/cheap) for triage
+
+  A routing model optimizes for speed and cost, not deep reasoning. The coordinator:
+  - Maps requests to skills
+  - Dispatches tasks
+  - Aggregates results
+
+  It does not:
+  - Engage in multi-step reasoning before delegation
+  - Maintain a world model
+  - Reason about its own capabilities
+
+  The sub-agents (specialists) may do deeper work, but the orchestration layer is thin.
+
+  4. Tool Restrictions Limit Creative Problem-Solving
+
+  Per-skill tool filtering (tools: [exec] in SKILL.md) is a safety feature, but it also limits creativity. If a coder agent can only exec and not write, it must use cat > file
+  patterns instead of proper file operations.
+
+  More importantly, skills are predefined compartments. If a task requires combining capabilities in a novel way not anticipated by skill definitions, the system struggles.
+
+  5. No Explicit "Inventiveness" Mechanism
+
+  The stated purpose emphasizes being "clever and inventive." There's no architectural support for:
+  - Exploration — trying multiple approaches when unsure
+  - Analogy — applying solutions from one domain to another
+  - Synthesis — combining partial solutions into novel wholes
+
+  The system is competent within its skills but not generatively creative.
+
+  6. Browser/Research Capability is Underdeveloped
+
+  The browser tools exist (browser_navigate, browser_screenshot, etc.) but are marked "optional" and there's no evidence of sophisticated web research workflows. For the claim:
+
+  "research the web using the browser skill, install additional tools"
+
+  The browser skill would need to be a first-class, always-available capability with:
+  - Search synthesis (multiple sources)
+  - Documentation extraction
+  - Tool/library discovery
+
+  Currently it appears to be a peripheral capability, not a core research engine.
+
+  ---
+  📊 Assessment Summary
+  ┌──────────────────────────────┬───────────────────────┬────────────────────────────────────┐
+  │      Stated Capability       │ Implementation Status │                Gap                 │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ Personal assistant           │ ✅ Solid              │ —                                  │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ Open-ended instructions      │ ✅ Good               │ —                                  │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ Skill-based delegation       │ ✅ Excellent          │ —                                  │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ Ask for clarification        │ ✅ Good               │ —                                  │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ Forward-planning             │ ⚠️ Partial            │ Strategic reasoning missing        │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ Creative problem-solving     │ ⚠️ Weak               │ No exploration/synthesis           │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ Autonomous skill acquisition │ ❌ Missing            │ Human-only skill creation          │
+  ├──────────────────────────────┼───────────────────────┼────────────────────────────────────┤
+  │ "Not a tool-calling agent"   │ ❌ Contradiction      │ Coordinator is explicitly a router │
+  └──────────────────────────────┴───────────────────────┴────────────────────────────────────┘
+  ---
+  Verdict
+
+  Kaggen is a well-engineered agentic framework — the coordinator/specialist pattern, async dispatch, human approval, and hot-reload are production-quality.
+
+  But it doesn't yet fulfill its aspirational vision. It's currently:
+  - A skill orchestration system (excellent)
+  - A tool-calling agent with good UX (very good)
+  - A reasoning system with autonomous skill acquisition (no)
+
+  The gap between "versatile skill router" and "creative reasoning system that acquires its own capabilities" is substantial. Closing it would require:
+
+  1. Skill synthesis tooling — let the agent create skills
+  2. Deliberation architecture — explicit reasoning phases before action
+  3. Plan revision — update approach based on feedback
+  4. Exploration budget — try multiple approaches when uncertain
+
+  The foundation is solid, but the cognitive architecture for "clever and inventive" open-ended reasoning isn't there yet.
