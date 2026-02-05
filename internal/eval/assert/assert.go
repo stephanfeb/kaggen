@@ -77,9 +77,10 @@ type Config struct {
 	MaxCount *int           `yaml:"max_count,omitempty" json:"max_count,omitempty"`
 
 	// Clarification assertion fields
-	Required  *bool `yaml:"required,omitempty" json:"required,omitempty"`
-	Forbidden *bool `yaml:"forbidden,omitempty" json:"forbidden,omitempty"`
-	About     string `yaml:"about,omitempty" json:"about,omitempty"` // topic for clarification
+	Required  *bool  `yaml:"required,omitempty" json:"required,omitempty"`
+	Forbidden *bool  `yaml:"forbidden,omitempty" json:"forbidden,omitempty"`
+	Optional  *bool  `yaml:"optional,omitempty" json:"optional,omitempty"` // pass either way
+	About     string `yaml:"about,omitempty" json:"about,omitempty"`       // topic for clarification
 }
 
 // Assertion evaluates one aspect of agent behavior.

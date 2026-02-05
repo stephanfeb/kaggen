@@ -79,3 +79,27 @@
   assert:
     - type: asked-clarification
       required: true
+
+- id: "clarify-008"
+  name: "Partial information provided"
+  description: "Coordinator asks for missing piece when partial info given"
+  category: clarification
+  user_message: "Write 'Hello World' to a file"
+  # Content provided but filename missing
+  assert:
+    - type: asked-clarification
+      required: true
+
+- id: "clarify-009"
+  name: "Ambiguous action"
+  description: "Coordinator clarifies when action is ambiguous"
+  category: clarification
+  user_message: "Update the port"
+  context:
+    files:
+      "config.yaml": |
+        port: 8080
+  # File exists but what value to update to?
+  assert:
+    - type: asked-clarification
+      required: true

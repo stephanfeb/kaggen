@@ -105,7 +105,9 @@ Before writing tests, understand how kaggen works:
 
 ## Test Case Structure
 
-Test cases are defined in YAML files with the following structure:
+Test cases are defined in YAML files. There are two formats: **single-turn** (simple) and **multi-turn** (conversational).
+
+### Single-Turn Format (Default)
 
 ```yaml
 - id: "unique-id"                    # Required: Unique identifier
@@ -125,6 +127,44 @@ Test cases are defined in YAML files with the following structure:
       required: true
 ```
 
+### Multi-Turn Format (Conversational)
+
+For testing conversations where the coordinator may ask for clarification:
+
+```yaml
+- id: "context-001"
+  name: "Multi-turn clarification flow"
+  description: "Coordinator asks clarification, then answers"
+  category: context
+  context:
+    files:
+      "config.yaml": |
+        server:
+          port: 8080
+          debug: true
+  turns:
+    - user: "Is debug mode enabled in the config?"
+      assert:
+        - type: asked-clarification
+          required: true
+    - user: "config.yaml"
+      assert:
+        - type: llm-rubric
+          rubric: "Response identifies debug mode is enabled"
+          min_score: 0.7
+```
+
+**How multi-turn works:**
+1. Each turn sends a user message and waits for the coordinator to respond
+2. Assertions are evaluated after each turn completes
+3. If a turn's assertions fail, the test stops (subsequent turns are not executed)
+4. The session context is preserved across turns (the coordinator remembers previous messages)
+
+**When to use multi-turn:**
+- Testing clarification flows (coordinator asks a question, user provides answer)
+- Testing conversational context (follow-up questions)
+- Testing multi-step interactions where the user guides the coordinator
+
 ### Field Reference
 
 | Field | Required | Type | Description |
@@ -133,11 +173,16 @@ Test cases are defined in YAML files with the following structure:
 | `name` | Yes | string | Human-readable test name |
 | `description` | No | string | Detailed description of what's being tested |
 | `category` | No | string | Category for filtering (e.g., "skill_selection") |
-| `user_message` | Yes | string | The instruction sent to the coordinator |
+| `user_message` | * | string | The instruction sent to the coordinator (single-turn) |
+| `turns` | * | list | List of conversation turns (multi-turn) |
+| `turns[].user` | Yes | string | User message for this turn |
+| `turns[].assert` | No | list | Assertions to run after this turn |
 | `timeout` | No | duration | Test timeout (default: 5m) |
 | `context.files` | No | map | Files to create in the test workspace |
 | `context.env` | No | map | Environment variables to set |
-| `assert` | Yes | list | Assertions to evaluate |
+| `assert` | * | list | Assertions to evaluate (single-turn) |
+
+\* Either `user_message` + `assert` (single-turn) OR `turns` (multi-turn) is required
 
 ---
 
@@ -187,18 +232,24 @@ Tests whether the coordinator asked for clarification.
 - type: asked-clarification
   required: true
   about: "which file"
+
+# Accept either behavior (pass whether or not clarification was asked)
+- type: asked-clarification
+  optional: true
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `required` | bool | true | Must ask for clarification |
 | `forbidden` | bool | false | Must NOT ask for clarification |
+| `optional` | bool | false | Pass either way (for variable LLM behavior) |
 | `about` | string | "" | Clarification must mention this topic (case-insensitive) |
 
 **When to use:**
 - Testing ambiguous instruction handling
 - Verifying clear instructions proceed without interruption
 - Ensuring clarification questions are relevant
+- Use `optional: true` when LLM behavior varies (may or may not ask for clarification)
 
 ### contains
 
@@ -1126,15 +1177,131 @@ user_message: "Update the config"
 
 ---
 
+## Multi-Turn Conversation Examples
+
+Multi-turn tests are powerful for testing conversational flows where the coordinator may ask for clarification or require follow-up information.
+
+### Basic Clarification Flow
+
+```yaml
+# Test that coordinator asks for clarification, then answers correctly
+- id: "multi-clarify-001"
+  name: "Clarification then answer"
+  category: multi_turn
+  context:
+    files:
+      "config.yaml": |
+        debug: true
+        port: 8080
+  turns:
+    - user: "Is debug mode enabled in the config?"
+      assert:
+        - type: asked-clarification
+          required: true
+          about: "which"
+    - user: "config.yaml"
+      assert:
+        - type: contains
+          value: "debug"
+        - type: llm-rubric
+          rubric: "Response indicates debug mode is enabled or true"
+          min_score: 0.7
+```
+
+### Multi-Step Task with Confirmation
+
+```yaml
+# Test a multi-step interaction
+- id: "multi-step-001"
+  name: "Create file with confirmation"
+  category: multi_turn
+  turns:
+    - user: "Create a new configuration file"
+      assert:
+        - type: asked-clarification
+          required: true
+    - user: "Name it app-config.yaml with port 3000"
+      assert:
+        - type: skill-selected
+          skill: file_writer
+          required: true
+    - user: "What port did you configure?"
+      assert:
+        - type: contains
+          value: "3000"
+```
+
+### Context-Aware Follow-Up
+
+```yaml
+# Test that coordinator remembers previous context
+- id: "multi-context-001"
+  name: "Context-aware follow-up"
+  category: multi_turn
+  context:
+    files:
+      "users.json": |
+        [
+          {"name": "Alice", "role": "admin"},
+          {"name": "Bob", "role": "user"}
+        ]
+  turns:
+    - user: "Read the users.json file"
+      assert:
+        - type: contains
+          value: "Alice"
+        - type: contains
+          value: "Bob"
+    - user: "Who is the admin?"
+      assert:
+        - type: contains
+          value: "Alice"
+        - type: llm-rubric
+          rubric: "Response correctly identifies Alice as the admin based on previously read file"
+          min_score: 0.8
+```
+
+### Error Recovery Flow
+
+```yaml
+# Test handling of errors with user guidance
+- id: "multi-error-001"
+  name: "Handle missing file then retry"
+  category: multi_turn
+  context:
+    files:
+      "backup-config.yaml": "port: 9000"
+  turns:
+    - user: "Read the main config file"
+      assert:
+        - type: llm-rubric
+          rubric: "Response indicates the file was not found or doesn't exist"
+          min_score: 0.7
+    - user: "Try backup-config.yaml instead"
+      assert:
+        - type: contains
+          value: "9000"
+```
+
+### Best Practices for Multi-Turn Tests
+
+1. **Keep conversations focused**: Each multi-turn test should verify one conversational pattern
+2. **Use meaningful assertions per turn**: Don't just check the final turn - verify intermediate states
+3. **Test the happy path and error cases**: Multi-turn is great for testing error recovery
+4. **Consider context preservation**: The coordinator should remember what was discussed
+
+---
+
 ## Summary
 
 Writing effective coordinator tests requires understanding:
 
 1. **Kaggen's architecture**: Coordinator + Skills, not simple tool calling
-2. **Test structure**: YAML format with assertions
+2. **Test formats**: Single-turn (simple) and multi-turn (conversational) YAML formats
 3. **Assertion types**: `skill-selected`, `asked-clarification`, `contains`, `llm-rubric`, etc.
 4. **Test skills**: Minimal, focused skill definitions
 5. **Categories**: Skill selection, clarification, delegation, reasoning
-6. **Best practices**: One behavior per test, realistic messages, minimal context
+6. **Multi-turn tests**: For clarification flows and conversational interactions
+7. **Best practices**: One behavior per test, realistic messages, minimal context
 
 Start with the examples in this guide, then expand to cover your specific use cases.

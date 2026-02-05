@@ -1,0 +1,36 @@
+# Context Understanding Tests
+# Tests coordinator's ability to understand and use file content for answers
+
+- id: "context-001"
+  name: "Use file content for decisions"
+  description: "Coordinator finds and reads config file to answer question, or asks for clarification"
+  category: context
+  context:
+    files:
+      "config.yaml": |
+        server:
+          port: 8080
+          debug: true
+  user_message: "Is debug mode enabled in the config?"
+  assert:
+    - type: llm-rubric
+      rubric: "Response either (1) correctly identifies that debug mode is enabled/true, OR (2) asks a clarifying question about which config file to check. Both behaviors are acceptable."
+      min_score: 0.7
+
+- id: "context-002"
+  name: "Find specific value in structured data"
+  description: "Coordinator should extract specific values from JSON"
+  category: context
+  user_message: "What is the database host?"
+  context:
+    files:
+      "config.json": |
+        {
+          "database": {
+            "host": "db.example.com",
+            "port": 5432
+          }
+        }
+  assert:
+    - type: contains
+      value: "db.example.com"

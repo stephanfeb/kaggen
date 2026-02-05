@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 
 	"github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/memory"
@@ -18,6 +20,7 @@ import (
 // SystemUnderTest wraps the production-equivalent agent system for eval testing.
 type SystemUnderTest struct {
 	Agent      *agent.Agent
+	Runner     runner.Runner // trpc runner with session persistence
 	Workspace  string
 	SkillsDir  string
 	SkillNames []string // Names of loaded skills for tracking sync delegation
@@ -107,8 +110,15 @@ func New(cfg Config) (*SystemUnderTest, error) {
 		return nil, fmt.Errorf("build agent: %w", err)
 	}
 
+	// Create a trpc runner with in-memory session service for conversation persistence.
+	// This mirrors production behavior (gateway/handler.go) where the runner handles
+	// loading and saving session history between turns automatically.
+	sessionService := inmemory.NewSessionService()
+	r := runner.NewRunner("eval", ag, runner.WithSessionService(sessionService))
+
 	return &SystemUnderTest{
 		Agent:      ag,
+		Runner:     r,
 		Workspace:  workspace,
 		SkillsDir:  cfg.SkillsDir,
 		SkillNames: skillNames,

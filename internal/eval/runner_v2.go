@@ -10,9 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/model"
-	trpcsession "trpc.group/trpc-go/trpc-agent-go/session"
 
 	"github.com/yourusername/kaggen/internal/eval/assert"
 	"github.com/yourusername/kaggen/internal/eval/sut"
@@ -164,14 +162,6 @@ func (r *RunnerV2) RunCaseV2(ctx context.Context, tc EvalCase) (*EvalResult, err
 	}
 	defer system.Cleanup()
 
-	// Create observer to track coordinator behavior
-	observer := NewCoordinatorObserver()
-
-	// Register skill names so observer can detect sync member tool calls
-	if len(system.SkillNames) > 0 {
-		observer.SetSkillNames(system.SkillNames)
-	}
-
 	// Set up timeout
 	timeout := r.config.Timeout
 	if tc.Timeout > 0 {
@@ -180,160 +170,198 @@ func (r *RunnerV2) RunCaseV2(ctx context.Context, tc EvalCase) (*EvalResult, err
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Create invocation
-	inv := agent.NewInvocation(
-		agent.WithInvocationAgent(system.Agent),
-		agent.WithInvocationMessage(model.Message{
-			Role:    model.RoleUser,
-			Content: tc.UserMessage,
-		}),
-		agent.WithInvocationModel(r.model),
-		agent.WithInvocationSession(&trpcsession.Session{
-			ID:     "eval-v2-" + tc.ID,
-			UserID: "eval-user",
-		}),
-	)
-	ctx = agent.NewInvocationContext(ctx, inv)
+	// Get conversation turns (handles both single-turn and multi-turn formats)
+	conversationTurns := tc.GetConversationTurns()
 
-	// Run the coordinator
-	evCh, err := system.Agent.Run(ctx, inv)
-	if err != nil {
-		return &EvalResult{
-			CaseID:   tc.ID,
-			CaseName: tc.Name,
-			Passed:   false,
-			Errors:   []string{fmt.Sprintf("coordinator run failed: %v", err)},
-			Duration: time.Since(startTime),
-		}, nil
-	}
+	// Session ID for this test case - the trpc runner handles session persistence
+	// automatically via the inmemory session service created in the SUT
+	sessionID := "eval-v2-" + tc.ID
+	userID := "eval-user"
 
-	// Collect events and track coordinator behavior
+	// Aggregate results across all conversation turns
+	var allAssertResults []AssertResult
+	var allToolCalls []RecordedToolCall
+	var allTrace []TraceEvent
+	var turnResults []TurnResult
+	var totalTurnCount int
 	var finalOutput string
-	var turnCount int
-	var toolCalls []RecordedToolCall
-	var trace []TraceEvent
+	allPassed := true
 
-	for evt := range evCh {
-		// Debug logging for all events
-		if evt == nil {
-			continue
+	// Process each conversation turn
+	for turnIdx, convTurn := range conversationTurns {
+		// Create observer for this turn
+		observer := NewCoordinatorObserver()
+		if len(system.SkillNames) > 0 {
+			observer.SetSkillNames(system.SkillNames)
 		}
 
-		// Log raw event for debugging
-		hasResponse := evt.Response != nil
-		hasChoices := hasResponse && len(evt.Response.Choices) > 0
-		var contentLen, toolCallCount int
-		if hasChoices {
-			contentLen = len(evt.Response.Choices[0].Message.Content)
-			toolCallCount = len(evt.Response.Choices[0].Message.ToolCalls)
+		// Create user message for this turn
+		userMessage := model.NewUserMessage(convTurn.User)
+
+		// Run the coordinator using the trpc runner.
+		// The runner automatically loads session history from the inmemory session service,
+		// preserving conversation context across turns (matching production behavior).
+		evCh, err := system.Runner.Run(ctx, userID, sessionID, userMessage)
+		if err != nil {
+			return &EvalResult{
+				CaseID:      tc.ID,
+				CaseName:    tc.Name,
+				Passed:      false,
+				Errors:      []string{fmt.Sprintf("turn %d: coordinator run failed: %v", turnIdx+1, err)},
+				Duration:    time.Since(startTime),
+				TurnResults: turnResults,
+			}, nil
 		}
-		slog.Debug("Eval event received",
-			"hasResponse", hasResponse,
-			"hasChoices", hasChoices,
-			"contentLen", contentLen,
-			"toolCallCount", toolCallCount)
 
-		if evt.Response != nil {
-			turnCount++
-			if len(evt.Response.Choices) > 0 {
-				msg := evt.Response.Choices[0].Message
+		// Collect events for this turn
+		var turnOutput string
+		var turnToolCalls []RecordedToolCall
+		var turnTrace []TraceEvent
+		var turnEventCount int
 
-				// Extract text content (capture all text, even when tool calls present)
-				if msg.Content != "" {
-					finalOutput = msg.Content
-					observer.RecordResponse(msg.Content)
+		for evt := range evCh {
+			if evt == nil {
+				continue
+			}
 
-					// Add to execution trace
-					trace = append(trace, TraceEvent{
-						Turn:      turnCount,
-						Timestamp: time.Now(),
-						Type:      "text",
-						Content:   msg.Content,
-					})
-				}
+			if evt.Response != nil {
+				turnEventCount++
+				totalTurnCount++
 
-				// Extract tool calls and track them
-				for _, tc := range msg.ToolCalls {
-					var args map[string]any
-					if len(tc.Function.Arguments) > 0 {
-						json.Unmarshal(tc.Function.Arguments, &args)
+				if len(evt.Response.Choices) > 0 {
+					msg := evt.Response.Choices[0].Message
+
+					// Extract text content
+					if msg.Content != "" {
+						turnOutput = msg.Content
+						finalOutput = msg.Content
+						observer.RecordResponse(msg.Content)
+
+						turnTrace = append(turnTrace, TraceEvent{
+							Turn:      totalTurnCount,
+							Timestamp: time.Now(),
+							Type:      "text",
+							Content:   msg.Content,
+						})
 					}
 
-					// Record in our tool calls list
-					toolCalls = append(toolCalls, RecordedToolCall{
-						ID:   tc.ID,
-						Name: tc.Function.Name,
-						Args: args,
-					})
+					// Extract tool calls
+					for _, toolCall := range msg.ToolCalls {
+						var args map[string]any
+						if len(toolCall.Function.Arguments) > 0 {
+							json.Unmarshal(toolCall.Function.Arguments, &args)
+						}
 
-					// Also record in observer for coordinator-level tracking
-					observer.RecordToolCall(tc.ID, tc.Function.Name, args)
+						recorded := RecordedToolCall{
+							ID:   toolCall.ID,
+							Name: toolCall.Function.Name,
+							Args: args,
+						}
+						turnToolCalls = append(turnToolCalls, recorded)
+						observer.RecordToolCall(toolCall.ID, toolCall.Function.Name, args)
 
-					// Add to execution trace
-					trace = append(trace, TraceEvent{
-						Turn:      turnCount,
-						Timestamp: time.Now(),
-						Type:      "tool_call",
-						ToolName:  tc.Function.Name,
-						ToolArgs:  args,
-					})
+						turnTrace = append(turnTrace, TraceEvent{
+							Turn:      totalTurnCount,
+							Timestamp: time.Now(),
+							Type:      "tool_call",
+							ToolName:  toolCall.Function.Name,
+							ToolArgs:  args,
+						})
+					}
 				}
 			}
 		}
+
+		observer.Finish()
+
+		// Accumulate tool calls and trace
+		allToolCalls = append(allToolCalls, turnToolCalls...)
+		allTrace = append(allTrace, turnTrace...)
+
+		// Run assertions for this turn if any are defined
+		var turnAssertResults []AssertResult
+		turnPassed := true
+
+		if len(convTurn.Assert) > 0 {
+			assertCtx := &assert.Context{
+				Instruction:      convTurn.User,
+				Response:         turnOutput,
+				ToolCalls:        convertToolCalls(turnToolCalls),
+				TurnCount:        turnEventCount,
+				Duration:         time.Since(startTime),
+				SkillsDispatched: convertSkillsDispatched(observer.SkillsDispatched),
+				Clarifications:   observer.Clarifications,
+				AllResponses:     observer.Responses,
+			}
+
+			assertions, err := assert.FromConfigs(convTurn.Assert)
+			if err != nil {
+				return &EvalResult{
+					CaseID:      tc.ID,
+					CaseName:    tc.Name,
+					Passed:      false,
+					Errors:      []string{fmt.Sprintf("turn %d: parse assertions: %v", turnIdx+1, err)},
+					Duration:    time.Since(startTime),
+					TurnResults: turnResults,
+				}, nil
+			}
+
+			turnAssertResults = assert.EvaluateAll(assertions, assertCtx)
+			turnPassed = assert.AllPassed(turnAssertResults)
+			allAssertResults = append(allAssertResults, turnAssertResults...)
+		}
+
+		// Record turn result
+		turnResults = append(turnResults, TurnResult{
+			TurnIndex:   turnIdx,
+			UserMessage: convTurn.User,
+			Response:    turnOutput,
+			Assertions:  turnAssertResults,
+			Passed:      turnPassed,
+			ToolCalls:   turnToolCalls,
+		})
+
+		if !turnPassed {
+			allPassed = false
+			// Stop processing further turns if this turn's assertions failed
+			slog.Info("Multi-turn conversation stopped due to failed assertion",
+				"case", tc.ID,
+				"turn", turnIdx+1,
+				"totalTurns", len(conversationTurns))
+			break
+		}
+
+		slog.Debug("Conversation turn completed",
+			"case", tc.ID,
+			"turn", turnIdx+1,
+			"totalTurns", len(conversationTurns),
+			"response", turnOutput[:min(len(turnOutput), 100)])
 	}
 
-	observer.Finish()
 	duration := time.Since(startTime)
 
-	// Log summary of what was captured
-	slog.Info("Event processing complete",
+	// Log summary
+	slog.Info("Eval case complete",
 		"case", tc.ID,
-		"turns", turnCount,
-		"traceEvents", len(trace),
-		"toolCalls", len(toolCalls),
-		"finalOutputLen", len(finalOutput),
-		"responses", len(observer.Responses),
-		"clarifications", len(observer.Clarifications))
+		"multiTurn", tc.IsMultiTurn(),
+		"conversationTurns", len(turnResults),
+		"totalEvents", totalTurnCount,
+		"passed", allPassed)
 
-	// Build assertion context with coordinator-level data
-	assertCtx := &assert.Context{
-		Instruction:      tc.UserMessage,
-		Response:         finalOutput,
-		ToolCalls:        convertToolCalls(toolCalls),
-		TurnCount:        turnCount,
-		Duration:         duration,
-		SkillsDispatched: convertSkillsDispatched(observer.SkillsDispatched),
-		Clarifications:   observer.Clarifications,
-		AllResponses:     observer.Responses,
-	}
-
-	// Parse and run assertions
-	assertions, err := assert.FromConfigs(tc.Assert)
-	if err != nil {
-		return &EvalResult{
-			CaseID:   tc.ID,
-			CaseName: tc.Name,
-			Passed:   false,
-			Errors:   []string{fmt.Sprintf("parse assertions: %v", err)},
-			Duration: duration,
-		}, nil
-	}
-
-	assertResults := assert.EvaluateAll(assertions, assertCtx)
-	passed := assert.AllPassed(assertResults)
-	score := assert.ComputeScore(assertResults)
+	score := assert.ComputeScore(allAssertResults)
 
 	return &EvalResult{
 		CaseID:         tc.ID,
 		CaseName:       tc.Name,
-		Passed:         passed,
+		Passed:         allPassed,
 		Score:          score,
-		Assertions:     assertResults,
-		TurnCount:      turnCount,
+		Assertions:     allAssertResults,
+		TurnResults:    turnResults,
+		TurnCount:      totalTurnCount,
 		Duration:       duration,
-		ToolCalls:      toolCalls,
+		ToolCalls:      allToolCalls,
 		FinalOutput:    finalOutput,
-		ExecutionTrace: trace,
+		ExecutionTrace: allTrace,
 	}, nil
 }
 

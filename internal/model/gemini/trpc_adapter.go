@@ -79,10 +79,12 @@ func (a *Adapter) Info() model.Info {
 
 // convertRequest converts a trpc model.Request to our internal API request format.
 func (a *Adapter) convertRequest(req *model.Request) (*apiRequest, error) {
+	temp := 0.7
 	apiReq := &apiRequest{
 		GenerationConfig: &apiGenerationConfig{
-            MaxOutputTokens: 8192,
-        },
+			MaxOutputTokens: 8192,
+			Temperature:     &temp,
+		},
 	}
 
 	// Set max tokens if specified

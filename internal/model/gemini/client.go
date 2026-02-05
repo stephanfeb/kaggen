@@ -90,7 +90,8 @@ type apiRequest struct {
 }
 
 type apiGenerationConfig struct {
-	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
 }
 
 // apiResponse represents a response from the Gemini API.
@@ -117,10 +118,12 @@ func (c *Client) Generate(ctx context.Context, messages []protocol.Message, tool
 	systemPrompt, apiContents := c.convertMessages(messages)
 
 	// Build request
+	temp := 0.7
 	req := &apiRequest{
 		Contents: apiContents,
 		GenerationConfig: &apiGenerationConfig{
 			MaxOutputTokens: 8192,
+			Temperature:     &temp,
 		},
 	}
 

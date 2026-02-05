@@ -82,15 +82,41 @@ func validateCases(cases []EvalCase, source string) ([]EvalCase, error) {
 		if c.ID == "" {
 			return nil, fmt.Errorf("case %d in %s: missing 'id' field", i, source)
 		}
-		if c.UserMessage == "" {
-			return nil, fmt.Errorf("case %q in %s: missing 'user_message' field", c.ID, source)
+
+		// Validate input: either user_message (single-turn) or turns (multi-turn)
+		if c.UserMessage == "" && len(c.Turns) == 0 {
+			return nil, fmt.Errorf("case %q in %s: missing 'user_message' or 'turns' field", c.ID, source)
 		}
-		if len(c.Assert) == 0 {
-			return nil, fmt.Errorf("case %q in %s: missing 'assert' field", c.ID, source)
-		}
-		for j, a := range c.Assert {
-			if a.Type == "" {
-				return nil, fmt.Errorf("case %q assertion %d in %s: missing 'type' field", c.ID, j, source)
+
+		// Validate multi-turn structure
+		if len(c.Turns) > 0 {
+			hasAssertions := false
+			for j, turn := range c.Turns {
+				if turn.User == "" {
+					return nil, fmt.Errorf("case %q turn %d in %s: missing 'user' field", c.ID, j, source)
+				}
+				if len(turn.Assert) > 0 {
+					hasAssertions = true
+					for k, a := range turn.Assert {
+						if a.Type == "" {
+							return nil, fmt.Errorf("case %q turn %d assertion %d in %s: missing 'type' field", c.ID, j, k, source)
+						}
+					}
+				}
+			}
+			// Multi-turn must have at least one assertion somewhere
+			if !hasAssertions && len(c.Assert) == 0 {
+				return nil, fmt.Errorf("case %q in %s: multi-turn case must have assertions in at least one turn", c.ID, source)
+			}
+		} else {
+			// Single-turn: require top-level assertions
+			if len(c.Assert) == 0 {
+				return nil, fmt.Errorf("case %q in %s: missing 'assert' field", c.ID, source)
+			}
+			for j, a := range c.Assert {
+				if a.Type == "" {
+					return nil, fmt.Errorf("case %q assertion %d in %s: missing 'type' field", c.ID, j, source)
+				}
 			}
 		}
 	}

@@ -936,7 +936,9 @@ kaggen eval -s testdata/eval/coordinator --coordinator -o results.json
 
 #### Coordinator Tests (V2)
 
-Coordinator tests verify skill selection, clarification behavior, and delegation patterns:
+Coordinator tests verify skill selection, clarification behavior, and delegation patterns. Tests support both **single-turn** and **multi-turn** formats.
+
+**Single-turn tests** (simple):
 
 ```yaml
 # testdata/eval/coordinator/skill_selection.yaml
@@ -950,7 +952,40 @@ Coordinator tests verify skill selection, clarification behavior, and delegation
       required: true
     - type: contains
       value: "345"
+```
 
+**Multi-turn tests** (conversational flows):
+
+```yaml
+# testdata/eval/coordinator/context.yaml
+- id: "context-001"
+  name: "Clarification then answer"
+  category: context
+  context:
+    files:
+      "config.yaml": |
+        debug: true
+        port: 8080
+  turns:
+    - user: "Is debug mode enabled in the config?"
+      assert:
+        - type: asked-clarification
+          required: true
+    - user: "config.yaml"
+      assert:
+        - type: llm-rubric
+          rubric: "Response identifies debug mode is enabled"
+          min_score: 0.7
+```
+
+Multi-turn tests are useful for:
+- Testing clarification flows (coordinator asks, user answers)
+- Testing conversational context (follow-up questions)
+- Testing error recovery (file not found, retry with different file)
+
+**Clarification tests:**
+
+```yaml
 # testdata/eval/coordinator/clarification.yaml
 - id: "clarify-001"
   name: "Ask clarification for ambiguous file"
@@ -1156,10 +1191,18 @@ testdata/eval/
 
 **For coordinator tests (V2):**
 1. Create YAML files under `testdata/eval/coordinator/`
-2. Test skill selection with `skill-selected` assertions
-3. Test clarification behavior with `asked-clarification` assertions
-4. Use `context.files` to create workspace files for context-dependent tests
-5. Combine with `contains` or `llm-rubric` to verify output quality
+2. Use `user_message` + `assert` for single-turn tests
+3. Use `turns` array for multi-turn conversational tests
+4. Test skill selection with `skill-selected` assertions
+5. Test clarification behavior with `asked-clarification` assertions
+6. Use `context.files` to create workspace files for context-dependent tests
+7. Combine with `contains` or `llm-rubric` to verify output quality
+
+**For multi-turn tests:**
+- Each turn has a `user` message and optional `assert` list
+- Session context is preserved across turns
+- Test stops if any turn's assertions fail
+- Great for clarification flows and follow-up interactions
 
 **For basic tests (V1):**
 1. Create YAML files under `testdata/eval/<category>/`
