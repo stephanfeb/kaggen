@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	memorytool "trpc.group/trpc-go/trpc-agent-go/memory/tool"
@@ -92,6 +93,7 @@ type serviceOpts struct {
 	asyncMemoryNum    int
 	memoryQueueSize   int
 	memoryJobTimeout  time.Duration
+	enqueueRetryWait  time.Duration // How long to wait when queue is full before dropping (0 = no retry)
 	model             tmodel.Model
 	synthesisInterval time.Duration
 }
@@ -146,6 +148,13 @@ func WithMemoryQueueSize(n int) ServiceOpt {
 // WithMemoryJobTimeout sets the timeout for each extraction job.
 func WithMemoryJobTimeout(d time.Duration) ServiceOpt {
 	return func(o *serviceOpts) { o.memoryJobTimeout = d }
+}
+
+// WithEnqueueRetryWait sets how long to wait when the extraction queue is full
+// before dropping the job. Default is 0 (no retry, immediate drop).
+// Setting this to a small value like 500ms allows brief queue pressure to clear.
+func WithEnqueueRetryWait(d time.Duration) ServiceOpt {
+	return func(o *serviceOpts) { o.enqueueRetryWait = d }
 }
 
 // WithModel provides a model for background synthesis.
@@ -227,6 +236,7 @@ func NewFileMemoryService(
 			AsyncMemoryNum:   sopts.asyncMemoryNum,
 			MemoryQueueSize:  sopts.memoryQueueSize,
 			MemoryJobTimeout: sopts.memoryJobTimeout,
+			EnqueueRetryWait: sopts.enqueueRetryWait,
 		}
 		svc.autoWorker = newAutoMemoryWorker(cfg, svc, logger)
 		svc.autoWorker.Start()
@@ -632,4 +642,127 @@ func buildEntry(id, appName, userID, content, topicsJSON string, createdAt, upda
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
 	}
+}
+
+// BeforeCompaction implements session.CompactionHook.
+// It performs synchronous memory extraction from events that are about to be
+// removed during session compaction. This prevents memory loss when async
+// extraction hasn't completed before compaction.
+func (s *FileMemoryService) BeforeCompaction(ctx context.Context, sess *session.Session, eventsToRemove []event.Event) error {
+	if s.opts.extractor == nil {
+		// No extractor configured - nothing to do.
+		return nil
+	}
+
+	userKey := memory.UserKey{AppName: sess.AppName, UserID: sess.UserID}
+	if userKey.AppName == "" || userKey.UserID == "" {
+		return nil
+	}
+
+	// Convert events to messages for extraction.
+	messages := eventsToMessages(eventsToRemove)
+	if len(messages) == 0 {
+		s.logger.Debug("pre-compaction: no extractable messages in events to remove")
+		return nil
+	}
+
+	// Check for at least one user message (extractor requirement).
+	hasUser := false
+	for _, m := range messages {
+		if m.Role == tmodel.RoleUser {
+			hasUser = true
+			break
+		}
+	}
+	if !hasUser {
+		s.logger.Debug("pre-compaction: no user messages, skipping extraction")
+		return nil
+	}
+
+	s.logger.Info("pre-compaction memory extraction starting",
+		"session_id", sess.ID,
+		"events", len(eventsToRemove),
+		"messages", len(messages))
+
+	// Read existing memories for duplicate detection.
+	var existing []*memory.Entry
+	if s.db != nil {
+		var err error
+		existing, err = s.ReadMemories(ctx, userKey, 0)
+		if err != nil {
+			s.logger.Warn("pre-compaction: failed to read existing memories", "error", err)
+			existing = nil
+		}
+	}
+
+	// Run synchronous extraction.
+	ops, err := s.opts.extractor.Extract(ctx, messages, existing)
+	if err != nil {
+		return fmt.Errorf("pre-compaction extraction failed: %w", err)
+	}
+
+	// Execute operations.
+	var addCount, updateCount int
+	for _, op := range ops {
+		switch op.Type {
+		case extractor.OperationAdd:
+			if err := s.AddMemory(ctx, userKey, op.Memory, op.Topics); err != nil {
+				s.logger.Warn("pre-compaction: add failed", "error", err)
+			} else {
+				addCount++
+			}
+		case extractor.OperationUpdate:
+			key := memory.Key{AppName: userKey.AppName, UserID: userKey.UserID, MemoryID: op.MemoryID}
+			if err := s.UpdateMemory(ctx, key, op.Memory, op.Topics); err != nil {
+				s.logger.Warn("pre-compaction: update failed", "error", err)
+			} else {
+				updateCount++
+			}
+		case extractor.OperationDelete:
+			key := memory.Key{AppName: userKey.AppName, UserID: userKey.UserID, MemoryID: op.MemoryID}
+			if err := s.DeleteMemory(ctx, key); err != nil {
+				s.logger.Warn("pre-compaction: delete failed", "error", err)
+			}
+		case extractor.OperationClear:
+			if err := s.ClearMemories(ctx, userKey); err != nil {
+				s.logger.Warn("pre-compaction: clear failed", "error", err)
+			}
+		}
+	}
+
+	s.logger.Info("pre-compaction memory extraction complete",
+		"session_id", sess.ID,
+		"added", addCount,
+		"updated", updateCount,
+		"total_ops", len(ops))
+
+	return nil
+}
+
+// eventsToMessages converts session events to model messages for extraction.
+// Filters out tool calls and empty messages to match async extraction behavior.
+func eventsToMessages(events []event.Event) []tmodel.Message {
+	var messages []tmodel.Message
+	for _, e := range events {
+		if e.Response == nil {
+			continue
+		}
+		for _, choice := range e.Response.Choices {
+			msg := choice.Message
+			// Skip tool-related messages.
+			if msg.Role == tmodel.RoleTool || msg.ToolID != "" {
+				continue
+			}
+			// Skip empty messages.
+			if msg.Content == "" && len(msg.ContentParts) == 0 {
+				continue
+			}
+			// Skip messages with tool calls (these are assistant messages initiating tool use).
+			if len(msg.ToolCalls) > 0 {
+				continue
+			}
+			messages = append(messages, msg)
+		}
+	}
+	return messages
 }

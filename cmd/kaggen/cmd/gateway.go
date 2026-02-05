@@ -299,6 +299,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 				"url", cfg.Agent.Supervisor.OllamaBaseURL,
 				"model", cfg.Agent.Supervisor.OllamaModel)
 		}
+		// Wire up pre-compaction memory extraction hook.
+		// This ensures memories are extracted before events are deleted during /compact.
+		if fms, ok := memService.(*memory.FileMemoryService); ok {
+			fs.SetCompactionHook(fms)
+		}
 	}
 
 	// Wrap session service to strip binary data (images, files) from history.

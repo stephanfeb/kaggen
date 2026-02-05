@@ -30,10 +30,11 @@ type memoryOperator interface {
 }
 
 type autoMemoryConfig struct {
-	Extractor        extractor.MemoryExtractor
-	AsyncMemoryNum   int
-	MemoryQueueSize  int
-	MemoryJobTimeout time.Duration
+	Extractor          extractor.MemoryExtractor
+	AsyncMemoryNum     int
+	MemoryQueueSize    int
+	MemoryJobTimeout   time.Duration
+	EnqueueRetryWait   time.Duration // Wait time before retrying when queue is full (0 = no retry)
 }
 
 type autoMemoryJob struct {
@@ -46,13 +47,14 @@ type autoMemoryJob struct {
 
 // autoMemoryWorker manages async memory extraction workers.
 type autoMemoryWorker struct {
-	config   autoMemoryConfig
-	operator memoryOperator
-	logger   *slog.Logger
-	jobChans []chan *autoMemoryJob
-	wg       sync.WaitGroup
-	mu       sync.RWMutex
-	started  bool
+	config        autoMemoryConfig
+	operator      memoryOperator
+	logger        *slog.Logger
+	jobChans      []chan *autoMemoryJob
+	wg            sync.WaitGroup
+	mu            sync.RWMutex
+	started       bool
+	overflowCount int64 // atomic counter for tracking queue overflow events
 }
 
 func newAutoMemoryWorker(config autoMemoryConfig, operator memoryOperator, logger *slog.Logger) *autoMemoryWorker {
@@ -145,13 +147,29 @@ func (w *autoMemoryWorker) EnqueueJob(ctx context.Context, sess *session.Session
 		latestTs: latestTs,
 		messages: messages,
 	}
+
+	// First attempt - non-blocking
 	if w.tryEnqueue(ctx, userKey, job) {
 		return nil
 	}
-	// Queue full — skip rather than block the response.
-	// Memory extraction is best-effort and should never block user interactions.
-	w.logger.Warn("auto_memory: queue full, skipping extraction",
-		"app", userKey.AppName, "user", userKey.UserID)
+
+	// Queue full - optionally retry with timeout
+	if w.config.EnqueueRetryWait > 0 && ctx.Err() == nil {
+		retryCtx, cancel := context.WithTimeout(ctx, w.config.EnqueueRetryWait)
+		defer cancel()
+
+		if w.tryEnqueueWithTimeout(retryCtx, userKey, job) {
+			return nil
+		}
+	}
+
+	// Queue still full - log as ERROR (this is potential data loss)
+	w.overflowCount++
+	w.logger.Error("auto_memory: queue full, extraction dropped - POTENTIAL MEMORY LOSS",
+		"app", userKey.AppName,
+		"user", userKey.UserID,
+		"messages", len(messages),
+		"overflow_count", w.overflowCount)
 	return nil
 }
 
@@ -172,6 +190,25 @@ func (w *autoMemoryWorker) tryEnqueue(ctx context.Context, userKey memory.UserKe
 	case w.jobChans[index] <- job:
 		return true
 	default:
+		return false
+	}
+}
+
+// tryEnqueueWithTimeout attempts to enqueue with a blocking wait up to the context deadline.
+func (w *autoMemoryWorker) tryEnqueueWithTimeout(ctx context.Context, userKey memory.UserKey, job *autoMemoryJob) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if !w.started || len(w.jobChans) == 0 {
+		return false
+	}
+	h := fnv.New32a()
+	h.Write([]byte(userKey.AppName))
+	h.Write([]byte(userKey.UserID))
+	index := int(h.Sum32()) % len(w.jobChans)
+	select {
+	case w.jobChans[index] <- job:
+		return true
+	case <-ctx.Done():
 		return false
 	}
 }

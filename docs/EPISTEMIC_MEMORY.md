@@ -176,3 +176,33 @@ These observations participate in search like any other memory, so Kaggen can re
 ```
 
 The system forms a virtuous cycle: conversations create memories, memories build the entity graph, the entity graph enables richer recall, and background synthesis creates new observations that make future recall even better.
+
+## Memory preservation during compaction
+
+When conversation context grows too large and needs to be compacted (summarized), Kaggen ensures memories are extracted first:
+
+```
+Session context fills up
+        |
+        v
++------------------+
+|  /compact called |
++------------------+
+        |
+        v
++------------------+
+| BeforeCompaction |  Extract memories from events about to be deleted
++------------------+
+        |
+        v
++------------------+
+|  LLM Summarizes  |  Older events summarized into text
++------------------+
+        |
+        v
++------------------+
+|  Events Pruned   |  Old events removed, summary persisted
++------------------+
+```
+
+This "memory flush before compaction" ensures that preferences, facts, and experiences mentioned in older conversation turns are captured in the memory database before those turns are removed from the session. Without this, rapid conversation or slow extraction could cause memory loss.

@@ -41,6 +41,14 @@ type ContextCache struct {
 	TokenCount int             `json:"token_count,omitempty"`
 }
 
+// CompactionHook is called before session compaction to allow memory extraction.
+// This prevents data loss when context is compacted before async extraction completes.
+type CompactionHook interface {
+	// BeforeCompaction is called with the events about to be removed from the session.
+	// The hook should extract any important information (e.g., memories) before they are lost.
+	BeforeCompaction(ctx context.Context, sess *trpcsession.Session, eventsToRemove []event.Event) error
+}
+
 // FileService implements trpc-agent-go's session.Service using the local filesystem.
 //
 // Storage layout:
@@ -56,11 +64,12 @@ type ContextCache struct {
 //	  <appName>/<userID>/
 //	    user_state.json – user-scoped state
 type FileService struct {
-	dataDir string
-	mu      sync.RWMutex
-	model   model.Model        // LLM for session summarization (optional, set via SetModel)
-	namer   *SessionNamer      // Session auto-naming (optional, set via SetNamer)
-	logger  *slog.Logger
+	dataDir        string
+	mu             sync.RWMutex
+	model          model.Model        // LLM for session summarization (optional, set via SetModel)
+	namer          *SessionNamer      // Session auto-naming (optional, set via SetNamer)
+	compactionHook CompactionHook     // Pre-compaction memory flush (optional)
+	logger         *slog.Logger
 }
 
 // compactKeepEvents is the number of recent events to keep after compaction.
@@ -115,6 +124,12 @@ func (s *FileService) contextCachePath(key trpcsession.Key) string {
 // SetModel sets the LLM model used for session summarization (/compact).
 func (s *FileService) SetModel(m model.Model) {
 	s.model = m
+}
+
+// SetCompactionHook sets the hook called before session compaction.
+// Use this to ensure memories are extracted before events are deleted.
+func (s *FileService) SetCompactionHook(h CompactionHook) {
+	s.compactionHook = h
 }
 
 // ReadMetadata reads the session metadata from disk. Returns nil if not found.
@@ -879,6 +894,21 @@ func (s *FileService) CreateSessionSummary(ctx context.Context, sess *trpcsessio
 
 	// Events to summarize (all except the most recent ones we keep).
 	toSummarize := events[:len(events)-compactKeepEvents]
+
+	// Call pre-compaction hook to extract memories BEFORE events are lost.
+	// This is critical for preventing data loss - memories must be extracted
+	// before the events are truncated from the session.
+	if s.compactionHook != nil {
+		if err := s.compactionHook.BeforeCompaction(ctx, sess, toSummarize); err != nil {
+			s.logger.Warn("pre-compaction memory extraction failed",
+				"session_id", sess.ID,
+				"events_to_remove", len(toSummarize),
+				"error", err)
+			// Continue with compaction even if extraction fails - the alternative
+			// (blocking compaction) could cause context overflow issues.
+		}
+	}
+
 	transcript := formatTranscript(toSummarize)
 
 	if strings.TrimSpace(transcript) == "" {

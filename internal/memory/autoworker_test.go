@@ -296,3 +296,215 @@ func TestEnqueueJobContextCancellation(t *testing.T) {
 		t.Log("Note: Extract was called even with cancelled context (job still enqueued)")
 	}
 }
+
+// trackingExtractor records what was extracted for test verification.
+type trackingExtractor struct {
+	extractCalls [][]model.Message
+	ops          []*extractor.Operation
+}
+
+func (e *trackingExtractor) Extract(ctx context.Context, messages []model.Message, existing []*memory.Entry) ([]*extractor.Operation, error) {
+	e.extractCalls = append(e.extractCalls, messages)
+	return e.ops, nil
+}
+
+func (e *trackingExtractor) ShouldExtract(ctx *extractor.ExtractionContext) bool {
+	return true
+}
+
+func (e *trackingExtractor) SetPrompt(prompt string) {}
+func (e *trackingExtractor) SetModel(m model.Model) {}
+func (e *trackingExtractor) Metadata() map[string]any {
+	return nil
+}
+
+// trackingOperator records memory operations for test verification.
+type trackingOperator struct {
+	addedMemories []string
+}
+
+func (m *trackingOperator) ReadMemories(ctx context.Context, userKey memory.UserKey, limit int) ([]*memory.Entry, error) {
+	return nil, nil
+}
+func (m *trackingOperator) AddMemory(ctx context.Context, userKey memory.UserKey, mem string, topics []string) error {
+	m.addedMemories = append(m.addedMemories, mem)
+	return nil
+}
+func (m *trackingOperator) UpdateMemory(ctx context.Context, memoryKey memory.Key, mem string, topics []string) error {
+	return nil
+}
+func (m *trackingOperator) DeleteMemory(ctx context.Context, memoryKey memory.Key) error {
+	return nil
+}
+func (m *trackingOperator) ClearMemories(ctx context.Context, userKey memory.UserKey) error {
+	return nil
+}
+
+// TestBeforeCompactionExtractsMemories verifies that BeforeCompaction
+// extracts memories synchronously before events are deleted.
+func TestBeforeCompactionExtractsMemories(t *testing.T) {
+	// Create tracking extractor that returns NO operations (to avoid db writes)
+	ext := &trackingExtractor{
+		ops: []*extractor.Operation{}, // Empty - just verify extractor is called
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Create minimal service-like struct with extractor for testing
+	// Note: db is nil which means AddMemory etc will be skipped, but extractor will be called
+	svc := &FileMemoryService{
+		opts:   serviceOpts{extractor: ext},
+		logger: logger,
+	}
+
+	// Create events to be compacted
+	events := []event.Event{
+		{
+			Timestamp: time.Now(),
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleUser, Content: "I prefer Go over Rust for CLI tools"}},
+				},
+			},
+		},
+		{
+			Timestamp: time.Now(),
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleAssistant, Content: "Noted! Go is great for CLI tools."}},
+				},
+			},
+		},
+	}
+
+	sess := &session.Session{
+		AppName: "test-app",
+		UserID:  "test-user",
+	}
+
+	// Call BeforeCompaction - this should call the extractor synchronously
+	err := svc.BeforeCompaction(context.Background(), sess, events)
+	if err != nil {
+		t.Fatalf("BeforeCompaction failed: %v", err)
+	}
+
+	// Verify extractor was called with the right messages
+	if len(ext.extractCalls) != 1 {
+		t.Errorf("Expected 1 extract call, got %d", len(ext.extractCalls))
+	}
+
+	if len(ext.extractCalls) > 0 {
+		msgs := ext.extractCalls[0]
+		if len(msgs) != 2 {
+			t.Errorf("Expected 2 messages, got %d", len(msgs))
+		}
+		// Verify user message is included
+		hasUserMsg := false
+		for _, m := range msgs {
+			if m.Role == model.RoleUser && m.Content == "I prefer Go over Rust for CLI tools" {
+				hasUserMsg = true
+			}
+		}
+		if !hasUserMsg {
+			t.Error("User message not found in extract call")
+		}
+	}
+
+	t.Logf("BeforeCompaction called extractor with %d calls", len(ext.extractCalls))
+}
+
+// TestBeforeCompactionNoExtractor verifies graceful handling when no extractor is configured.
+func TestBeforeCompactionNoExtractor(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Create service without extractor
+	svc := &FileMemoryService{
+		opts:   serviceOpts{}, // No extractor
+		logger: logger,
+	}
+
+	events := []event.Event{
+		{
+			Timestamp: time.Now(),
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleUser, Content: "test message"}},
+				},
+			},
+		},
+	}
+
+	sess := &session.Session{
+		AppName: "test-app",
+		UserID:  "test-user",
+	}
+
+	// Should return nil without error when no extractor configured
+	err := svc.BeforeCompaction(context.Background(), sess, events)
+	if err != nil {
+		t.Errorf("BeforeCompaction should succeed when no extractor: %v", err)
+	}
+}
+
+// TestEventsToMessages verifies event to message conversion.
+func TestEventsToMessages(t *testing.T) {
+	events := []event.Event{
+		// Regular user message
+		{
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleUser, Content: "Hello"}},
+				},
+			},
+		},
+		// Tool message - should be skipped
+		{
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleTool, Content: "tool result"}},
+				},
+			},
+		},
+		// Message with tool calls - should be skipped
+		{
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleAssistant, Content: "Let me search", ToolCalls: []model.ToolCall{{ID: "1"}}}},
+				},
+			},
+		},
+		// Regular assistant message
+		{
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleAssistant, Content: "Hi there!"}},
+				},
+			},
+		},
+		// Empty message - should be skipped
+		{
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{Role: model.RoleUser, Content: ""}},
+				},
+			},
+		},
+	}
+
+	messages := eventsToMessages(events)
+
+	if len(messages) != 2 {
+		t.Errorf("Expected 2 messages, got %d", len(messages))
+		for i, m := range messages {
+			t.Logf("  [%d] role=%s content=%q", i, m.Role, m.Content)
+		}
+	}
+
+	// Verify correct messages were kept
+	if len(messages) >= 1 && messages[0].Content != "Hello" {
+		t.Errorf("First message should be 'Hello', got %q", messages[0].Content)
+	}
+	if len(messages) >= 2 && messages[1].Content != "Hi there!" {
+		t.Errorf("Second message should be 'Hi there!', got %q", messages[1].Content)
+	}
+}
