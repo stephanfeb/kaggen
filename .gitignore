@@ -32,3 +32,6 @@ Thumbs.db
 # Environment / secrets
 .env
 *.pem
+
+out
+traces

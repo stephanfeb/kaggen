@@ -45,9 +45,10 @@
   assert:
     - type: asked-clarification
       forbidden: true
-    - type: skill-selected
-      skill: file_reader
-      required: true
+    - type: contains
+      value: "Hello World"
+    - type: contains
+      value: "test project"
 
 - id: "clarify-005"
   name: "Don't ask for clear math"

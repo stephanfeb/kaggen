@@ -758,6 +758,17 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "- Only one reasonable interpretation exists\n"
 	instruction += "- The user has provided all necessary details\n\n"
 
+	instruction += "## Reading File Contents\n\n"
+	instruction += "When asked about a file's contents, configuration, or to summarize a file:\n\n"
+	instruction += "1. If the filename is specified, use `read` directly — do NOT use `ls` first\n"
+	instruction += "2. If the filename is ambiguous, ask for clarification\n"
+	instruction += "3. After reading, respond with the information the user requested — not raw tool output\n\n"
+	instruction += "**Examples:**\n"
+	instruction += "- \"Read config.yaml\" → Use `read(path=\"config.yaml\")` directly\n"
+	instruction += "- \"What's in the README?\" → Use `read(path=\"README.md\")` directly\n"
+	instruction += "- \"Summarize the config file\" (multiple configs exist) → Ask which config file\n\n"
+	instruction += "**Important:** Never return raw JSON tool output as your response. Always interpret the results and respond naturally.\n\n"
+
 	instruction += "## Task Orchestration\n\n"
 	instruction += "You have access to specialist sub-agents via `dispatch_task` (async) and team member tools (sync).\n\n"
 

@@ -14,8 +14,8 @@
       value: "345"
 
 - id: "skill-002"
-  name: "Select file_reader for reading"
-  description: "Coordinator should delegate to file_reader for file inspection"
+  name: "Read file and extract information"
+  description: "Coordinator should read a file and extract requested information"
   category: skill_selection
   user_message: "Read the config.yaml file and tell me what port is configured"
   context:
@@ -25,11 +25,11 @@
           port: 8080
           host: localhost
   assert:
-    - type: skill-selected
-      skill: file_reader
-      required: true
     - type: contains
       value: "8080"
+    - type: llm-rubric
+      rubric: "Response correctly identifies that the configured port is 8080"
+      min_score: 0.7
 
 - id: "skill-003"
   name: "Select file_writer for file creation"
@@ -57,8 +57,8 @@
       forbidden: true
 
 - id: "skill-005"
-  name: "Select summarizer for summarization"
-  description: "Coordinator should delegate to summarizer for content summarization"
+  name: "Summarize file contents"
+  description: "Coordinator should summarize file contents accurately"
   category: skill_selection
   user_message: "Summarize the contents of README.md"
   context:
@@ -76,9 +76,6 @@
         ## Installation
         Run `go build` to compile.
   assert:
-    - type: skill-selected
-      skill: summarizer
-      required: true
     - type: llm-rubric
       rubric: "Response summarizes that it's a Go web application with authentication, API, and database features"
       min_score: 0.7
