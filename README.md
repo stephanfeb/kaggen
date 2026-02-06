@@ -120,6 +120,109 @@ To select a specific model, set `agent.model` in `~/.kaggen/config.json`:
 
 The prefix determines which provider is used regardless of which API keys are set.
 
+### Tiered Reasoning
+
+Kaggen supports tiered reasoning, where complex tasks can be escalated from the primary coordinator model (Tier 1) to a deeper reasoning model (Tier 2) for thorough multi-approach analysis.
+
+#### Enable Tiered Reasoning
+
+```json
+{
+  "reasoning": {
+    "enabled": true
+  }
+}
+```
+
+When enabled, the agent gains access to the `reasoning_escalate` tool, which invokes a more capable model for architectural decisions, trade-off analysis, and complex planning.
+
+#### Family-Specific Model Selection
+
+By default, the Tier 2 model is automatically selected based on the coordinator's model family:
+
+| Coordinator Family | Tier 2 Model (auto-selected) |
+|-------------------|------------------------------|
+| Anthropic (`anthropic/claude-*`) | `anthropic/claude-opus-4-5-20251101` |
+| Google Gemini (`gemini/*`) | `gemini/gemini-2.5-pro-preview-06-05` |
+| ZAI (`zai/*`) | `zai/glm-4.7` |
+
+This ensures the deep thinking model uses the same provider as your coordinator, avoiding cross-provider API key requirements.
+
+#### Override Tier 2 Model
+
+To use a specific model regardless of the coordinator's family:
+
+```json
+{
+  "reasoning": {
+    "enabled": true,
+    "tier2_model": "anthropic/claude-opus-4-5-20251101"
+  }
+}
+```
+
+This is useful when you want to use Anthropic's Opus for deep reasoning even when running Gemini as the coordinator (requires both API keys).
+
+#### Full Reasoning Configuration
+
+```json
+{
+  "reasoning": {
+    "enabled": true,
+    "tier2_model": "",
+    "escalation_threshold": 0.5,
+    "max_subtasks_trigger": 5,
+    "auto_escalate_keywords": [
+      "design", "architect", "evaluate", "analyze",
+      "compare", "trade-off", "strategic"
+    ],
+    "max_tokens": 8192
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable the reasoning escalation system |
+| `tier2_model` | (auto) | Override Tier 2 model (format: `provider/model-name`) |
+| `escalation_threshold` | `0.5` | Confidence below this triggers escalation (0-1) |
+| `max_subtasks_trigger` | `5` | Subtask count that triggers escalation |
+| `auto_escalate_keywords` | (see above) | Keywords in task that auto-trigger escalation |
+| `max_tokens` | `8192` | Max tokens for Tier 2 reasoning calls |
+
+#### When Escalation Triggers
+
+The agent automatically escalates to the Tier 2 model when:
+
+1. **Keywords detected**: Task contains words like "design", "architect", "evaluate", "compare"
+2. **High subtask count**: Task decomposition suggests >5 subtasks
+3. **Low confidence**: Agent has low confidence in the best approach
+4. **Explicit call**: Agent invokes `reasoning_escalate` tool directly
+
+#### Escalation Response
+
+The Tier 2 model returns structured analysis:
+
+```json
+{
+  "analysis": "Deep analysis of the problem and constraints",
+  "approaches": [
+    {
+      "name": "Approach A",
+      "strategy": "How this approach works",
+      "pros": ["advantage 1", "advantage 2"],
+      "cons": ["disadvantage 1"],
+      "skills_required": ["coder", "researcher"],
+      "effort": "medium"
+    }
+  ],
+  "selected_plan": "Approach A",
+  "confidence": 0.85,
+  "next_steps": ["Step 1", "Step 2", "Step 3"],
+  "model_used": "anthropic/claude-opus-4-5-20251101"
+}
+```
+
 ### Environment variables
 
 | Variable | Description |
