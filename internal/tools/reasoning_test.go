@@ -22,7 +22,7 @@ func (m *mockModel) Generate(ctx context.Context, messages []protocol.Message, t
 }
 
 func TestReasoningTool_NilModel(t *testing.T) {
-	tool := NewReasoningTool(nil, nil, config.ReasoningConfig{}, nil)
+	tool := NewReasoningTool(nil, nil, config.ReasoningConfig{}, "", nil)
 	if tool != nil {
 		t.Error("expected nil tool when model is nil")
 	}

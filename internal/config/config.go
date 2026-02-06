@@ -440,12 +440,25 @@ func (c *Config) BacklogDBPath() string {
 	return ExpandPath("~/.kaggen/backlog.db")
 }
 
-// ReasoningTier2Model returns the configured Tier 2 model or the default.
-func (c *Config) ReasoningTier2Model() string {
+// ReasoningTier2Model returns the Tier 2 model for deep reasoning.
+// If an explicit tier2_model is configured, it returns that.
+// Otherwise, it auto-selects based on the coordinator model's family:
+//   - Anthropic coordinator -> anthropic/claude-opus-4-5-20251101
+//   - Gemini coordinator -> gemini/gemini-2.5-pro-preview-06-05
+//   - ZAI coordinator -> zai/glm-4.7
+func (c *Config) ReasoningTier2Model(coordinatorModel string) string {
 	if c.Reasoning.Tier2Model != "" {
-		return c.Reasoning.Tier2Model
+		return c.Reasoning.Tier2Model // explicit override
 	}
-	return "claude-opus-4-5-20251101"
+	// Auto-select based on coordinator family
+	// Import is done inline to avoid circular dependency
+	if strings.HasPrefix(coordinatorModel, "gemini/") {
+		return "gemini/gemini-2.5-pro-preview-06-05"
+	}
+	if strings.HasPrefix(coordinatorModel, "zai/") {
+		return "zai/glm-4.7"
+	}
+	return "anthropic/claude-opus-4-5-20251101"
 }
 
 // ReasoningThreshold returns the escalation threshold or the default (0.5).

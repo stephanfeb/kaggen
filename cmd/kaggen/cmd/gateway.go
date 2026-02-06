@@ -149,6 +149,20 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
 
+	// Create Tier 2 model for reasoning escalation if enabled
+	if cfg.Reasoning.Enabled {
+		tier2ModelString := cfg.ReasoningTier2Model(configModel)
+		tier2Model := createTier2ModelForGateway(tier2ModelString, logger)
+		if tier2Model != nil {
+			tier2ModelLimited := kaggenModel.NewRateLimitedModel(tier2Model, 1) // Conservative rate limit for deep thinking
+			reasoningTool := tools.NewReasoningTool(tier2ModelLimited, nil, cfg.Reasoning, tier2ModelString, logger)
+			if reasoningTool != nil {
+				toolList = append(toolList, reasoningTool)
+				logger.Info("reasoning escalation enabled", "tier2_model", tier2ModelString)
+			}
+		}
+	}
+
 	// Initialize browser control if enabled
 	if cfg.Browser.Enabled {
 		browserMgr := browser.NewManager(cfg.Browser, logger)
@@ -576,4 +590,36 @@ func createSessionService(cfg *config.Config) (trpcsession.Service, error) {
 	default:
 		return nil, fmt.Errorf("unknown session backend: %s", cfg.Session.Backend)
 	}
+}
+
+// createTier2ModelForGateway creates a model adapter from a "provider/model" string.
+// Used for creating the Tier 2 (deep thinking) model for reasoning escalation.
+// Returns a trpc model.Model interface that implements GenerateContent.
+func createTier2ModelForGateway(modelString string, logger *slog.Logger) model.Model {
+	if strings.HasPrefix(modelString, "gemini/") {
+		modelName := strings.TrimPrefix(modelString, "gemini/")
+		apiKey := config.GeminiAPIKey()
+		if apiKey == "" {
+			logger.Warn("Gemini API key not set for Tier 2 model")
+			return nil
+		}
+		return gemini.NewAdapter(apiKey, modelName)
+	}
+	if strings.HasPrefix(modelString, "zai/") {
+		modelName := strings.TrimPrefix(modelString, "zai/")
+		apiKey := config.ZaiAPIKey()
+		if apiKey == "" {
+			logger.Warn("ZAI API key not set for Tier 2 model")
+			return nil
+		}
+		return zai.NewAdapter(apiKey, modelName)
+	}
+	// Default: Anthropic
+	modelName := strings.TrimPrefix(modelString, "anthropic/")
+	apiKey := config.AnthropicAPIKey()
+	if apiKey == "" {
+		logger.Warn("Anthropic API key not set for Tier 2 model")
+		return nil
+	}
+	return anthropic.NewAdapter(apiKey, modelName)
 }

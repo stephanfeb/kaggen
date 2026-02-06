@@ -9,13 +9,12 @@ import (
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/config"
-	"github.com/yourusername/kaggen/internal/model"
-	"github.com/yourusername/kaggen/pkg/protocol"
 )
 
 // reasoningEscalateArgs is the input schema for the reasoning_escalate tool.
@@ -49,24 +48,27 @@ type reasoningEscalateResult struct {
 
 // ReasoningTool handles reasoning escalation to a Tier 2 model.
 type ReasoningTool struct {
-	tier2Model model.Model
-	store      *kaggenAgent.InFlightStore
-	cfg        config.ReasoningConfig
-	logger     *slog.Logger
+	tier2Model    model.Model // trpc-agent-go model interface
+	store         *kaggenAgent.InFlightStore
+	cfg           config.ReasoningConfig
+	resolvedModel string // the actual "provider/model" string being used
+	logger        *slog.Logger
 }
 
 // NewReasoningTool creates the reasoning_escalate tool.
+// resolvedModel is the actual "provider/model" string being used (e.g., "anthropic/claude-opus-4-5-20251101").
 // Returns nil if tier2Model is nil (reasoning not configured).
-func NewReasoningTool(tier2Model model.Model, store *kaggenAgent.InFlightStore, cfg config.ReasoningConfig, logger *slog.Logger) tool.Tool {
+func NewReasoningTool(tier2Model model.Model, store *kaggenAgent.InFlightStore, cfg config.ReasoningConfig, resolvedModel string, logger *slog.Logger) tool.Tool {
 	if tier2Model == nil {
 		return nil
 	}
 
 	t := &ReasoningTool{
-		tier2Model: tier2Model,
-		store:      store,
-		cfg:        cfg,
-		logger:     logger,
+		tier2Model:    tier2Model,
+		store:         store,
+		cfg:           cfg,
+		resolvedModel: resolvedModel,
+		logger:        logger,
 	}
 
 	return function.NewFunctionTool(
@@ -107,38 +109,57 @@ func (t *ReasoningTool) execute(ctx context.Context, args reasoningEscalateArgs)
 	// Build the reasoning prompt
 	prompt := t.buildPrompt(args, worldContext)
 
-	// Create messages for the Tier 2 model
-	messages := []protocol.Message{
-		{
-			Role:    "user",
-			Content: t.systemPrompt() + "\n\n" + prompt,
+	// Create request for the Tier 2 model using trpc model.Request
+	maxTokens := t.cfg.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 8192
+	}
+	req := &model.Request{
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: t.systemPrompt()},
+			{Role: model.RoleUser, Content: prompt},
+		},
+		GenerationConfig: model.GenerationConfig{
+			MaxTokens: &maxTokens,
 		},
 	}
 
 	// Call the Tier 2 model
-	response, err := t.tier2Model.Generate(ctx, messages, nil)
+	respCh, err := t.tier2Model.GenerateContent(ctx, req)
 	if err != nil {
 		t.logger.Error("tier 2 model call failed", "error", err)
 		return nil, fmt.Errorf("reasoning model call failed: %w", err)
 	}
 
+	// Collect the response from the channel
+	var responseContent string
+	for resp := range respCh {
+		if resp.Error != nil {
+			t.logger.Error("tier 2 model response error", "error", resp.Error.Message)
+			return nil, fmt.Errorf("reasoning model error: %s", resp.Error.Message)
+		}
+		if len(resp.Choices) > 0 {
+			responseContent = resp.Choices[0].Message.Content
+		}
+	}
+
 	// Parse the structured response
-	result, err := t.parseResponse(response.Content)
+	result, err := t.parseResponse(responseContent)
 	if err != nil {
 		t.logger.Warn("failed to parse structured response, returning raw",
 			"error", err,
-			"response_preview", truncate(response.Content, 200),
+			"response_preview", truncate(responseContent, 200),
 		)
 		// Fallback: return the raw analysis
 		return &reasoningEscalateResult{
-			Analysis:     response.Content,
+			Analysis:     responseContent,
 			Confidence:   0.5,
-			ModelUsed:    t.cfg.Tier2Model,
+			ModelUsed:    t.resolvedModel,
 			WorldContext: worldContext,
 		}, nil
 	}
 
-	result.ModelUsed = t.cfg.Tier2Model
+	result.ModelUsed = t.resolvedModel
 	result.WorldContext = worldContext
 	t.logger.Info("reasoning escalation complete",
 		"selected_plan", result.SelectedPlan,
