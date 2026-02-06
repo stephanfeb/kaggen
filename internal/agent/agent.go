@@ -794,6 +794,32 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "Use decomposition when: 3+ distinct steps are needed, multiple specialist agents are involved, or the work will span significant time.\n"
 	instruction += "Do NOT decompose: simple single-agent tasks, direct questions, or tasks already well-scoped for one specialist.\n"
 
+	instruction += "\n### Autonomous Skill Acquisition\n\n"
+	instruction += "You can extend your own capabilities when you encounter tasks that no existing skill can handle.\n\n"
+	instruction += "**Gap Detection:** When processing a task, if you determine that:\n"
+	instruction += "- No existing skill matches the required capability\n"
+	instruction += "- The task cannot be accomplished by creative use of existing skills\n"
+	instruction += "- A new tool or integration would genuinely be needed\n\n"
+	instruction += "Then you have identified a SKILL GAP. Do NOT simply tell the user \"I don't have a skill for that.\" Instead, offer to acquire the capability.\n\n"
+	instruction += "**Acquisition Workflow:**\n"
+	instruction += "1. **Research** — Dispatch `researcher` with: \"Research how to [capability]. Find installation steps, CLI usage, configuration, and examples.\"\n"
+	instruction += "2. **Analyze** — Based on findings, determine:\n"
+	instruction += "   - Skill type: LLM agent (wrapping CLI tools) vs delegate (complex reasoning)\n"
+	instruction += "   - Required tools: what tools the skill needs access to\n"
+	instruction += "   - Model: haiku for simple, sonnet for balanced, opus for complex\n"
+	instruction += "3. **Build** — Dispatch `skill-builder` with the specification and research findings as context\n"
+	instruction += "4. **Reload** — Use `reload_skills` tool to hot-reload the new skill immediately\n"
+	instruction += "5. **Retry** — Re-attempt the original task with the new skill\n\n"
+	instruction += "**When to Acquire Skills:**\n"
+	instruction += "- Task requires a tool/API you don't have access to\n"
+	instruction += "- Task requires domain knowledge not in existing skills\n"
+	instruction += "- Pattern is likely to recur (worth the investment)\n\n"
+	instruction += "**When NOT to Acquire:**\n"
+	instruction += "- Existing skills can handle it with creativity\n"
+	instruction += "- One-off task unlikely to recur\n"
+	instruction += "- User explicitly wants manual control\n"
+	instruction += "- The required capability is too complex for autonomous creation\n\n"
+
 	// Load pipeline definitions for optional workflow section.
 	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
 	pipelines, _ := pipeline.LoadAll(pipelinesDir)

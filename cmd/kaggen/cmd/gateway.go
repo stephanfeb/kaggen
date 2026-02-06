@@ -157,6 +157,12 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		logger.Info("browser control enabled", "profiles", len(cfg.Browser.Profiles))
 	}
 
+	// Initialize web search if enabled
+	if webSearchTool := tools.WebSearchTool(cfg.WebSearch); webSearchTool != nil {
+		toolList = append(toolList, webSearchTool)
+		logger.Info("web search enabled", "provider", cfg.WebSearch.Provider)
+	}
+
 	// Initialize persistent work backlog
 	backlogStore, err := backlog.NewStore(cfg.BacklogDBPath())
 	if err != nil {
@@ -347,8 +353,13 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Give the coordinator external task tools + config awareness, then rebuild.
-	factory.SetExtraCoordinatorTools(externalTS.Tools()...)
+	// Give the coordinator external task tools + reload_skills + config awareness, then rebuild.
+	coordTools := externalTS.Tools()
+	if reloadTool := tools.ReloadSkillsTool(factory); reloadTool != nil {
+		coordTools = append(coordTools, reloadTool)
+		logger.Info("reload_skills tool enabled for autonomous skill acquisition")
+	}
+	factory.SetExtraCoordinatorTools(coordTools...)
 	if extConfig != nil {
 		factory.SetExternalConfig(extConfig)
 	}
@@ -444,18 +455,29 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	go watchdog.Start(ctx)
 
 	// Start signal handler goroutine (SIGHUP reloads skills, others shut down).
+	// Also listen on factory.ReloadCh() for programmatic reload requests.
 	go func() {
-		for sig := range sigCh {
-			if sig == syscall.SIGHUP {
-				logger.Info("SIGHUP received, reloading skills...")
-				if err := factory.Rebuild(); err != nil {
+		for {
+			select {
+			case sig := <-sigCh:
+				if sig == syscall.SIGHUP {
+					logger.Info("SIGHUP received, reloading skills...")
+					if err := factory.Rebuild(); err != nil {
+						logger.Error("skill reload failed", "error", err)
+					}
+					continue
+				}
+				fmt.Println("\nShutting down gateway server...")
+				cancel()
+				return
+			case <-factory.ReloadCh():
+				logger.Info("programmatic reload requested, reloading skills...")
+				err := factory.Rebuild()
+				if err != nil {
 					logger.Error("skill reload failed", "error", err)
 				}
-				continue
+				factory.SignalReloadDone(err)
 			}
-			fmt.Println("\nShutting down gateway server...")
-			cancel()
-			return
 		}
 	}()
 
@@ -478,6 +500,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Browser Control: enabled (%d profiles)\n", len(cfg.Browser.Profiles))
 	} else {
 		fmt.Println("Browser Control: disabled")
+	}
+	if cfg.WebSearch.Provider != "" {
+		fmt.Printf("Web Search: enabled (%s)\n", cfg.WebSearch.Provider)
+	} else {
+		fmt.Println("Web Search: disabled")
 	}
 	if n := len(provider.SubAgents()); n > 0 {
 		fmt.Printf("Skills: %d sub-agents\n", n)

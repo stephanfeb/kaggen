@@ -194,6 +194,11 @@ type AgentFactory struct {
 	supervisor      *Supervisor
 	auditStore      *AuditStore
 	mu              sync.Mutex // serializes rebuilds
+
+	// Reload channel for programmatic skill reloading.
+	// Tools can call RequestReload() instead of sending SIGHUP.
+	reloadCh   chan struct{}
+	reloadDone chan error
 }
 
 // NewAgentFactory creates a factory with the given stable dependencies.
@@ -233,7 +238,41 @@ func NewAgentFactory(
 		maxHistoryRuns:  hist,
 		preloadMemory:   preload,
 		maxTurnsPerTask: turns,
+		reloadCh:        make(chan struct{}, 1),
+		reloadDone:      make(chan error, 1),
 	}
+}
+
+// RequestReload triggers an async skill reload. Call this from tools instead of
+// sending SIGHUP directly. Returns an error if a reload is already in progress.
+// The reload happens asynchronously - use ReloadDoneCh() to wait for completion.
+func (f *AgentFactory) RequestReload() error {
+	select {
+	case f.reloadCh <- struct{}{}:
+		return nil
+	default:
+		return fmt.Errorf("reload already in progress")
+	}
+}
+
+// ReloadCh returns the channel that signals a reload request.
+// The gateway should listen on this channel and call Rebuild() when it receives a signal.
+func (f *AgentFactory) ReloadCh() <-chan struct{} {
+	return f.reloadCh
+}
+
+// SignalReloadDone signals that a reload has completed (called by gateway after Rebuild).
+func (f *AgentFactory) SignalReloadDone(err error) {
+	select {
+	case f.reloadDone <- err:
+	default:
+		// No one waiting, discard
+	}
+}
+
+// WaitReloadDone waits for the reload to complete and returns any error.
+func (f *AgentFactory) WaitReloadDone() error {
+	return <-f.reloadDone
 }
 
 // SetExternalConfig stores external delivery configuration that will be

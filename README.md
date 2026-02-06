@@ -297,6 +297,87 @@ go build -tags "fts5" -o kaggen ./cmd/kaggen
 
 Without this tag the build succeeds but FTS5 tables won't be created, and hybrid search falls back to vector-only results.
 
+## Web Search
+
+Kaggen supports web search for the `researcher` skill, enabling autonomous research and documentation lookup. When configured, the agent can search the web to discover documentation, find solutions, and gather information needed for skill acquisition.
+
+### Supported Providers
+
+| Provider | Type | Notes |
+|----------|------|-------|
+| [SearXNG](https://docs.searxng.org/) | Self-hosted | Privacy-focused, aggregates multiple search engines |
+| [Brave Search](https://brave.com/search/api/) | Commercial | Free tier available (rate-limited) |
+| [Google Custom Search](https://developers.google.com/custom-search/) | Commercial | Requires API key + Custom Search Engine ID |
+
+### Configuration
+
+Add to `~/.kaggen/config.json`:
+
+```json
+{
+  "web_search": {
+    "provider": "searxng",
+    "base_url": "http://localhost:8888",
+    "num_results": 5
+  }
+}
+```
+
+#### SearXNG (recommended)
+
+```json
+{
+  "web_search": {
+    "provider": "searxng",
+    "base_url": "http://localhost:8888"
+  }
+}
+```
+
+Run a local SearXNG instance:
+
+```bash
+docker run -d -p 8888:8080 searxng/searxng
+```
+
+#### Brave Search
+
+```json
+{
+  "web_search": {
+    "provider": "brave",
+    "api_key": "your-brave-api-key"
+  }
+}
+```
+
+Get an API key at [brave.com/search/api](https://brave.com/search/api/).
+
+#### Google Custom Search
+
+```json
+{
+  "web_search": {
+    "provider": "google",
+    "api_key": "your-api-key:your-cx-id"
+  }
+}
+```
+
+The `api_key` must be in the format `API_KEY:CX_ID` where CX_ID is your Custom Search Engine ID.
+
+### Autonomous Skill Acquisition
+
+When web search is enabled, the coordinator can automatically:
+
+1. Detect when no existing skill can handle a task
+2. Dispatch the `researcher` skill to gather documentation
+3. Use `skill-builder` to create a new skill based on research
+4. Hot-reload the new skill with `reload_skills`
+5. Retry the original task
+
+This enables Kaggen to extend its own capabilities without manual intervention.
+
 ## Secrets Management
 
 Kaggen provides secure storage for sensitive credentials like API keys, database passwords, and tokens. Secrets are stored using the OS keychain when available, with an encrypted file fallback for headless/server environments.

@@ -17,6 +17,7 @@ type Config struct {
 	Channels  ChannelsConfig  `json:"channels"`
 	Memory    MemoryConfig    `json:"memory"`
 	Browser   BrowserConfig   `json:"browser,omitempty"`
+	WebSearch WebSearchConfig `json:"web_search,omitempty"`
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
 	Telemetry TelemetryConfig `json:"telemetry,omitempty"`
 	STT       STTConfig       `json:"stt,omitempty"`
@@ -72,6 +73,14 @@ type STTConfig struct {
 type BrowserConfig struct {
 	Enabled  bool             `json:"enabled"`
 	Profiles []BrowserProfile `json:"profiles,omitempty"`
+}
+
+// WebSearchConfig configures web search for the researcher skill.
+type WebSearchConfig struct {
+	Provider   string `json:"provider,omitempty"`    // "searxng" | "brave" | "google"
+	BaseURL    string `json:"base_url,omitempty"`    // SearXNG instance URL (e.g. "http://localhost:8888")
+	APIKey     string `json:"api_key,omitempty"`     // API key for Brave or Google
+	NumResults int    `json:"num_results,omitempty"` // Max results to return (default 5)
 }
 
 // BrowserProfile configures a browser connection profile.
