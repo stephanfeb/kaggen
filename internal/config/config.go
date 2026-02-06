@@ -23,6 +23,7 @@ type Config struct {
 	STT       STTConfig       `json:"stt,omitempty"`
 	Approval  ApprovalConfig  `json:"approval,omitempty"`
 	Security  SecurityConfig  `json:"security,omitempty"`
+	Reasoning ReasoningConfig `json:"reasoning,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -204,6 +205,18 @@ type SupervisorConfig struct {
 	CheckInterval   int    `json:"check_interval,omitempty"`    // turns between Ollama checks, default 10
 	MaxCorrections  int    `json:"max_corrections,omitempty"`   // max resume attempts before abort, default 2
 	StallTimeoutSec int    `json:"stall_timeout_sec,omitempty"` // seconds of inactivity before stall detection, default 300
+}
+
+// ReasoningConfig configures the tiered reasoning architecture.
+// When enabled, complex tasks can be escalated to a deeper model (e.g., Opus)
+// for multi-approach analysis and strategic planning.
+type ReasoningConfig struct {
+	Enabled              bool     `json:"enabled"`                              // Enable reasoning escalation
+	Tier2Model           string   `json:"tier2_model,omitempty"`                // Model for deep reasoning (default: claude-opus-4-5-20251101)
+	EscalationThreshold  float64  `json:"escalation_threshold,omitempty"`       // Confidence below this triggers escalation (0-1, default 0.5)
+	MaxSubtasksTrigger   int      `json:"max_subtasks_trigger,omitempty"`       // Subtask count that triggers escalation (default 5)
+	AutoEscalateKeywords []string `json:"auto_escalate_keywords,omitempty"`     // Keywords that trigger escalation
+	MaxTokens            int      `json:"max_tokens,omitempty"`                 // Max tokens for Tier 2 calls (default 8192)
 }
 
 // TLSConfig configures TLS/SSL for secure connections.
@@ -425,6 +438,62 @@ func (c *Config) AuditDBPath() string {
 // BacklogDBPath returns the expanded path to the backlog database.
 func (c *Config) BacklogDBPath() string {
 	return ExpandPath("~/.kaggen/backlog.db")
+}
+
+// ReasoningTier2Model returns the configured Tier 2 model or the default.
+func (c *Config) ReasoningTier2Model() string {
+	if c.Reasoning.Tier2Model != "" {
+		return c.Reasoning.Tier2Model
+	}
+	return "claude-opus-4-5-20251101"
+}
+
+// ReasoningThreshold returns the escalation threshold or the default (0.5).
+func (c *Config) ReasoningThreshold() float64 {
+	if c.Reasoning.EscalationThreshold > 0 && c.Reasoning.EscalationThreshold <= 1.0 {
+		return c.Reasoning.EscalationThreshold
+	}
+	return 0.5
+}
+
+// ReasoningMaxSubtasks returns the max subtasks trigger or the default (5).
+func (c *Config) ReasoningMaxSubtasks() int {
+	if c.Reasoning.MaxSubtasksTrigger > 0 {
+		return c.Reasoning.MaxSubtasksTrigger
+	}
+	return 5
+}
+
+// ReasoningMaxTokens returns the max tokens for Tier 2 calls or the default (8192).
+func (c *Config) ReasoningMaxTokens() int {
+	if c.Reasoning.MaxTokens > 0 {
+		return c.Reasoning.MaxTokens
+	}
+	return 8192
+}
+
+// DefaultAutoEscalateKeywords returns the default keywords that trigger escalation.
+func DefaultAutoEscalateKeywords() []string {
+	return []string{
+		"design",
+		"architect",
+		"evaluate",
+		"analyze",
+		"compare",
+		"trade-off",
+		"tradeoff",
+		"strategic",
+		"thoroughly",
+		"comprehensively",
+	}
+}
+
+// ReasoningKeywords returns the configured escalation keywords or defaults.
+func (c *Config) ReasoningKeywords() []string {
+	if len(c.Reasoning.AutoEscalateKeywords) > 0 {
+		return c.Reasoning.AutoEscalateKeywords
+	}
+	return DefaultAutoEscalateKeywords()
 }
 
 // AnthropicAPIKey returns the Anthropic API key from environment.

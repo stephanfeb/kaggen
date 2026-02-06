@@ -111,6 +111,10 @@ type InFlightStore struct {
 
 	// pipelineDescriptions stores a human-readable task description per pipeline run.
 	pipelineDescriptions map[string]map[string]string // sessionID → pipeline → description
+
+	// worldModels tracks session-scoped execution state for decision support.
+	// Key: sessionID → WorldModel. Ephemeral, cleared when session ends.
+	worldModels map[string]*WorldModel
 }
 
 // NewInFlightStore creates a new in-flight task store.
@@ -120,7 +124,36 @@ func NewInFlightStore() *InFlightStore {
 		pipelineProgress:     make(map[string]map[string]map[int]bool),
 		pipelineStartTimes:   make(map[string]map[string]time.Time),
 		pipelineDescriptions: make(map[string]map[string]string),
+		worldModels:          make(map[string]*WorldModel),
 	}
+}
+
+// GetOrCreateWorldModel returns the WorldModel for a session, creating if needed.
+func (s *InFlightStore) GetOrCreateWorldModel(sessionID string) *WorldModel {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if wm, ok := s.worldModels[sessionID]; ok {
+		return wm
+	}
+
+	wm := NewWorldModel(sessionID)
+	s.worldModels[sessionID] = wm
+	return wm
+}
+
+// GetWorldModel returns the WorldModel for a session, or nil if not exists.
+func (s *InFlightStore) GetWorldModel(sessionID string) *WorldModel {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.worldModels[sessionID]
+}
+
+// CleanupWorldModel removes a session's WorldModel (call on session end).
+func (s *InFlightStore) CleanupWorldModel(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.worldModels, sessionID)
 }
 
 // SetEventCallback sets a callback invoked on every task event (for dashboard broadcast).

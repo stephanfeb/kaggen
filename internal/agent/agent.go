@@ -322,6 +322,14 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				}
 			}
 
+			// Update WorldModel with tool call start
+			if sessionID != "" {
+				wm := store.GetOrCreateWorldModel(sessionID)
+				var argsMap map[string]any
+				_ = json.Unmarshal(args.Arguments, &argsMap)
+				wm.RecordToolCallStart(args.ToolCallID, args.ToolName, argsMap)
+			}
+
 			if isMember {
 				// Sync delegation to a sub-agent — register as its own task.
 				taskID := args.ToolCallID
@@ -405,6 +413,55 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 
 			if isInfra {
 				return &tool.AfterToolResult{}, nil
+			}
+
+			// Update WorldModel with tool call result
+			var sessionID string
+			if inv, ok := agent.InvocationFromContext(ctx); ok && inv.Session != nil {
+				sessionID = inv.Session.ID
+			}
+			if sessionID != "" {
+				wm := store.GetWorldModel(sessionID)
+				if wm != nil {
+					errMsg := ""
+					if args.Error != nil {
+						errMsg = args.Error.Error()
+					}
+					resultStr := resultToString(args.Result)
+					wm.RecordToolCallEnd(args.ToolCallID, args.ToolName, args.Error == nil, errMsg, len(resultStr))
+
+					// Track file modifications for write/edit tools
+					toolLower := strings.ToLower(args.ToolName)
+					if toolLower == "write" || toolLower == "edit" {
+						var writeArgs struct {
+							Path     string `json:"path"`
+							FilePath string `json:"file_path"`
+						}
+						if json.Unmarshal(args.Arguments, &writeArgs) == nil {
+							path := writeArgs.Path
+							if path == "" {
+								path = writeArgs.FilePath
+							}
+							if path != "" {
+								wm.RecordFileModified(path)
+							}
+						}
+					}
+
+					// Track test/build status from exec results
+					if toolLower == "bash" || toolLower == "exec" {
+						if strings.Contains(resultStr, "PASS") || strings.Contains(resultStr, "ok ") {
+							wm.UpdateTestStatus(TestStatusPassing)
+						} else if strings.Contains(resultStr, "FAIL") || strings.Contains(resultStr, "--- FAIL") {
+							wm.UpdateTestStatus(TestStatusFailing)
+						}
+						if strings.Contains(resultStr, "Build succeeded") || strings.Contains(resultStr, "build successful") {
+							wm.UpdateBuildStatus(TestStatusPassing)
+						} else if strings.Contains(resultStr, "build failed") || strings.Contains(resultStr, "compilation error") {
+							wm.UpdateBuildStatus(TestStatusFailing)
+						}
+					}
+				}
 			}
 
 			if isMember {
@@ -819,6 +876,26 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "- One-off task unlikely to recur\n"
 	instruction += "- User explicitly wants manual control\n"
 	instruction += "- The required capability is too complex for autonomous creation\n\n"
+
+	instruction += "\n### Deep Reasoning Escalation\n\n"
+	instruction += "For complex tasks requiring thorough analysis, use `reasoning_escalate`.\n\n"
+	instruction += "**When to Escalate:**\n"
+	instruction += "- Task involves design or architectural decisions\n"
+	instruction += "- Multiple valid approaches exist with trade-offs to evaluate\n"
+	instruction += "- Task decomposition suggests >5 subtasks\n"
+	instruction += "- Low confidence in the best approach\n"
+	instruction += "- Keywords present: design, architect, evaluate, analyze, compare, trade-off, strategic\n\n"
+	instruction += "**When NOT to Escalate:**\n"
+	instruction += "- Clear single-step task with obvious solution\n"
+	instruction += "- Task maps directly to an existing skill\n"
+	instruction += "- User wants quick action over deep analysis\n"
+	instruction += "- You've already escalated for this task\n\n"
+	instruction += "**Usage:**\n"
+	instruction += "1. Identify escalation trigger in user request\n"
+	instruction += "2. Call `reasoning_escalate` with task, reason, and relevant context\n"
+	instruction += "3. Review the returned analysis and approaches\n"
+	instruction += "4. Present the recommendation to the user for approval\n"
+	instruction += "5. Execute the approved approach using appropriate sub-agents\n\n"
 
 	// Load pipeline definitions for optional workflow section.
 	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
