@@ -343,6 +343,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Wire client count and task broadcast now that we have the server.
 	dashboardAPI.SetClientCountFunc(server.ClientCount)
 	dashboardAPI.SetBroadcastFunc(server.Broadcast)
+	dashboardAPI.SetP2PNodeFunc(server.P2PNode)
 	dashboardAPI.WireTaskEvents()
 
 	// Mount callback handler for external tasks.
@@ -547,6 +548,9 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		if cfg.Gateway.PubSub.Topic != "" {
 			fmt.Printf("Pub/Sub Topic: %s\n", cfg.Gateway.PubSub.Topic)
 		}
+	}
+	if cfg.P2P.Enabled {
+		fmt.Println("P2P: enabled")
 	}
 	fmt.Printf("Callbacks: %s/callbacks/\n", server.CallbackBaseURL())
 	fmt.Println()

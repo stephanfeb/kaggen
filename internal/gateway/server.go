@@ -13,6 +13,7 @@ import (
 	"github.com/yourusername/kaggen/internal/auth"
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/p2p"
 	"github.com/yourusername/kaggen/internal/proactive"
 	"github.com/yourusername/kaggen/internal/pubsub"
 	"github.com/yourusername/kaggen/internal/tunnel"
@@ -34,17 +35,18 @@ func (m *channelMap) Channel(name string) channel.Channel {
 
 // Server is the gateway server that routes messages between channels and the agent.
 type Server struct {
-	config      *config.Config
-	router      *channel.Router
-	handler     *Handler
-	wsChannel   *channel.WebSocketChannel
-	tgChannel   *channel.TelegramChannel
-	proactive   *proactive.Engine
-	dashboard   *DashboardAPI
-	tunnel      *tunnel.CloudflareTunnel
+	config       *config.Config
+	router       *channel.Router
+	handler      *Handler
+	wsChannel    *channel.WebSocketChannel
+	tgChannel    *channel.TelegramChannel
+	proactive    *proactive.Engine
+	dashboard    *DashboardAPI
+	tunnel       *tunnel.CloudflareTunnel
 	pubsubBridge *pubsub.Bridge
-	callbackURL string // resolved callback base URL
-	logger      *slog.Logger
+	p2pNode      *p2p.Node
+	callbackURL  string // resolved callback base URL
+	logger       *slog.Logger
 }
 
 // NewServer creates a new gateway server.
@@ -175,6 +177,24 @@ func (s *Server) Start(ctx context.Context) error {
 		"bind", s.config.Gateway.Bind,
 		"port", s.config.Gateway.Port)
 
+	// Initialize P2P node if configured.
+	if s.config.P2P.Enabled {
+		node, err := p2p.NewNode(ctx, &s.config.P2P, s.logger)
+		if err != nil {
+			s.logger.Warn("failed to initialize P2P node", "error", err)
+		} else {
+			s.p2pNode = node
+			s.logger.Info("P2P node started",
+				"peer_id", node.PeerID().String(),
+				"addrs", node.Addrs())
+			// Print PeerID to console for visibility
+			fmt.Printf("PeerID: %s\n", node.PeerID().String())
+			for _, addr := range node.Addrs() {
+				fmt.Printf("P2P Listen: %s/p2p/%s\n", addr, node.PeerID())
+			}
+		}
+	}
+
 	// Start Cloudflare Tunnel if configured.
 	if s.config.Gateway.Tunnel.Enabled {
 		provider := s.config.Gateway.Tunnel.Provider
@@ -272,6 +292,13 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Stop the P2P node
+	if s.p2pNode != nil {
+		if err := s.p2pNode.Close(); err != nil {
+			s.logger.Warn("error stopping P2P node", "error", err)
+		}
+	}
+
 	// Stop the proactive engine
 	if s.proactive != nil {
 		s.proactive.Stop()
@@ -299,6 +326,11 @@ func (s *Server) ProactiveEngine() *proactive.Engine {
 // ClientCount returns the number of connected WebSocket clients.
 func (s *Server) ClientCount() int {
 	return s.wsChannel.ClientCount()
+}
+
+// P2PNode returns the P2P node, or nil if P2P is disabled.
+func (s *Server) P2PNode() *p2p.Node {
+	return s.p2pNode
 }
 
 // Broadcast sends data to all connected WebSocket clients.

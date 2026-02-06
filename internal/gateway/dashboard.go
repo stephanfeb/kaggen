@@ -17,6 +17,7 @@ import (
 	"github.com/yourusername/kaggen/internal/auth"
 	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/p2p"
 	"github.com/yourusername/kaggen/internal/secrets"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 
@@ -38,6 +39,7 @@ type DashboardAPI struct {
 	wsClientCount  func() int
 	taskBroadcast  func(data []byte) // broadcasts to all WS clients
 	handler        *Handler          // for approval InjectCompletion; set via SetHandler
+	p2pNodeFunc    func() *p2p.Node  // returns P2P node if available
 }
 
 // NewDashboardAPI creates a new dashboard API.
@@ -76,6 +78,11 @@ func (d *DashboardAPI) SetClientCountFunc(fn func() int) {
 // SetBroadcastFunc sets the function to broadcast data to all WS clients.
 func (d *DashboardAPI) SetBroadcastFunc(fn func(data []byte)) {
 	d.taskBroadcast = fn
+}
+
+// SetP2PNodeFunc sets the function to retrieve the P2P node.
+func (d *DashboardAPI) SetP2PNodeFunc(fn func() *p2p.Node) {
+	d.p2pNodeFunc = fn
 }
 
 // WireTaskEvents registers a callback on the InFlightStore that broadcasts
@@ -1103,6 +1110,21 @@ func (d *DashboardAPI) HandleSettings(w http.ResponseWriter, r *http.Request) {
 		secretsBackend = secretStore.Name()
 	}
 
+	// Build P2P info
+	p2pInfo := map[string]any{
+		"enabled": d.config.P2P.Enabled,
+	}
+	if d.p2pNodeFunc != nil {
+		if node := d.p2pNodeFunc(); node != nil {
+			peerID := node.PeerID().String()
+			p2pInfo["peer_id"] = peerID
+			p2pInfo["topics"] = d.config.P2P.Topics
+
+			// Build multiaddrs for all network interfaces (like WebSocket URLs)
+			p2pInfo["multiaddrs"] = getP2PMultiaddrs(d.config.P2P.Port, peerID, d.config.P2P.Transports)
+		}
+	}
+
 	writeJSON(w, map[string]any{
 		"auth_enabled":      d.config.Security.Auth.Enabled,
 		"has_tokens":        hasTokens,
@@ -1112,6 +1134,7 @@ func (d *DashboardAPI) HandleSettings(w http.ResponseWriter, r *http.Request) {
 		"sandbox_enabled":   d.config.Security.CommandSandbox.Enabled,
 		"secrets_available": secretsAvailable,
 		"secrets_backend":   secretsBackend,
+		"p2p":               p2pInfo,
 	})
 }
 
@@ -1343,4 +1366,65 @@ func getInterfaceURLs(port int, token, proto string) []InterfaceURL {
 	}
 
 	return urls
+}
+
+// P2PMultiaddr represents a P2P multiaddr for a specific network interface.
+type P2PMultiaddr struct {
+	Name      string `json:"name"`
+	IP        string `json:"ip"`
+	Multiaddr string `json:"multiaddr"`
+}
+
+// getP2PMultiaddrs returns P2P multiaddrs for all non-loopback network interfaces.
+// Used when the P2P node is bound to 0.0.0.0 to provide routable addresses in QR codes.
+func getP2PMultiaddrs(port int, peerID string, transports []string) []P2PMultiaddr {
+	var addrs []P2PMultiaddr
+
+	if port == 0 {
+		port = 4001 // default P2P port
+	}
+
+	// Determine which transports to include
+	if len(transports) == 0 {
+		transports = []string{"udx"}
+	}
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return addrs
+	}
+
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		ifaceAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range ifaceAddrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				ip := ipnet.IP.String()
+				// Add multiaddr for each configured transport
+				for _, transport := range transports {
+					var multiaddr string
+					switch transport {
+					case "udx":
+						multiaddr = fmt.Sprintf("/ip4/%s/udp/%d/udx/p2p/%s", ip, port, peerID)
+					case "tcp":
+						multiaddr = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", ip, port, peerID)
+					default:
+						continue
+					}
+					addrs = append(addrs, P2PMultiaddr{
+						Name:      fmt.Sprintf("%s (%s)", iface.Name, transport),
+						IP:        ip,
+						Multiaddr: multiaddr,
+					})
+				}
+			}
+		}
+	}
+
+	return addrs
 }

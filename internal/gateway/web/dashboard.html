@@ -344,6 +344,20 @@ tr:hover { background: var(--bg-secondary); }
           <div class="section-header">Authentication Status</div>
           <div id="auth-status" class="settings-card">Loading...</div>
         </div>
+        <div class="settings-section" id="p2p-section" style="display:none;">
+          <div class="section-header">P2P Network (libp2p)</div>
+          <div class="settings-card">
+            <div id="p2p-status"></div>
+            <div id="p2p-qr-section" style="display:none; margin-top: 16px;">
+              <div class="qr-section">
+                <div class="qr-label">Scan with mobile app to connect via P2P:</div>
+                <div id="p2p-addr-selector" style="margin-bottom: 12px;"></div>
+                <div id="p2p-qr-code" class="qr-container"></div>
+                <div id="p2p-addr-display" style="margin-top: 8px; font-size: 11px; color: var(--text-muted); word-break: break-all;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="settings-section">
           <div class="section-header">Generate Access Token</div>
           <div class="settings-card">
@@ -1052,6 +1066,68 @@ async function loadSettings() {
       <span class="auth-status-value">${settings.secrets_available ? `<span class="badge badge-green">${esc(settings.secrets_backend)}</span>` : '<span class="badge badge-yellow">Unavailable</span>'}</span>
     </div>
   `;
+
+  // P2P section
+  const p2pSection = document.getElementById('p2p-section');
+  const p2pStatus = document.getElementById('p2p-status');
+  const p2p = settings.p2p || {};
+
+  if (p2p.enabled) {
+    p2pSection.style.display = '';
+    let statusHtml = `
+      <div class="auth-status-item">
+        <span class="auth-status-label">Status</span>
+        <span class="auth-status-value"><span class="badge badge-green">Enabled</span></span>
+      </div>`;
+
+    if (p2p.peer_id) {
+      statusHtml += `
+      <div class="auth-status-item">
+        <span class="auth-status-label">Peer ID</span>
+        <span class="auth-status-value" style="font-family: monospace; font-size: 11px;">${esc(p2p.peer_id)}</span>
+      </div>`;
+
+      // Show QR codes for multiaddrs
+      const multiaddrs = p2p.multiaddrs || [];
+      if (multiaddrs.length > 0) {
+        document.getElementById('p2p-qr-section').style.display = '';
+        window._p2pAddrs = multiaddrs;
+
+        const selectorEl = document.getElementById('p2p-addr-selector');
+        if (multiaddrs.length === 1) {
+          selectorEl.innerHTML = '';
+          generateP2PQRCode(multiaddrs[0].multiaddr);
+        } else {
+          let html = '<select id="p2p-addr-select" onchange="onP2PAddrChange()" class="settings-input" style="width: auto; min-width: 300px;">';
+          multiaddrs.forEach((addr, idx) => {
+            html += `<option value="${idx}">${esc(addr.name)} (${esc(addr.ip)})</option>`;
+          });
+          html += '</select>';
+          selectorEl.innerHTML = html;
+          generateP2PQRCode(multiaddrs[0].multiaddr);
+        }
+      }
+    } else {
+      statusHtml += `
+      <div class="auth-status-item">
+        <span class="auth-status-label">Peer ID</span>
+        <span class="auth-status-value"><span class="badge badge-yellow">Not started</span></span>
+      </div>`;
+    }
+
+    if (p2p.topics && p2p.topics.length > 0) {
+      statusHtml += `
+      <div class="auth-status-item">
+        <span class="auth-status-label">Topics</span>
+        <span class="auth-status-value">${p2p.topics.map(t => `<span class="badge badge-gray">${esc(t)}</span>`).join(' ')}</span>
+      </div>`;
+    }
+
+    p2pStatus.innerHTML = statusHtml;
+  } else {
+    p2pSection.style.display = 'none';
+  }
+
   loadTokenList();
   loadSecrets();
 }
@@ -1154,6 +1230,29 @@ function onInterfaceChange() {
   const idx = parseInt(select.value, 10);
   if (window._wsUrls && window._wsUrls[idx]) {
     generateQRCode(window._wsUrls[idx].url);
+  }
+}
+
+function generateP2PQRCode(multiaddr) {
+  const qrEl = document.getElementById('p2p-qr-code');
+  const addrDisplay = document.getElementById('p2p-addr-display');
+  qrEl.innerHTML = '';
+  new QRCode(qrEl, {
+    text: multiaddr,
+    width: 200,
+    height: 200,
+    colorDark: '#000000',
+    colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.M
+  });
+  addrDisplay.textContent = multiaddr;
+}
+
+function onP2PAddrChange() {
+  const select = document.getElementById('p2p-addr-select');
+  const idx = parseInt(select.value, 10);
+  if (window._p2pAddrs && window._p2pAddrs[idx]) {
+    generateP2PQRCode(window._p2pAddrs[idx].multiaddr);
   }
 }
 

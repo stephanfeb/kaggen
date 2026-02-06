@@ -1170,6 +1170,84 @@ Optional HMAC-SHA256 signature verification is supported via the `X-Callback-Sig
 
 Task status can be polled at `GET /callbacks/{taskID}/status`.
 
+## P2P Networking (libp2p)
+
+Kaggen supports peer-to-peer connectivity via [libp2p](https://libp2p.io/) for mobile client connections. When enabled, the gateway runs a libp2p node with Kademlia DHT for peer discovery and GossipSub for pub/sub messaging.
+
+### Identity
+
+On first startup, Kaggen generates an Ed25519 keypair and stores it at `~/.kaggen/p2p/identity.key`. This ensures the PeerID remains stable across restarts. The key file has `0600` permissions (owner-only).
+
+### Configuration
+
+Add to `~/.kaggen/config.json`:
+
+```json
+{
+  "p2p": {
+    "enabled": true,
+    "port": 4001,
+    "identity_path": "~/.kaggen/p2p/identity.key",
+    "transports": ["udx", "tcp"],
+    "dht_mode": "server",
+    "topics": ["kaggen/notifications", "kaggen/presence"],
+    "relay_enabled": true
+  }
+}
+```
+
+### Configuration Reference
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable libp2p networking |
+| `port` | `4001` | Listen port for P2P connections |
+| `identity_path` | `~/.kaggen/p2p/identity.key` | Path to Ed25519 private key |
+| `transports` | `["udx"]` | Transport protocols: `"udx"`, `"tcp"` |
+| `dht_mode` | `"server"` | DHT mode: `"server"` or `"client"` |
+| `bootstrap_peers` | `[]` | Multiaddrs of bootstrap peers to connect on startup |
+| `topics` | `[]` | GossipSub topics to join automatically |
+| `relay_enabled` | `false` | Enable circuit relay v2 for NAT traversal |
+
+### Transports
+
+| Transport | Protocol | Use Case |
+|-----------|----------|----------|
+| `udx` | UDP-based | Primary transport for mobile clients, better NAT traversal |
+| `tcp` | TCP | Fallback for server-to-server, debugging |
+
+### Startup Output
+
+When P2P is enabled, the gateway prints the PeerID and listen addresses:
+
+```
+Kaggen Gateway
+==============
+Bind: 127.0.0.1:18789
+P2P: enabled
+PeerID: 12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+P2P Listen: /ip4/0.0.0.0/tcp/4001/p2p/12D3KooWxxxxxx
+P2P Listen: /ip4/0.0.0.0/udp/4001/udx/p2p/12D3KooWxxxxxx
+```
+
+### Dashboard
+
+The PeerID and multiaddrs are available via the `/api/settings` endpoint and displayed in the Settings panel of the web dashboard.
+
+### Connecting Mobile Clients
+
+Mobile clients using [dart-libp2p](https://github.com/example/dart-libp2p) can connect using the gateway's multiaddr:
+
+```
+/ip4/<gateway-ip>/tcp/4001/p2p/<peer-id>
+```
+
+Or via UDX transport:
+
+```
+/ip4/<gateway-ip>/udp/4001/udx/p2p/<peer-id>
+```
+
 ## Agent Evaluation
 
 Kaggen includes a built-in evaluation framework for measuring agent performance. The system supports two evaluation modes:

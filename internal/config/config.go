@@ -24,6 +24,7 @@ type Config struct {
 	Approval  ApprovalConfig  `json:"approval,omitempty"`
 	Security  SecurityConfig  `json:"security,omitempty"`
 	Reasoning ReasoningConfig `json:"reasoning,omitempty"`
+	P2P       P2PConfig       `json:"p2p,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -217,6 +218,18 @@ type ReasoningConfig struct {
 	MaxSubtasksTrigger   int      `json:"max_subtasks_trigger,omitempty"`       // Subtask count that triggers escalation (default 5)
 	AutoEscalateKeywords []string `json:"auto_escalate_keywords,omitempty"`     // Keywords that trigger escalation
 	MaxTokens            int      `json:"max_tokens,omitempty"`                 // Max tokens for Tier 2 calls (default 8192)
+}
+
+// P2PConfig configures libp2p connectivity for mobile clients.
+type P2PConfig struct {
+	Enabled        bool     `json:"enabled"`                    // Enable libp2p networking
+	Port           int      `json:"port,omitempty"`             // Listen port (default 4001)
+	IdentityPath   string   `json:"identity_path,omitempty"`    // Path to identity key (default ~/.kaggen/p2p/identity.key)
+	Transports     []string `json:"transports,omitempty"`       // Transports to enable: "udx", "tcp" (default ["udx"])
+	DHTMode        string   `json:"dht_mode,omitempty"`         // DHT mode: "server" or "client" (default "server")
+	BootstrapPeers []string `json:"bootstrap_peers,omitempty"`  // Bootstrap peer multiaddrs
+	Topics         []string `json:"topics,omitempty"`           // GossipSub topics to join
+	RelayEnabled   bool     `json:"relay_enabled,omitempty"`    // Enable circuit relay v2
 }
 
 // TLSConfig configures TLS/SSL for secure connections.
@@ -438,6 +451,14 @@ func (c *Config) AuditDBPath() string {
 // BacklogDBPath returns the expanded path to the backlog database.
 func (c *Config) BacklogDBPath() string {
 	return ExpandPath("~/.kaggen/backlog.db")
+}
+
+// P2PIdentityPath returns the expanded path to the P2P identity key.
+func (c *Config) P2PIdentityPath() string {
+	if c.P2P.IdentityPath != "" {
+		return ExpandPath(c.P2P.IdentityPath)
+	}
+	return ExpandPath("~/.kaggen/p2p/identity.key")
 }
 
 // ReasoningTier2Model returns the Tier 2 model for deep reasoning.
