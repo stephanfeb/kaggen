@@ -367,7 +367,9 @@ tr:hover { background: var(--bg-secondary); }
               </div>
               <div class="qr-section">
                 <div class="qr-label">Scan with mobile app to connect:</div>
+                <div id="interface-selector" style="margin-bottom: 12px;"></div>
                 <div id="qr-code" class="qr-container"></div>
+                <div id="ws-url-display" style="margin-top: 8px; font-size: 11px; color: var(--text-muted); word-break: break-all;"></div>
               </div>
             </div>
           </div>
@@ -1093,17 +1095,29 @@ async function generateToken() {
   document.getElementById('token-value').textContent = data.token;
   document.getElementById('generated-token').style.display = 'block';
 
-  // Generate QR code
-  const qrEl = document.getElementById('qr-code');
-  qrEl.innerHTML = '';
-  new QRCode(qrEl, {
-    text: data.ws_url,
-    width: 200,
-    height: 200,
-    colorDark: '#000000',
-    colorLight: '#ffffff',
-    correctLevel: QRCode.CorrectLevel.M
-  });
+  // Build interface selector and QR code
+  const selectorEl = document.getElementById('interface-selector');
+  const wsUrls = data.ws_urls || [];
+
+  if (wsUrls.length === 0) {
+    selectorEl.innerHTML = '<span style="color: var(--text-muted)">No network interfaces found</span>';
+    return;
+  }
+
+  if (wsUrls.length === 1) {
+    selectorEl.innerHTML = '';
+    generateQRCode(wsUrls[0].url);
+  } else {
+    // Multiple interfaces - show selector
+    let html = '<select id="interface-select" onchange="onInterfaceChange()" class="settings-input" style="width: auto; min-width: 200px;">';
+    wsUrls.forEach((iface, idx) => {
+      html += `<option value="${idx}">${iface.name} (${iface.ip})</option>`;
+    });
+    html += '</select>';
+    selectorEl.innerHTML = html;
+    window._wsUrls = wsUrls;
+    generateQRCode(wsUrls[0].url);
+  }
 
   // Clear form and refresh list
   document.getElementById('token-name').value = '';
@@ -1118,6 +1132,29 @@ function copyToken() {
     btn.textContent = '✓ Copied!';
     setTimeout(() => btn.textContent = orig, 2000);
   });
+}
+
+function generateQRCode(url) {
+  const qrEl = document.getElementById('qr-code');
+  const urlDisplay = document.getElementById('ws-url-display');
+  qrEl.innerHTML = '';
+  new QRCode(qrEl, {
+    text: url,
+    width: 200,
+    height: 200,
+    colorDark: '#000000',
+    colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.M
+  });
+  urlDisplay.textContent = url;
+}
+
+function onInterfaceChange() {
+  const select = document.getElementById('interface-select');
+  const idx = parseInt(select.value, 10);
+  if (window._wsUrls && window._wsUrls[idx]) {
+    generateQRCode(window._wsUrls[idx].url);
+  }
 }
 
 async function revokeToken(id) {

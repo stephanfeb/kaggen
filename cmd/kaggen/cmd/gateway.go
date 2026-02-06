@@ -509,9 +509,18 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Callbacks: %s/callbacks/\n", server.CallbackBaseURL())
 	fmt.Println()
-	fmt.Println("Dashboard: http://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/")
-	fmt.Println("WebSocket endpoint: ws://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/ws")
-	fmt.Println("Health check: http://localhost:" + fmt.Sprint(cfg.Gateway.Port) + "/health")
+
+	// Determine protocol based on TLS config
+	httpProto := "http"
+	wsProto := "ws"
+	if cfg.Gateway.TLS.Enabled {
+		httpProto = "https"
+		wsProto = "wss"
+		fmt.Printf("TLS: enabled (cert=%s)\n", cfg.Gateway.TLS.CertFile)
+	}
+	fmt.Printf("Dashboard: %s://localhost:%d/\n", httpProto, cfg.Gateway.Port)
+	fmt.Printf("WebSocket endpoint: %s://localhost:%d/ws\n", wsProto, cfg.Gateway.Port)
+	fmt.Printf("Health check: %s://localhost:%d/health\n", httpProto, cfg.Gateway.Port)
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop the server.")
 	fmt.Println()

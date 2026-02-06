@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1024,19 +1025,32 @@ func (d *DashboardAPI) HandleTokenGenerate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Build WebSocket URL for QR code
-	wsURL := fmt.Sprintf("ws://%s:%d/ws?token=%s", d.config.Gateway.Bind, d.config.Gateway.Port, plaintext)
+	// Determine WebSocket protocol based on TLS config
+	wsProto := "ws"
+	if d.config.Gateway.TLS.Enabled {
+		wsProto = "wss"
+	}
+
+	// Build WebSocket URLs for QR code
+	var wsURLs []InterfaceURL
 	if d.config.Gateway.Bind == "0.0.0.0" || d.config.Gateway.Bind == "" {
-		// Use local IP if bound to all interfaces
-		wsURL = fmt.Sprintf("ws://YOUR_IP:%d/ws?token=%s", d.config.Gateway.Port, plaintext)
+		// Get URLs for all non-loopback interfaces
+		wsURLs = getInterfaceURLs(d.config.Gateway.Port, plaintext, wsProto)
+	} else {
+		// Single bound address
+		wsURLs = []InterfaceURL{{
+			Name: "bound",
+			IP:   d.config.Gateway.Bind,
+			URL:  fmt.Sprintf("%s://%s:%d/ws?token=%s", wsProto, d.config.Gateway.Bind, d.config.Gateway.Port, plaintext),
+		}}
 	}
 
 	writeJSON(w, map[string]any{
-		"id":        id,
-		"token":     plaintext,
-		"name":      req.Name,
-		"ws_url":    wsURL,
-		"message":   "Save this token now - it cannot be retrieved again!",
+		"id":       id,
+		"token":    plaintext,
+		"name":     req.Name,
+		"ws_urls":  wsURLs,
+		"message":  "Save this token now - it cannot be retrieved again!",
 	})
 }
 
@@ -1289,4 +1303,44 @@ func redactNestedKey(m map[string]any, keys ...string) {
 	if nested, ok := m[keys[0]].(map[string]any); ok {
 		redactNestedKey(nested, keys[1:]...)
 	}
+}
+
+// InterfaceURL represents a WebSocket URL for a specific network interface.
+type InterfaceURL struct {
+	Name string `json:"name"`
+	IP   string `json:"ip"`
+	URL  string `json:"url"`
+}
+
+// getInterfaceURLs returns WebSocket URLs for all non-loopback network interfaces.
+// Used when the gateway is bound to 0.0.0.0 to provide routable addresses in QR codes.
+// The proto parameter should be "ws" or "wss" depending on TLS configuration.
+func getInterfaceURLs(port int, token, proto string) []InterfaceURL {
+	var urls []InterfaceURL
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return urls
+	}
+
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				urls = append(urls, InterfaceURL{
+					Name: iface.Name,
+					IP:   ipnet.IP.String(),
+					URL:  fmt.Sprintf("%s://%s:%d/ws?token=%s", proto, ipnet.IP.String(), port, token),
+				})
+			}
+		}
+	}
+
+	return urls
 }

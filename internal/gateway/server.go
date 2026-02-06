@@ -68,10 +68,12 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 
 	addr := fmt.Sprintf("%s:%d", cfg.Gateway.Bind, cfg.Gateway.Port)
 
-	// Configure WebSocket channel with auth if enabled
+	// Configure WebSocket channel with auth and TLS if enabled
 	wsOpts := channel.WebSocketChannelOptions{
 		AllowedOrigins: cfg.Gateway.GetAllowedOrigins(),
 		AuthRequired:   cfg.Security.Auth.Enabled,
+		TLSCertFile:    cfg.Gateway.TLS.CertFile,
+		TLSKeyFile:     cfg.Gateway.TLS.KeyFile,
 	}
 
 	// Initialize token validator if auth is enabled

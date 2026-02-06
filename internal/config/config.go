@@ -197,10 +197,18 @@ type SupervisorConfig struct {
 	StallTimeoutSec int    `json:"stall_timeout_sec,omitempty"` // seconds of inactivity before stall detection, default 300
 }
 
+// TLSConfig configures TLS/SSL for secure connections.
+type TLSConfig struct {
+	Enabled  bool   `json:"enabled"`            // Enable TLS (wss:// and https://)
+	CertFile string `json:"cert_file"`          // Path to PEM-encoded certificate file
+	KeyFile  string `json:"key_file"`           // Path to PEM-encoded private key file
+}
+
 // GatewayConfig configures the gateway server.
 type GatewayConfig struct {
 	Bind            string       `json:"bind"`
 	Port            int          `json:"port"`
+	TLS             TLSConfig    `json:"tls,omitempty"`               // TLS configuration for wss:// support
 	CallbackBaseURL string       `json:"callback_base_url,omitempty"` // manual override for callback URLs (e.g. "https://kaggen.example.com")
 	AllowedOrigins  []string     `json:"allowed_origins,omitempty"`   // WebSocket/CORS allowed origins (default: localhost variants)
 	Tunnel          TunnelConfig `json:"tunnel,omitempty"`

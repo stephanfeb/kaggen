@@ -47,6 +47,8 @@ type WebSocketChannel struct {
 	allowedOrigins map[string]bool // map of allowed origin prefixes for CORS validation
 	authRequired   bool            // whether authentication is required
 	tokenValidator TokenValidator  // validates auth tokens
+	tlsCertFile    string          // TLS certificate file path
+	tlsKeyFile     string          // TLS private key file path
 }
 
 // wsClient represents a connected WebSocket client.
@@ -64,6 +66,8 @@ type WebSocketChannelOptions struct {
 	AllowedOrigins []string       // Allowed CORS origins (defaults to localhost)
 	AuthRequired   bool           // Whether authentication is required
 	TokenValidator TokenValidator // Function to validate tokens (required if AuthRequired)
+	TLSCertFile    string         // Path to TLS certificate file (enables TLS if set)
+	TLSKeyFile     string         // Path to TLS private key file
 }
 
 // NewWebSocketChannel creates a new WebSocket channel.
@@ -101,7 +105,14 @@ func NewWebSocketChannelWithOptions(addr string, logger *slog.Logger, opts WebSo
 		allowedOrigins: origins,
 		authRequired:   opts.AuthRequired,
 		tokenValidator: opts.TokenValidator,
+		tlsCertFile:    opts.TLSCertFile,
+		tlsKeyFile:     opts.TLSKeyFile,
 	}
+}
+
+// TLSEnabled returns true if TLS is configured.
+func (w *WebSocketChannel) TLSEnabled() bool {
+	return w.tlsCertFile != "" && w.tlsKeyFile != ""
 }
 
 // checkOrigin validates the Origin header against the allowed origins list.
@@ -180,14 +191,21 @@ func (w *WebSocketChannel) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	w.logger.Info("starting WebSocket server", "addr", w.addr)
-
 	go func() {
 		<-ctx.Done()
 		w.Stop(context.Background())
 	}()
 
-	if err := w.server.ListenAndServe(); err != http.ErrServerClosed {
+	var err error
+	if w.TLSEnabled() {
+		w.logger.Info("starting WebSocket server with TLS", "addr", w.addr, "cert", w.tlsCertFile)
+		err = w.server.ListenAndServeTLS(w.tlsCertFile, w.tlsKeyFile)
+	} else {
+		w.logger.Info("starting WebSocket server", "addr", w.addr)
+		err = w.server.ListenAndServe()
+	}
+
+	if err != http.ErrServerClosed {
 		return fmt.Errorf("websocket server error: %w", err)
 	}
 

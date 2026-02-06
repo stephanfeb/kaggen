@@ -454,6 +454,92 @@ curl -H "Authorization: Bearer kag_xxxxx" http://localhost:18789/api/overview
 
 ---
 
+### TLS/WSS Configuration
+
+Enable TLS to secure WebSocket (wss://) and HTTP (https://) connections. Required for production deployments and mobile app connectivity.
+
+#### Enable TLS
+
+```json
+{
+  "gateway": {
+    "bind": "0.0.0.0",
+    "port": 18789,
+    "tls": {
+      "enabled": true,
+      "cert_file": "/path/to/cert.pem",
+      "key_file": "/path/to/key.pem"
+    }
+  }
+}
+```
+
+When TLS is enabled:
+- WebSocket endpoint: `wss://your-ip:18789/ws`
+- Dashboard: `https://your-ip:18789/`
+- QR codes in the dashboard use `wss://` URLs
+
+#### Obtaining Certificates
+
+**Let's Encrypt (free, requires domain):**
+
+```bash
+# Install certbot
+brew install certbot  # macOS
+sudo apt install certbot  # Ubuntu
+
+# Get certificate (requires port 80 accessible)
+sudo certbot certonly --standalone -d yourdomain.com
+
+# Certificates are saved to:
+# /etc/letsencrypt/live/yourdomain.com/fullchain.pem
+# /etc/letsencrypt/live/yourdomain.com/privkey.pem
+```
+
+**Self-signed (for development/local network):**
+
+```bash
+# Generate a self-signed certificate valid for 365 days
+openssl req -x509 -newkey rsa:4096 \
+  -keyout key.pem -out cert.pem \
+  -days 365 -nodes \
+  -subj "/CN=kaggen-local"
+
+# For local network access, include IP SANs:
+openssl req -x509 -newkey rsa:4096 \
+  -keyout key.pem -out cert.pem \
+  -days 365 -nodes \
+  -subj "/CN=kaggen-local" \
+  -addext "subjectAltName=IP:192.168.1.100,IP:127.0.0.1"
+```
+
+> **Note:** Mobile apps connecting to self-signed certificates will need to trust the certificate. On iOS, install the cert via AirDrop or email and enable full trust in Settings > General > About > Certificate Trust Settings.
+
+#### TLS with Reverse Proxy
+
+Alternatively, terminate TLS at a reverse proxy (nginx, Caddy, Traefik) and keep Kaggen on plain HTTP internally:
+
+```nginx
+# nginx example
+server {
+    listen 443 ssl;
+    server_name kaggen.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/kaggen.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kaggen.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:18789;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+```
+
+---
+
 ### Command Sandbox
 
 Block dangerous shell commands before execution. The sandbox uses regex pattern matching to reject destructive operations.
@@ -691,14 +777,15 @@ Complete security configuration block:
 
 ### Security Best Practices
 
-1. **Always enable auth** when exposing the gateway beyond localhost
-2. **Enable command sandbox** in production to block dangerous commands
-3. **Run security-audit** periodically and fix issues promptly
-4. **Use secrets store** for credentials instead of plaintext in config
-5. **Bind to 127.0.0.1** unless remote access is explicitly required
-6. **Configure CORS** with specific origins, never wildcards
-7. **Set webhook secrets** for all inbound webhooks
-8. **Review auto-approve rules** carefully - overly broad patterns reduce security
+1. **Enable TLS** for any network-accessible deployment (required for mobile apps)
+2. **Always enable auth** when exposing the gateway beyond localhost
+3. **Enable command sandbox** in production to block dangerous commands
+4. **Run security-audit** periodically and fix issues promptly
+5. **Use secrets store** for credentials instead of plaintext in config
+6. **Bind to 127.0.0.1** unless remote access is explicitly required
+7. **Configure CORS** with specific origins, never wildcards
+8. **Set webhook secrets** for all inbound webhooks
+9. **Review auto-approve rules** carefully - overly broad patterns reduce security
 
 ## External Task Orchestration
 
