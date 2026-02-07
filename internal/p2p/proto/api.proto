@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package kaggen.p2p;
+
+option go_package = "github.com/yourusername/kaggen/internal/p2p/proto";
+
+// APIRequest is the generic request wrapper for all P2P API protocols.
+// Used by: sessions, tasks, approvals, system, secrets, files protocols.
+message APIRequest {
+  // Unique request ID for correlation with response.
+  string id = 1;
+
+  // Method name to invoke (e.g., "list", "get", "create", "delete").
+  string method = 2;
+
+  // JSON-encoded parameters for the method.
+  bytes params = 3;
+}
+
+// APIResponse is the generic response wrapper for all P2P API protocols.
+message APIResponse {
+  // Correlates to the request ID.
+  string id = 1;
+
+  // True if the request was successful.
+  bool success = 2;
+
+  // JSON-encoded response data (when success=true).
+  bytes data = 3;
+
+  // Error message (when success=false).
+  string error = 4;
+}
+
+// StreamEvent is used for streaming responses (e.g., logs, real-time updates).
+message StreamEvent {
+  // Unique event ID.
+  string id = 1;
+
+  // Event type (e.g., "log", "task_update", "approval_added").
+  string type = 2;
+
+  // JSON-encoded event data.
+  bytes data = 3;
+
+  // True if this is the final event in the stream.
+  bool done = 4;
+}

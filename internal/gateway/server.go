@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -11,6 +12,7 @@ import (
 
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/auth"
+	"github.com/yourusername/kaggen/internal/backlog"
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/p2p"
@@ -35,18 +37,22 @@ func (m *channelMap) Channel(name string) channel.Channel {
 
 // Server is the gateway server that routes messages between channels and the agent.
 type Server struct {
-	config       *config.Config
-	router       *channel.Router
-	handler      *Handler
-	wsChannel    *channel.WebSocketChannel
-	tgChannel    *channel.TelegramChannel
-	proactive    *proactive.Engine
-	dashboard    *DashboardAPI
-	tunnel       *tunnel.CloudflareTunnel
-	pubsubBridge *pubsub.Bridge
-	p2pNode      *p2p.Node
-	callbackURL  string // resolved callback base URL
-	logger       *slog.Logger
+	config        *config.Config
+	router        *channel.Router
+	handler       *Handler
+	wsChannel     *channel.WebSocketChannel
+	tgChannel     *channel.TelegramChannel
+	p2pChannel    *p2p.P2PChannel
+	proactive     *proactive.Engine
+	dashboard     *DashboardAPI
+	tunnel        *tunnel.CloudflareTunnel
+	pubsubBridge  *pubsub.Bridge
+	p2pNode       *p2p.Node
+	agentProvider *kaggenAgent.AgentProvider
+	tokenStore    *auth.TokenStore
+	startTime     time.Time
+	callbackURL   string // resolved callback base URL
+	logger        *slog.Logger
 }
 
 // NewServer creates a new gateway server.
@@ -124,14 +130,33 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 		dashboard.RegisterRoutes(wsChannel.HandleFunc)
 	}
 
+	// Get token store for P2P secrets protocol
+	var tokenStore *auth.TokenStore
+	if cfg.Security.Auth.Enabled {
+		tokenFile := cfg.Security.Auth.TokenFile
+		if tokenFile == "" {
+			tokenFile = config.ExpandPath("~/.kaggen/tokens.json")
+		}
+		tokenStore, _ = auth.NewTokenStore(tokenFile)
+	}
+
+	// Get agent provider if available
+	var agentProvider *kaggenAgent.AgentProvider
+	if ap, ok := ag.(*kaggenAgent.AgentProvider); ok {
+		agentProvider = ap
+	}
+
 	s := &Server{
-		config:      cfg,
-		router:      router,
-		handler:     handler,
-		wsChannel:   wsChannel,
-		tgChannel:   tgChannel,
-		dashboard:   dashboard,
-		logger:      logger,
+		config:        cfg,
+		router:        router,
+		handler:       handler,
+		wsChannel:     wsChannel,
+		tgChannel:     tgChannel,
+		dashboard:     dashboard,
+		agentProvider: agentProvider,
+		tokenStore:    tokenStore,
+		startTime:     time.Now(),
+		logger:        logger,
 	}
 
 	// Build channel map and create proactive engine if configured
@@ -177,7 +202,7 @@ func (s *Server) Start(ctx context.Context) error {
 		"bind", s.config.Gateway.Bind,
 		"port", s.config.Gateway.Port)
 
-	// Initialize P2P node if configured.
+	// Initialize P2P node and channel if configured.
 	if s.config.P2P.Enabled {
 		node, err := p2p.NewNode(ctx, &s.config.P2P, s.logger)
 		if err != nil {
@@ -192,6 +217,20 @@ func (s *Server) Start(ctx context.Context) error {
 			for _, addr := range node.Addrs() {
 				fmt.Printf("P2P Listen: %s/p2p/%s\n", addr, node.PeerID())
 			}
+
+			// Create and register P2P channel for chat protocol.
+			s.p2pChannel = p2p.NewP2PChannel(node, s.logger)
+			s.router.AddChannel(s.p2pChannel)
+
+			// Start the P2P channel.
+			if err := s.p2pChannel.Start(ctx); err != nil {
+				s.logger.Warn("failed to start P2P channel", "error", err)
+			} else {
+				s.logger.Info("P2P chat protocol ready", "protocol", p2p.ChatProtocolID)
+			}
+
+			// Register P2P API protocols.
+			s.registerP2PAPIProtocols(node)
 		}
 	}
 
@@ -292,7 +331,12 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Stop the P2P node
+	// Stop the P2P channel and node
+	if s.p2pChannel != nil {
+		if err := s.p2pChannel.Stop(ctx); err != nil {
+			s.logger.Warn("error stopping P2P channel", "error", err)
+		}
+	}
 	if s.p2pNode != nil {
 		if err := s.p2pNode.Close(); err != nil {
 			s.logger.Warn("error stopping P2P node", "error", err)
@@ -344,4 +388,61 @@ func (s *Server) SendTelegramAlert(chatID int64, text string) {
 	if s.tgChannel != nil {
 		s.tgChannel.SendText(chatID, text)
 	}
+}
+
+// registerP2PAPIProtocols registers all P2P API protocol handlers.
+func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
+	host := node.Host()
+
+	// Sessions protocol
+	sessionsProto := p2p.NewSessionsProtocol(s.config, s.logger)
+	host.SetStreamHandler(p2p.SessionsProtocolID, sessionsProto.StreamHandler())
+	s.logger.Info("P2P protocol registered", "protocol", p2p.SessionsProtocolID)
+
+	// Tasks protocol
+	if s.agentProvider != nil {
+		tasksProto := p2p.NewTasksProtocol(
+			s.agentProvider.InFlightStore(),
+			s.agentProvider.Pipelines,
+			s.logger,
+		)
+		host.SetStreamHandler(p2p.TasksProtocolID, tasksProto.StreamHandler())
+		s.logger.Info("P2P protocol registered", "protocol", p2p.TasksProtocolID)
+
+		// Approvals protocol
+		approvalsProto := p2p.NewApprovalsProtocol(
+			s.agentProvider.InFlightStore(),
+			s.agentProvider.GuardedRunner(),
+			s.handler,
+			s.logger,
+		)
+		host.SetStreamHandler(p2p.ApprovalsProtocolID, approvalsProto.StreamHandler())
+		s.logger.Info("P2P protocol registered", "protocol", p2p.ApprovalsProtocolID)
+
+		// System protocol
+		var backlogStore *backlog.Store
+		if s.dashboard != nil {
+			backlogStore = s.dashboard.backlogStore
+		}
+		systemProto := p2p.NewSystemProtocol(
+			s.config,
+			s.agentProvider,
+			backlogStore,
+			s.startTime,
+			s.ClientCount,
+			s.logger,
+		)
+		host.SetStreamHandler(p2p.SystemProtocolID, systemProto.StreamHandler())
+		s.logger.Info("P2P protocol registered", "protocol", p2p.SystemProtocolID)
+	}
+
+	// Secrets protocol
+	secretsProto := p2p.NewSecretsProtocol(s.tokenStore, s.logger)
+	host.SetStreamHandler(p2p.SecretsProtocolID, secretsProto.StreamHandler())
+	s.logger.Info("P2P protocol registered", "protocol", p2p.SecretsProtocolID)
+
+	// Files protocol
+	filesProto := p2p.NewFilesProtocol(s.logger)
+	host.SetStreamHandler(p2p.FilesProtocolID, filesProto.StreamHandler())
+	s.logger.Info("P2P protocol registered", "protocol", p2p.FilesProtocolID)
 }
