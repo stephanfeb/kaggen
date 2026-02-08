@@ -82,6 +82,8 @@ type Handler struct {
 	auditStore    *kaggenAgent.AuditStore
 	guardedRunner *kaggenAgent.GuardedSkillRunner
 	trustConfig   *config.TrustConfig
+	sandbox       *trust.Sandbox
+	localAgent    *kaggenAgent.LocalAgent
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
@@ -96,6 +98,17 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 
 	r := runner.NewRunner(appName, ag, opts...)
 
+	// Initialize sandbox and local agent for third-party messages.
+	var sandbox *trust.Sandbox
+	var localAgent *kaggenAgent.LocalAgent
+	if trustCfg != nil && trustCfg.ThirdParty.Enabled {
+		relayStorePath := config.ExpandPath("~/.kaggen/relays.json")
+		sandbox = trust.NewSandbox(&trustCfg.ThirdParty, relayStorePath, nil, logger)
+		if trustCfg.ThirdParty.UseLocalLLM {
+			localAgent = kaggenAgent.NewLocalAgent(&trustCfg.ThirdParty, logger)
+		}
+	}
+
 	return &Handler{
 		runner:        r,
 		logger:        logger,
@@ -105,6 +118,8 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 		auditStore:    auditStore,
 		guardedRunner: guardedRunner,
 		trustConfig:   trustCfg,
+		sandbox:       sandbox,
+		localAgent:    localAgent,
 	}
 }
 
@@ -144,11 +159,70 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 			return respond(errResp)
 		}
 
-		// TODO: Route to sandboxed handler or local LLM.
-		// For now, log and continue with normal processing but flag as third-party.
 		h.logger.Info("processing third-party message (sandbox mode)",
 			"session_id", msg.SessionID,
 			"use_local_llm", h.trustConfig.ThirdParty.UseLocalLLM)
+
+		// Process through sandbox first (checks relay requests, session limits).
+		if h.sandbox != nil {
+			sandboxResp, err := h.sandbox.ProcessMessage(ctx, msg)
+			if err != nil {
+				h.logger.Error("sandbox processing failed", "error", err)
+			} else if sandboxResp != nil {
+				// Sandbox handled it (relay request, limit exceeded, etc.)
+				resp := &channel.Response{
+					ID:        uuid.New().String(),
+					MessageID: msg.ID,
+					SessionID: msg.SessionID,
+					Type:      "text",
+					Content:   sandboxResp.Message,
+					Done:      true,
+					Metadata:  copyMetadata(msg.Metadata),
+				}
+				return respond(resp)
+			}
+		}
+
+		// Route to local LLM if enabled and available.
+		if h.localAgent != nil && h.localAgent.IsAvailable(ctx) {
+			resp, err := h.localAgent.HandleMessage(ctx, msg)
+			if err != nil {
+				h.logger.Error("local agent failed", "error", err)
+				// Fall through to error response
+			} else if resp != nil {
+				resp.ID = uuid.New().String()
+				resp.Metadata = copyMetadata(msg.Metadata)
+				return respond(resp)
+			}
+		}
+
+		// Fallback: respond with a generic message if local LLM not available.
+		if h.trustConfig.ThirdParty.UseLocalLLM {
+			h.logger.Warn("local LLM not available for third-party message",
+				"session_id", msg.SessionID)
+			fallbackResp := &channel.Response{
+				ID:        uuid.New().String(),
+				MessageID: msg.ID,
+				SessionID: msg.SessionID,
+				Type:      "text",
+				Content:   "I'm temporarily unable to process your message. Please try again later or contact the owner directly.",
+				Done:      true,
+				Metadata:  copyMetadata(msg.Metadata),
+			}
+			return respond(fallbackResp)
+		}
+
+		// If not using local LLM, third-party gets no response (or use frontier model with sandbox prompt)
+		// For now, return a friendly but limited response.
+		return respond(&channel.Response{
+			ID:        uuid.New().String(),
+			MessageID: msg.ID,
+			SessionID: msg.SessionID,
+			Type:      "text",
+			Content:   "Hello! I'm running in limited mode for new contacts. If you need to reach the owner, you can say 'Please tell the owner...' and I'll relay your message.",
+			Done:      true,
+			Metadata:  copyMetadata(msg.Metadata),
+		})
 	}
 
 	// Store trust tier in metadata for downstream processing.
