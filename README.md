@@ -490,6 +490,44 @@ Sessions are stored as JSONL files under `~/.kaggen/sessions/`.
 
 Kaggen supports WhatsApp as a messaging channel using the [whatsmeow](https://github.com/tulir/whatsmeow) library, which implements WhatsApp's multi-device protocol natively in Go.
 
+### Important: Understanding WhatsApp Linking
+
+> **Unlike Telegram**, WhatsApp does not have a separate "bot" identity. When you link Kaggen to WhatsApp, it becomes a **linked device on your existing WhatsApp account** — similar to WhatsApp Web or Desktop.
+
+**This means:**
+
+- The bot **shares your WhatsApp identity** (your phone number)
+- The bot **receives all your incoming messages** (not just messages meant for it)
+- Users cannot "message the bot directly" — they message *you*, and the bot responds
+- You cannot message yourself to test it (you'd need a second phone number)
+
+**Privacy implications:**
+
+- All incoming messages pass through Kaggen's code
+- Messages from allowed senders are sent to your configured LLM provider
+- Use `allowed_phones` to restrict which conversations the bot processes
+
+### Options for a Dedicated Bot Identity
+
+If you want a WhatsApp bot with its own phone number that users can message directly:
+
+| Option | Setup | Cost | Notes |
+|--------|-------|------|-------|
+| **Dedicated SIM** | Get a second phone number, link Kaggen to that account | ~$5-10/mo | Easiest solution. Use a prepaid SIM or eSIM. |
+| **Google Voice** | Create a Google Voice number (US only), register WhatsApp on it | Free | Requires US Google account. May need a phone for initial verification. |
+| **WhatsApp Business API** | Apply for Meta Business verification, use Cloud API | Varies | Official solution for businesses. More complex setup. |
+
+**Recommended approach for a personal assistant bot:**
+
+1. Get a cheap prepaid SIM or eSIM dedicated to the bot
+2. Register WhatsApp on that number using a spare phone
+3. Link Kaggen as a device on the bot's account (not your personal account)
+4. Share the bot's phone number with users who should have access
+
+This keeps your personal WhatsApp private while giving the bot its own identity.
+
+---
+
 ### 1. Enable WhatsApp in config
 
 Edit `~/.kaggen/config.json`:
@@ -504,7 +542,7 @@ Edit `~/.kaggen/config.json`:
 }
 ```
 
-### 2. Link your WhatsApp account
+### 2. Link a WhatsApp account
 
 Start the gateway:
 
@@ -512,9 +550,9 @@ Start the gateway:
 ./kaggen gateway
 ```
 
-On first startup, a QR code will be displayed in the terminal. Scan it with WhatsApp on your phone:
+On first startup, a QR code will be displayed in the terminal. Scan it with the WhatsApp account you want the bot to use:
 
-1. Open WhatsApp on your phone
+1. Open WhatsApp on the phone with the bot's account (or your personal account if that's your preference)
 2. Go to **Settings > Linked Devices > Link a Device**
 3. Scan the QR code displayed in the terminal
 
@@ -526,9 +564,11 @@ whatsapp connected (jid: 1234567890@s.whatsapp.net)
 
 The session is stored in `~/.kaggen/whatsapp.db` (SQLite). On subsequent starts, the gateway reconnects automatically without requiring a new QR scan.
 
-### 3. Access control (optional)
+> **Tip:** If using a dedicated bot number, you only need the phone for initial setup and occasional re-pairing. The bot runs independently once linked.
 
-Restrict which phone numbers or groups can interact with the bot:
+### 3. Access control (recommended)
+
+Restrict which phone numbers or groups the bot responds to. **This is especially important if linking your personal WhatsApp account**, as it prevents the bot from processing private conversations.
 
 ```json
 {
@@ -543,7 +583,15 @@ Restrict which phone numbers or groups can interact with the bot:
 }
 ```
 
+| Scenario | Configuration |
+|----------|---------------|
+| Dedicated bot number | `allowed_phones: []` (allow all) or list specific users |
+| Personal account | `allowed_phones: ["+friend1", "+friend2"]` (only listed numbers get bot responses) |
+| Specific groups only | `allowed_phones: []`, `allowed_groups: ["group-jid@g.us"]` |
+
 When both lists are empty (the default), all users are allowed. Phone numbers should include the country code.
+
+Messages from non-allowed senders still arrive (the bot sees them) but receive only the `reject_message` — they are **not** sent to the LLM.
 
 ### 4. Rate limiting (optional)
 
