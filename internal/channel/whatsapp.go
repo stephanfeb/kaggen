@@ -336,6 +336,9 @@ func (w *WhatsAppChannel) handleMessage(evt *events.Message) {
 			"is_group":   chatJID.Server != types.DefaultUserServer,
 			"push_name":  evt.Info.PushName,
 		},
+		// Trust tier classification fields.
+		SenderPhone:   senderPhone,
+		IsInAllowlist: w.isInAllowlist(senderPhone, chatJID.String()),
 	}
 
 	// Detect reply-to-bot-message for threading.
@@ -468,6 +471,15 @@ func (w *WhatsAppChannel) downloadMedia(msg whatsmeow.DownloadableMessage, fileN
 func (w *WhatsAppChannel) isAuthorized(phone, chatJID string) bool {
 	if len(w.allowedPhones) == 0 && len(w.allowedGroups) == 0 {
 		return true
+	}
+	return w.isInAllowlist(phone, chatJID)
+}
+
+// isInAllowlist returns true if the phone or group is explicitly in the allowlist.
+// Unlike isAuthorized, returns false when allowlists are empty (open mode).
+func (w *WhatsAppChannel) isInAllowlist(phone, chatJID string) bool {
+	if len(w.allowedPhones) == 0 && len(w.allowedGroups) == 0 {
+		return false // Open mode - no explicit allowlist
 	}
 	return w.allowedPhones[phone] || w.allowedGroups[chatJID]
 }

@@ -26,6 +26,7 @@ type Config struct {
 	Reasoning  ReasoningConfig  `json:"reasoning,omitempty"`
 	Creativity CreativityConfig `json:"creativity,omitempty"`
 	P2P        P2PConfig        `json:"p2p,omitempty"`
+	Trust      TrustConfig      `json:"trust,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -231,14 +232,34 @@ type CreativityConfig struct {
 
 // P2PConfig configures libp2p connectivity for mobile clients.
 type P2PConfig struct {
-	Enabled        bool     `json:"enabled"`                    // Enable libp2p networking
-	Port           int      `json:"port,omitempty"`             // Listen port (default 4001)
-	IdentityPath   string   `json:"identity_path,omitempty"`    // Path to identity key (default ~/.kaggen/p2p/identity.key)
-	Transports     []string `json:"transports,omitempty"`       // Transports to enable: "udx", "tcp" (default ["udx"])
-	DHTMode        string   `json:"dht_mode,omitempty"`         // DHT mode: "server" or "client" (default "server")
-	BootstrapPeers []string `json:"bootstrap_peers,omitempty"`  // Bootstrap peer multiaddrs
-	Topics         []string `json:"topics,omitempty"`           // GossipSub topics to join
-	RelayEnabled   bool     `json:"relay_enabled,omitempty"`    // Enable circuit relay v2
+	Enabled        bool     `json:"enabled"`                   // Enable libp2p networking
+	Port           int      `json:"port,omitempty"`            // Listen port (default 4001)
+	IdentityPath   string   `json:"identity_path,omitempty"`   // Path to identity key (default ~/.kaggen/p2p/identity.key)
+	Transports     []string `json:"transports,omitempty"`      // Transports to enable: "udx", "tcp" (default ["udx"])
+	DHTMode        string   `json:"dht_mode,omitempty"`        // DHT mode: "server" or "client" (default "server")
+	BootstrapPeers []string `json:"bootstrap_peers,omitempty"` // Bootstrap peer multiaddrs
+	Topics         []string `json:"topics,omitempty"`          // GossipSub topics to join
+	RelayEnabled   bool     `json:"relay_enabled,omitempty"`   // Enable circuit relay v2
+}
+
+// TrustConfig configures the trust-tier security system.
+type TrustConfig struct {
+	// Owner tier - full access including send_* tools
+	OwnerPhones   []string `json:"owner_phones,omitempty"`   // Phone numbers with full access (e.g. ["+1234567890"])
+	OwnerTelegram []int64  `json:"owner_telegram,omitempty"` // Telegram user IDs with full access
+
+	// Third-party settings
+	ThirdParty ThirdPartyConfig `json:"third_party"`
+}
+
+// ThirdPartyConfig configures handling of third-party (unknown sender) messages.
+type ThirdPartyConfig struct {
+	Enabled          bool   `json:"enabled"`                     // Allow third-party messages (default: false, reject unknown)
+	UseLocalLLM      bool   `json:"use_local_llm"`               // Route to local Ollama instead of frontier model
+	LocalLLMModel    string `json:"local_llm_model,omitempty"`   // Ollama model (e.g. "llama3.2:3b")
+	MaxSessionLength int    `json:"max_session_length,omitempty"` // Max messages per session (0 = no limit)
+	AllowRelay       bool   `json:"allow_relay"`                 // Allow relay requests to owner
+	SystemPrompt     string `json:"system_prompt,omitempty"`     // Custom sandboxed system prompt
 }
 
 // TLSConfig configures TLS/SSL for secure connections.

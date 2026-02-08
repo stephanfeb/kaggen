@@ -26,6 +26,8 @@ import (
 	kaggenAgent "github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/tools"
+	"github.com/yourusername/kaggen/internal/trust"
 )
 
 // RespondFunc is a callback for sending responses through a channel.
@@ -79,10 +81,11 @@ type Handler struct {
 	inFlight      *kaggenAgent.InFlightStore
 	auditStore    *kaggenAgent.AuditStore
 	guardedRunner *kaggenAgent.GuardedSkillRunner
+	trustConfig   *config.TrustConfig
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
-func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, inFlight *kaggenAgent.InFlightStore, auditStore *kaggenAgent.AuditStore, guardedRunner *kaggenAgent.GuardedSkillRunner, memService ...memory.Service) *Handler {
+func NewHandler(appName string, ag agent.Agent, sessionService session.Service, logger *slog.Logger, forker ThreadForker, inFlight *kaggenAgent.InFlightStore, auditStore *kaggenAgent.AuditStore, guardedRunner *kaggenAgent.GuardedSkillRunner, trustCfg *config.TrustConfig, memService ...memory.Service) *Handler {
 	var opts []runner.Option
 	if sessionService != nil {
 		opts = append(opts, runner.WithSessionService(sessionService))
@@ -101,15 +104,58 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 		inFlight:      inFlight,
 		auditStore:    auditStore,
 		guardedRunner: guardedRunner,
+		trustConfig:   trustCfg,
 	}
 }
 
 // HandleMessage processes an incoming message and sends responses via the callback.
 func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respond func(*channel.Response) error) error {
+	// Classify trust tier for this message.
+	tier := trust.ClassifyWithAllowlist(
+		msg.SenderPhone,
+		msg.SenderTelegramID,
+		h.trustConfig,
+		msg.IsInAllowlist,
+	)
+
 	h.logger.Info("handling message",
 		"session_id", msg.SessionID,
 		"channel", msg.Channel,
-		"content_length", len(msg.Content))
+		"content_length", len(msg.Content),
+		"trust_tier", tier.String())
+
+	// Handle third-party messages differently (sandboxed mode).
+	if tier.IsThirdParty() {
+		// Check if third-party messages are enabled.
+		if h.trustConfig == nil || !h.trustConfig.ThirdParty.Enabled {
+			h.logger.Warn("rejecting third-party message (not enabled)",
+				"session_id", msg.SessionID,
+				"sender_phone", msg.SenderPhone,
+				"sender_telegram_id", msg.SenderTelegramID)
+			errResp := &channel.Response{
+				ID:        uuid.New().String(),
+				MessageID: msg.ID,
+				SessionID: msg.SessionID,
+				Type:      "error",
+				Content:   "Sorry, I'm not configured to chat with people I don't know yet.",
+				Done:      true,
+				Metadata:  copyMetadata(msg.Metadata),
+			}
+			return respond(errResp)
+		}
+
+		// TODO: Route to sandboxed handler or local LLM.
+		// For now, log and continue with normal processing but flag as third-party.
+		h.logger.Info("processing third-party message (sandbox mode)",
+			"session_id", msg.SessionID,
+			"use_local_llm", h.trustConfig.ThirdParty.UseLocalLLM)
+	}
+
+	// Store trust tier in metadata for downstream processing.
+	if msg.Metadata == nil {
+		msg.Metadata = make(map[string]any)
+	}
+	msg.Metadata["trust_tier"] = int(tier)
 
 	// Handle approval actions (approve/reject from Telegram inline keyboard or REST API).
 	if action, ok := msg.Metadata["approval_action"].(string); ok {
@@ -182,6 +228,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respo
 		"session_id", msg.SessionID,
 		"user_id", msg.UserID,
 		"channel", msg.Channel)
+
+	// Add trust tier to context so tools can check permissions.
+	ctx = tools.WithTrustTier(ctx, tier)
 
 	events, err := h.runner.Run(
 		ctx,

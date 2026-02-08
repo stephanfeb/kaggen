@@ -364,6 +364,15 @@ func (t *TelegramChannel) isAuthorized(userID, chatID int64) bool {
 	if len(t.allowedUsers) == 0 && len(t.allowedChats) == 0 {
 		return true
 	}
+	return t.isInAllowlist(userID, chatID)
+}
+
+// isInAllowlist returns true if the user or chat is explicitly in the allowlist.
+// Unlike isAuthorized, returns false when allowlists are empty (open mode).
+func (t *TelegramChannel) isInAllowlist(userID, chatID int64) bool {
+	if len(t.allowedUsers) == 0 && len(t.allowedChats) == 0 {
+		return false // Open mode - no explicit allowlist
+	}
 	return t.allowedUsers[userID] || t.allowedChats[chatID]
 }
 
@@ -553,6 +562,9 @@ func (t *TelegramChannel) telegramUpdateToMessage(update tgbotapi.Update) *Messa
 			"message_id": fmt.Sprintf("%d", m.MessageID),
 			"chat_type":  m.Chat.Type,
 		},
+		// Trust tier classification fields.
+		SenderTelegramID: m.From.ID,
+		IsInAllowlist:    t.isInAllowlist(m.From.ID, m.Chat.ID),
 	}
 
 	// Detect reply-to-bot-message for threading.

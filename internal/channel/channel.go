@@ -41,6 +41,18 @@ type Message struct {
 	// ReplyToEventID, when set, indicates the user is replying to a specific
 	// event in the session. The handler uses this to fork a thread session.
 	ReplyToEventID string `json:"reply_to_event_id,omitempty"`
+
+	// --- Trust tier classification fields ---
+
+	// SenderPhone is the sender's phone number (for WhatsApp messages).
+	SenderPhone string `json:"sender_phone,omitempty"`
+
+	// SenderTelegramID is the sender's Telegram user ID (for Telegram messages).
+	SenderTelegramID int64 `json:"sender_telegram_id,omitempty"`
+
+	// IsInAllowlist indicates whether the channel already authorized this sender
+	// via its allowlist (AllowedUsers, AllowedPhones, etc.).
+	IsInAllowlist bool `json:"is_in_allowlist,omitempty"`
 }
 
 // Response represents an outgoing response to a channel.

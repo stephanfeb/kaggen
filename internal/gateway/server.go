@@ -72,7 +72,7 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 		auditStore = ap.AuditStore()
 		guardedRunner = ap.GuardedRunner()
 	}
-	handler := NewHandler(AppName, ag, sessionService, logger, forker, inFlight, auditStore, guardedRunner, memService...)
+	handler := NewHandler(AppName, ag, sessionService, logger, forker, inFlight, auditStore, guardedRunner, &cfg.Trust, memService...)
 	router := channel.NewRouter(handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Gateway.Bind, cfg.Gateway.Port)

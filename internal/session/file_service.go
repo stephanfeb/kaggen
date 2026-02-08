@@ -32,6 +32,8 @@ type SessionMetadata struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	ParentEventID   string `json:"parent_event_id,omitempty"`
 	IsThread        bool   `json:"is_thread,omitempty"`
+	// Trust tier for this session (0=owner, 1=authorized, 2=third_party).
+	TrustTier int `json:"trust_tier,omitempty"`
 }
 
 // ContextCache stores the last LLM messages array for fast session reload.
