@@ -1,6 +1,6 @@
 # Kaggen
 
-Kaggen is a personal AI assistant platform with multi-model support (Anthropic Claude, Google Gemini, ZAI GLM). It provides an interactive CLI agent, a WebSocket gateway, and a Telegram bot interface -- all with persistent conversation sessions and tool execution capabilities.
+Kaggen is a personal AI assistant platform with multi-model support (Anthropic Claude, Google Gemini, ZAI GLM). It provides an interactive CLI agent, a WebSocket gateway, and messaging channel integrations (Telegram, WhatsApp) -- all with persistent conversation sessions and tool execution capabilities.
 
 Named after the mantis deity of the San people, associated with creativity and trickster wisdom.
 
@@ -9,6 +9,7 @@ Named after the mantis deity of the San people, associated with creativity and t
 - **Interactive CLI agent** with session persistence
 - **WebSocket gateway** for real-time multi-client communication
 - **Telegram bot** with access control and rate limiting
+- **WhatsApp bot** with QR code pairing and multi-device support
 - **Tool execution** -- read/write files, run shell commands
 - **File-backed sessions** for conversation history across restarts
 - **Bootstrap memory** -- customizable personality, identity, and instructions via Markdown files
@@ -87,6 +88,9 @@ Configuration lives at `~/.kaggen/config.json`. It is created with defaults by `
   },
   "channels": {
     "telegram": {
+      "enabled": false
+    },
+    "whatsapp": {
       "enabled": false
     }
   },
@@ -458,12 +462,13 @@ Kaggen Gateway
 Bind: 127.0.0.1:18789
 Session Backend: file
 Telegram: enabled
+WhatsApp: enabled
 
 WebSocket endpoint: ws://localhost:18789/ws
 Health check: http://localhost:18789/health
 ```
 
-Open your bot in Telegram and send a message. The bot will respond using the same agent and tools available in the CLI.
+Open your bot in Telegram or WhatsApp and send a message. The bot will respond using the same agent and tools available in the CLI.
 
 ### 6. Group chats
 
@@ -480,6 +485,173 @@ By default, Telegram bots in groups only see messages starting with `/` or messa
 - **Groups:** Session ID is `tg-group-{chat_id}` -- all members share one session per group
 
 Sessions are stored as JSONL files under `~/.kaggen/sessions/`.
+
+## WhatsApp Bot Setup
+
+Kaggen supports WhatsApp as a messaging channel using the [whatsmeow](https://github.com/tulir/whatsmeow) library, which implements WhatsApp's multi-device protocol natively in Go.
+
+### 1. Enable WhatsApp in config
+
+Edit `~/.kaggen/config.json`:
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "enabled": true
+    }
+  }
+}
+```
+
+### 2. Link your WhatsApp account
+
+Start the gateway:
+
+```bash
+./kaggen gateway
+```
+
+On first startup, a QR code will be displayed in the terminal. Scan it with WhatsApp on your phone:
+
+1. Open WhatsApp on your phone
+2. Go to **Settings > Linked Devices > Link a Device**
+3. Scan the QR code displayed in the terminal
+
+After successful pairing, you'll see:
+
+```
+whatsapp connected (jid: 1234567890@s.whatsapp.net)
+```
+
+The session is stored in `~/.kaggen/whatsapp.db` (SQLite). On subsequent starts, the gateway reconnects automatically without requiring a new QR scan.
+
+### 3. Access control (optional)
+
+Restrict which phone numbers or groups can interact with the bot:
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "allowed_phones": ["+1234567890", "+0987654321"],
+      "allowed_groups": ["120363012345678901@g.us"],
+      "reject_message": "Sorry, this bot is private."
+    }
+  }
+}
+```
+
+When both lists are empty (the default), all users are allowed. Phone numbers should include the country code.
+
+### 4. Rate limiting (optional)
+
+Per-user rate limiting prevents abuse. Defaults to 10 messages per 60 seconds.
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "user_rate_limit": 10,
+      "user_rate_window": 60,
+      "rate_limit_message": "Please slow down! Max 10 messages per minute."
+    }
+  }
+}
+```
+
+### 5. Custom session database path (optional)
+
+By default, the WhatsApp session is stored at `~/.kaggen/whatsapp.db`. You can customize this:
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "session_db_path": "/path/to/custom/whatsapp.db"
+    }
+  }
+}
+```
+
+### Session routing
+
+- **DMs:** Session ID is `wa-dm-{phone}` -- each user gets their own persistent session
+- **Groups:** Session ID is `wa-group-{group_jid}` -- all members share one session per group
+
+### Bot commands
+
+The WhatsApp bot supports the same commands as Telegram:
+
+| Command | Description |
+|---------|-------------|
+| `/clear` | Delete the current session and start fresh |
+| `/compact` | Summarize and truncate the session history |
+
+### Re-pairing
+
+If your WhatsApp session is invalidated (e.g., you unlinked the device from your phone), delete the session database and restart:
+
+```bash
+rm ~/.kaggen/whatsapp.db
+./kaggen gateway
+```
+
+A new QR code will be displayed for pairing.
+
+### Device name
+
+By default, the bot appears as "Kaggen Bot" in WhatsApp's **Linked Devices** list. You can customize this:
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "device_name": "Amelia Bot"
+    }
+  }
+}
+```
+
+If `device_name` is not set, the name is read from your `IDENTITY.md` file (e.g., "Amelia" becomes "Amelia Bot"). If no identity is configured, it defaults to "Kaggen Bot".
+
+> **Note:** WhatsApp's multi-device protocol does not support setting a custom profile picture programmatically. To change the bot's profile picture, use the WhatsApp mobile app on the linked phone.
+
+### Configuration reference
+
+```json
+{
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "device_name": "Kaggen Bot",
+      "session_db_path": "~/.kaggen/whatsapp.db",
+      "allowed_phones": [],
+      "allowed_groups": [],
+      "reject_message": "Sorry, you are not authorized to use this bot.",
+      "user_rate_limit": 10,
+      "user_rate_window": 60,
+      "rate_limit_message": "You're sending messages too quickly. Please wait a moment."
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable the WhatsApp channel |
+| `device_name` | (from IDENTITY.md or "Kaggen Bot") | Name shown in WhatsApp's Linked Devices list |
+| `session_db_path` | `~/.kaggen/whatsapp.db` | SQLite database for session persistence |
+| `allowed_phones` | `[]` | Phone numbers allowed to use the bot (empty = all allowed) |
+| `allowed_groups` | `[]` | Group JIDs allowed to use the bot (empty = all allowed) |
+| `reject_message` | (default) | Message sent to unauthorized users |
+| `user_rate_limit` | `10` | Max messages per user per window |
+| `user_rate_window` | `60` | Rate limit window in seconds |
+| `rate_limit_message` | (default) | Message sent when rate limited |
 
 ## Memory Search
 
@@ -1757,10 +1929,11 @@ internal/
   agent/             Agent logic, async dispatch, in-flight task store, approval system
   auth/              Token authentication (Argon2-ID hashing)
   channel/           Channel interface + implementations
-  eval/              Agent evaluation framework (assertions, replay, runner)
     channel.go         Router, Message, Response types
     websocket.go       WebSocket channel
     telegram.go        Telegram bot channel
+    whatsapp.go        WhatsApp bot channel (whatsmeow)
+  eval/              Agent evaluation framework (assertions, replay, runner)
   config/            Configuration loading
   gateway/           HTTP/WS gateway server, message handler, callback handler
   embedding/         Embedding interface + Ollama client

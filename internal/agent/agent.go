@@ -48,6 +48,7 @@ type ExternalDeliveryConfig struct {
 
 	// Channel availability - informs agent what communication options exist
 	TelegramEnabled  bool // Telegram bot is configured and available
+	WhatsAppEnabled  bool // WhatsApp bot is configured and available
 	WebSocketEnabled bool // WebSocket connections available (always true when gateway running)
 	P2PEnabled       bool // P2P/libp2p connections available for mobile clients
 }
@@ -954,9 +955,17 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	// Add channel availability section so agent knows what communication options exist.
 	instruction += "\n### Available Communication Channels\n\n"
 	instruction += "The following channels are currently configured and available:\n\n"
+	var unavailableChannels []string
 	if extConfig != nil {
 		if extConfig.TelegramEnabled {
 			instruction += "- **telegram**: Real-time messaging via Telegram bot\n"
+		} else {
+			unavailableChannels = append(unavailableChannels, "Telegram")
+		}
+		if extConfig.WhatsAppEnabled {
+			instruction += "- **whatsapp**: Real-time messaging via WhatsApp\n"
+		} else {
+			unavailableChannels = append(unavailableChannels, "WhatsApp")
 		}
 		if extConfig.WebSocketEnabled {
 			instruction += "- **websocket**: Web interface connections\n"
@@ -965,20 +974,21 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 			instruction += "- **p2p**: Peer-to-peer mobile connections\n"
 		}
 	}
-	instruction += "\n**Unavailable channels**: WhatsApp, Slack, SMS (not configured)\n"
+	unavailableChannels = append(unavailableChannels, "Slack", "SMS")
+	instruction += "\n**Unavailable channels**: " + strings.Join(unavailableChannels, ", ") + " (not configured)\n"
 	instruction += "\nWhen a user requests a channel that's not available, suggest the closest available alternative.\n\n"
 
 	// Add proactive fallback instructions for handling unavailable capabilities.
 	instruction += "### Handling Unavailable Capabilities\n\n"
 	instruction += "When you cannot fulfill a request due to missing capability:\n\n"
 	instruction += "1. **Check available alternatives** - Before saying 'I can't', review what you CAN do\n"
-	instruction += "2. **Suggest closest match** - For messaging, prefer Telegram over email. For real-time, prefer WebSocket over async\n"
+	instruction += "2. **Suggest closest match** - For messaging, prefer Telegram/WhatsApp over email. For real-time, prefer WebSocket over async\n"
 	instruction += "3. **Explain the alternative** - Don't just say 'try X', explain why it's a good substitute\n"
-	instruction += "4. **Ask for confirmation** - 'I don't have WhatsApp, but I can reach them via Telegram. Should I try that?'\n\n"
+	instruction += "4. **Ask for confirmation** - If the requested channel is unavailable, suggest an alternative and ask for confirmation\n\n"
 	instruction += "**Priority order for communication alternatives:**\n"
-	instruction += "- Messaging: Telegram > WebSocket notification > Email\n"
-	instruction += "- Real-time: WebSocket > Telegram > P2P\n"
-	instruction += "- Async delivery: Email > Telegram scheduled message\n\n"
+	instruction += "- Messaging: WhatsApp > Telegram > WebSocket notification > Email\n"
+	instruction += "- Real-time: WebSocket > WhatsApp > Telegram > P2P\n"
+	instruction += "- Async delivery: Email > Telegram/WhatsApp scheduled message\n\n"
 	instruction += "**Finding contacts across channels:**\n"
 	instruction += "If user asks to contact someone on an unavailable channel, check if you have their contact info for available channels.\n"
 	instruction += "Use memory search to find: 'contact info for [name]' or '[name] telegram/email/phone'\n\n"

@@ -1,0 +1,26 @@
+# Error Handling Tests
+# Tests how the coordinator handles error conditions and edge cases
+
+- id: "error-001"
+  name: "Handle non-existent file gracefully"
+  description: "Coordinator should inform user when requested file doesn't exist"
+  category: error_handling
+  user_message: "Read the contents of missing.txt"
+  # No files in context - file doesn't exist
+  assert:
+    - type: llm-rubric
+      rubric: "Response indicates the file was not found or doesn't exist"
+      min_score: 0.7
+
+- id: "error-002"
+  name: "Handle empty file"
+  description: "Coordinator should handle empty files appropriately"
+  category: error_handling
+  user_message: "Summarize the contents of empty.txt"
+  context:
+    files:
+      "empty.txt": ""
+  assert:
+    - type: llm-rubric
+      rubric: "Response indicates the file is empty or has no content to summarize"
+      min_score: 0.7

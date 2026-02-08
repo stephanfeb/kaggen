@@ -1,0 +1,37 @@
+# Boundary Case Tests
+# Tests coordinator behavior at edge cases and boundaries
+
+- id: "boundary-001"
+  name: "Very simple question"
+  description: "Coordinator handles trivial questions efficiently"
+  category: boundary
+  user_message: "What is 2 + 2?"
+  assert:
+    - type: contains
+      value: "4"
+
+- id: "boundary-002"
+  name: "Large number calculation"
+  description: "Coordinator handles larger calculations"
+  category: boundary
+  user_message: "What is 12345 times 67890?"
+  assert:
+    - type: contains
+      value: "838102050"
+
+- id: "boundary-003"
+  name: "Multiple questions in one message"
+  description: "Coordinator should address all parts of a compound question"
+  category: boundary
+  user_message: "What port is configured and what is the host?"
+  context:
+    files:
+      "config.yaml": |
+        server:
+          port: 3000
+          host: api.example.com
+  assert:
+    - type: contains
+      value: "3000"
+    - type: contains
+      value: "api.example.com"

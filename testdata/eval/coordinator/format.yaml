@@ -1,0 +1,34 @@
+# Output Format Tests
+# Tests coordinator's ability to format output as requested
+
+- id: "format-001"
+  name: "Request list format"
+  description: "Coordinator should format output as requested"
+  category: format
+  user_message: "List all the features mentioned in README.md as bullet points"
+  context:
+    files:
+      "README.md": |
+        # App
+        Features: User login, Dashboard, Reports, API access
+  assert:
+    - type: llm-rubric
+      rubric: "Response presents features as a bulleted or numbered list"
+      min_score: 0.7
+
+- id: "format-002"
+  name: "Extract and format data"
+  description: "Coordinator should extract data in requested format"
+  category: format
+  user_message: "Show me the environment variables from .env as a table"
+  context:
+    files:
+      ".env": |
+        DB_HOST=localhost
+        DB_PORT=5432
+        API_KEY=secret123
+  assert:
+    - type: contains
+      value: "DB_HOST"
+    - type: contains
+      value: "localhost"

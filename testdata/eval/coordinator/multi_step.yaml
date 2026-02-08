@@ -1,0 +1,42 @@
+# Multi-Step Task Tests
+# Tests coordinator's ability to handle tasks requiring multiple operations
+
+- id: "multi-001"
+  name: "Read then calculate"
+  description: "Coordinator should read numbers from file and calculate"
+  category: multi_step
+  user_message: "Read the prices from prices.txt and calculate the total"
+  context:
+    files:
+      "prices.txt": |
+        10.50
+        25.00
+        14.50
+  assert:
+    - type: contains
+      value: "50"
+    - type: llm-rubric
+      rubric: "Response correctly calculates the sum as 50"
+      min_score: 0.7
+
+- id: "multi-002"
+  name: "Compare two files"
+  description: "Coordinator should compare content from two files"
+  category: multi_step
+  user_message: "Compare the ports in config-dev.yaml and config-prod.yaml"
+  context:
+    files:
+      "config-dev.yaml": |
+        port: 3000
+        debug: true
+      "config-prod.yaml": |
+        port: 8080
+        debug: false
+  assert:
+    - type: contains
+      value: "3000"
+    - type: contains
+      value: "8080"
+    - type: llm-rubric
+      rubric: "Response compares the two configurations and notes the port difference"
+      min_score: 0.7

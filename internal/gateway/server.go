@@ -42,6 +42,7 @@ type Server struct {
 	handler       *Handler
 	wsChannel     *channel.WebSocketChannel
 	tgChannel     *channel.TelegramChannel
+	waChannel     *channel.WhatsAppChannel
 	p2pChannel    *p2p.P2PChannel
 	proactive     *proactive.Engine
 	dashboard     *DashboardAPI
@@ -124,6 +125,22 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 		}
 	}
 
+	var waChannel *channel.WhatsAppChannel
+	if cfg.Channels.WhatsApp.Enabled {
+		dbPath := cfg.WhatsAppSessionDBPath()
+		deviceName := cfg.WhatsAppDeviceName()
+		var sttURL string
+		if cfg.STT.Enabled {
+			sttURL = cfg.STT.BaseURL
+			if sttURL == "" {
+				sttURL = "http://localhost:8000"
+			}
+		}
+		waChannel = channel.NewWhatsAppChannel(&cfg.Channels.WhatsApp, dbPath, deviceName, sessionService, logger, sttURL)
+		router.AddChannel(waChannel)
+		logger.Info("whatsapp channel configured", "session_db", dbPath, "device_name", deviceName)
+	}
+
 	// Register dashboard routes if provided.
 	if dashboard != nil {
 		dashboard.SetHandler(handler)
@@ -152,6 +169,7 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 		handler:       handler,
 		wsChannel:     wsChannel,
 		tgChannel:     tgChannel,
+		waChannel:     waChannel,
 		dashboard:     dashboard,
 		agentProvider: agentProvider,
 		tokenStore:    tokenStore,
@@ -166,6 +184,9 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 		}}
 		if tgChannel != nil {
 			chMap.channels["telegram"] = tgChannel
+		}
+		if waChannel != nil {
+			chMap.channels["whatsapp"] = waChannel
 		}
 		var history *proactive.HistoryStore
 		historyDBPath := cfg.ProactiveDBPath()
@@ -282,6 +303,14 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("start telegram channel: %w", err)
 		}
 		s.logger.Info("telegram channel started")
+	}
+
+	// Start the WhatsApp channel if configured (non-blocking)
+	if s.waChannel != nil {
+		if err := s.waChannel.Start(ctx); err != nil {
+			return fmt.Errorf("start whatsapp channel: %w", err)
+		}
+		s.logger.Info("whatsapp channel started")
 	}
 
 	// Start the router to begin processing messages

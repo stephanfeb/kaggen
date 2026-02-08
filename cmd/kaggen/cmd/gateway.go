@@ -407,6 +407,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		CallbackBaseURL: cfg.Gateway.CallbackBaseURL,
 		// Channel availability - enables agent to suggest alternatives
 		TelegramEnabled:  cfg.Channels.Telegram.Enabled && cfg.TelegramBotToken() != "",
+		WhatsAppEnabled:  cfg.Channels.WhatsApp.Enabled,
 		WebSocketEnabled: true, // always available when gateway is running
 		P2PEnabled:       cfg.P2P.Enabled,
 	}

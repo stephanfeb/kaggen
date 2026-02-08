@@ -321,6 +321,7 @@ type PGConfig struct {
 // ChannelsConfig configures communication channels.
 type ChannelsConfig struct {
 	Telegram TelegramConfig `json:"telegram"`
+	WhatsApp WhatsAppConfig `json:"whatsapp"`
 }
 
 // TelegramConfig configures the Telegram bot channel.
@@ -342,6 +343,58 @@ func (c *Config) TelegramBotToken() string {
 		return c.Channels.Telegram.BotToken
 	}
 	return os.Getenv("TELEGRAM_BOT_TOKEN")
+}
+
+// WhatsAppConfig configures the WhatsApp channel.
+type WhatsAppConfig struct {
+	Enabled          bool     `json:"enabled"`
+	DeviceName       string   `json:"device_name,omitempty"`
+	SessionDBPath    string   `json:"session_db_path,omitempty"`
+	AllowedPhones    []string `json:"allowed_phones,omitempty"`
+	AllowedGroups    []string `json:"allowed_groups,omitempty"`
+	RejectMessage    string   `json:"reject_message,omitempty"`
+	UserRateLimit    int      `json:"user_rate_limit,omitempty"`
+	UserRateWindow   int      `json:"user_rate_window,omitempty"`
+	RateLimitMessage string   `json:"rate_limit_message,omitempty"`
+}
+
+// WhatsAppSessionDBPath returns the session database path, with a default.
+func (c *Config) WhatsAppSessionDBPath() string {
+	if c.Channels.WhatsApp.SessionDBPath != "" {
+		return ExpandPath(c.Channels.WhatsApp.SessionDBPath)
+	}
+	return ExpandPath("~/.kaggen/whatsapp.db")
+}
+
+// WhatsAppDeviceName returns the device name for WhatsApp linked devices list.
+// Falls back to reading the bot name from IDENTITY.md, or "Kaggen" as default.
+func (c *Config) WhatsAppDeviceName() string {
+	if c.Channels.WhatsApp.DeviceName != "" {
+		return c.Channels.WhatsApp.DeviceName
+	}
+	// Try to read from IDENTITY.md
+	if name := c.readBotNameFromIdentity(); name != "" {
+		return name + " Bot"
+	}
+	return "Kaggen Bot"
+}
+
+// readBotNameFromIdentity attempts to extract the bot name from IDENTITY.md.
+func (c *Config) readBotNameFromIdentity() string {
+	identityPath := filepath.Join(c.WorkspacePath(), "IDENTITY.md")
+	data, err := os.ReadFile(identityPath)
+	if err != nil {
+		return ""
+	}
+	// Look for **Name:** pattern
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "**Name:**") {
+			name := strings.TrimPrefix(line, "**Name:**")
+			return strings.TrimSpace(name)
+		}
+	}
+	return ""
 }
 
 // DefaultConfig returns the default configuration.
