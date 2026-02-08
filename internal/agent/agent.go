@@ -36,14 +36,20 @@ const (
 )
 
 // ExternalDeliveryConfig describes how external systems can send results back
-// to Kaggen. When set, this information is injected into the coordinator's
-// system prompt so it can instruct external systems (GCP instances, CI
-// pipelines, etc.) on where and how to publish callbacks.
+// to Kaggen and what communication channels are available. When set, this
+// information is injected into the coordinator's system prompt so it can
+// instruct external systems on where to publish callbacks and suggest
+// appropriate alternatives when a requested channel is unavailable.
 type ExternalDeliveryConfig struct {
 	PubSubProject   string // GCP project ID for Pub/Sub delivery
 	PubSubTopic     string // Pub/Sub topic name
 	TunnelEnabled   bool   // whether a reverse tunnel is active
 	CallbackBaseURL string // public callback URL (from tunnel or manual config)
+
+	// Channel availability - informs agent what communication options exist
+	TelegramEnabled  bool // Telegram bot is configured and available
+	WebSocketEnabled bool // WebSocket connections available (always true when gateway running)
+	P2PEnabled       bool // P2P/libp2p connections available for mobile clients
 }
 
 // ApprovalNotifyFunc sends an approval notification to the client's channel.
@@ -928,6 +934,38 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "Use when: problem seems familiar, want to learn from past work.\n\n"
 	instruction += "**`synthesize_solution`**: Combine partial solutions into a coherent whole.\n"
 	instruction += "Use when: have multiple partial approaches, need to integrate sub-agent results.\n\n"
+
+	// Add channel availability section so agent knows what communication options exist.
+	instruction += "\n### Available Communication Channels\n\n"
+	instruction += "The following channels are currently configured and available:\n\n"
+	if extConfig != nil {
+		if extConfig.TelegramEnabled {
+			instruction += "- **telegram**: Real-time messaging via Telegram bot\n"
+		}
+		if extConfig.WebSocketEnabled {
+			instruction += "- **websocket**: Web interface connections\n"
+		}
+		if extConfig.P2PEnabled {
+			instruction += "- **p2p**: Peer-to-peer mobile connections\n"
+		}
+	}
+	instruction += "\n**Unavailable channels**: WhatsApp, Slack, SMS (not configured)\n"
+	instruction += "\nWhen a user requests a channel that's not available, suggest the closest available alternative.\n\n"
+
+	// Add proactive fallback instructions for handling unavailable capabilities.
+	instruction += "### Handling Unavailable Capabilities\n\n"
+	instruction += "When you cannot fulfill a request due to missing capability:\n\n"
+	instruction += "1. **Check available alternatives** - Before saying 'I can't', review what you CAN do\n"
+	instruction += "2. **Suggest closest match** - For messaging, prefer Telegram over email. For real-time, prefer WebSocket over async\n"
+	instruction += "3. **Explain the alternative** - Don't just say 'try X', explain why it's a good substitute\n"
+	instruction += "4. **Ask for confirmation** - 'I don't have WhatsApp, but I can reach them via Telegram. Should I try that?'\n\n"
+	instruction += "**Priority order for communication alternatives:**\n"
+	instruction += "- Messaging: Telegram > WebSocket notification > Email\n"
+	instruction += "- Real-time: WebSocket > Telegram > P2P\n"
+	instruction += "- Async delivery: Email > Telegram scheduled message\n\n"
+	instruction += "**Finding contacts across channels:**\n"
+	instruction += "If user asks to contact someone on an unavailable channel, check if you have their contact info for available channels.\n"
+	instruction += "Use memory search to find: 'contact info for [name]' or '[name] telegram/email/phone'\n\n"
 
 	// Load pipeline definitions for optional workflow section.
 	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")

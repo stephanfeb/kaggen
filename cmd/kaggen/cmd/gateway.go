@@ -398,15 +398,17 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	toolList = append(toolList, externalTS.Tools()...)
 
 	// Build external delivery config so the coordinator knows how external
-	// systems should send results back (Pub/Sub topic, callback URL, etc.).
-	var extConfig *kaggenAgent.ExternalDeliveryConfig
-	if cfg.Gateway.PubSub.Enabled || cfg.Gateway.Tunnel.Enabled {
-		extConfig = &kaggenAgent.ExternalDeliveryConfig{
-			PubSubProject:   cfg.PubSubProjectID(),
-			PubSubTopic:     cfg.Gateway.PubSub.Topic,
-			TunnelEnabled:   cfg.Gateway.Tunnel.Enabled,
-			CallbackBaseURL: cfg.Gateway.CallbackBaseURL,
-		}
+	// systems should send results back (Pub/Sub topic, callback URL, etc.)
+	// and what communication channels are available for suggesting alternatives.
+	extConfig := &kaggenAgent.ExternalDeliveryConfig{
+		PubSubProject:   cfg.PubSubProjectID(),
+		PubSubTopic:     cfg.Gateway.PubSub.Topic,
+		TunnelEnabled:   cfg.Gateway.Tunnel.Enabled,
+		CallbackBaseURL: cfg.Gateway.CallbackBaseURL,
+		// Channel availability - enables agent to suggest alternatives
+		TelegramEnabled:  cfg.Channels.Telegram.Enabled && cfg.TelegramBotToken() != "",
+		WebSocketEnabled: true, // always available when gateway is running
+		P2PEnabled:       cfg.P2P.Enabled,
 	}
 
 	// Give the coordinator external task tools + reload_skills + config awareness, then rebuild.
@@ -416,9 +418,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		logger.Info("reload_skills tool enabled for autonomous skill acquisition")
 	}
 	factory.SetExtraCoordinatorTools(coordTools...)
-	if extConfig != nil {
-		factory.SetExternalConfig(extConfig)
-	}
+	factory.SetExternalConfig(extConfig)
 	if err := factory.Rebuild(); err != nil {
 		logger.Warn("failed to rebuild agent with external config", "error", err)
 	}
