@@ -927,13 +927,29 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "5. This creates an audit trail: deliberation -> plan -> subtasks\n\n"
 
 	instruction += "\n### Creativity Tools\n\n"
-	instruction += "For novel or complex problems, use creativity tools:\n\n"
-	instruction += "**`explore_approaches`**: Generate multiple creative solutions using divergent thinking.\n"
-	instruction += "Use when: brainstorming, stuck on a problem, want unconventional options.\n\n"
-	instruction += "**`find_analogies`**: Search memory for similar past problems and adaptation suggestions.\n"
-	instruction += "Use when: problem seems familiar, want to learn from past work.\n\n"
-	instruction += "**`synthesize_solution`**: Combine partial solutions into a coherent whole.\n"
-	instruction += "Use when: have multiple partial approaches, need to integrate sub-agent results.\n\n"
+	instruction += "These tools help solve novel problems. Use them proactively based on the triggers below.\n\n"
+
+	instruction += "**`explore_approaches`** - Generate creative solutions using divergent thinking\n\n"
+	instruction += "**Automatic Triggers** - Use WITHOUT being asked when:\n"
+	instruction += "- You've attempted 2+ approaches that failed\n"
+	instruction += "- User expresses frustration: 'this isn't working', 'I'm stuck', 'nothing works'\n"
+	instruction += "- Task requires novelty: 'creative', 'innovative', 'unconventional', 'new way'\n"
+	instruction += "- You're uncertain which direction to take\n"
+	instruction += "- The obvious solution seems too simple for the problem\n\n"
+
+	instruction += "**`find_analogies`** - Search memory for similar past problems\n\n"
+	instruction += "**Automatic Triggers** - Use WITHOUT being asked when:\n"
+	instruction += "- Problem feels familiar but you can't recall specifics\n"
+	instruction += "- User mentions: 'like before', 'similar to', 'we did this'\n"
+	instruction += "- Starting a task in a domain you've worked in previously\n"
+	instruction += "- You want to avoid reinventing a solution that already exists\n\n"
+
+	instruction += "**`synthesize_solution`** - Combine partial solutions into coherent whole\n\n"
+	instruction += "**Automatic Triggers** - Use WITHOUT being asked when:\n"
+	instruction += "- Multiple sub-agents have returned results that need integration\n"
+	instruction += "- You have 2+ partial approaches that each solve part of the problem\n"
+	instruction += "- explore_approaches returned multiple viable options to combine\n"
+	instruction += "- User asks to 'put it all together' or 'combine these'\n\n"
 
 	// Add channel availability section so agent knows what communication options exist.
 	instruction += "\n### Available Communication Channels\n\n"
