@@ -165,10 +165,11 @@ type backlogSubtask struct {
 }
 
 type backlogDecomposeRequest struct {
-	Title       string           `json:"title" jsonschema:"required,description=Title for the overall plan"`
-	Description string           `json:"description,omitempty" jsonschema:"description=Description of the overall goal"`
-	Subtasks    []backlogSubtask `json:"subtasks" jsonschema:"required,description=List of subtasks to create under the plan"`
-	Priority    string           `json:"priority,omitempty" jsonschema:"description=Priority for the plan: high or normal (default) or low"`
+	Title          string           `json:"title" jsonschema:"required,description=Title for the overall plan"`
+	Description    string           `json:"description,omitempty" jsonschema:"description=Description of the overall goal"`
+	Subtasks       []backlogSubtask `json:"subtasks" jsonschema:"required,description=List of subtasks to create under the plan"`
+	Priority       string           `json:"priority,omitempty" jsonschema:"description=Priority for the plan: high or normal (default) or low"`
+	DeliberationID string           `json:"deliberation_id,omitempty" jsonschema:"description=ID from plan_deliberate to link this plan to a prior strategic deliberation"`
 }
 
 type backlogDecomposeResponse struct {
@@ -182,13 +183,21 @@ func (bt *backlogToolSet) decompose(_ context.Context, req backlogDecomposeReque
 		return backlogDecomposeResponse{}, fmt.Errorf("at least one subtask is required")
 	}
 
+	// Validate deliberation_id if provided.
+	if req.DeliberationID != "" {
+		if _, err := bt.store.GetDeliberation(req.DeliberationID); err != nil {
+			return backlogDecomposeResponse{}, fmt.Errorf("invalid deliberation_id %q: %w", req.DeliberationID, err)
+		}
+	}
+
 	// Create parent plan item.
 	parent := &backlog.Item{
-		Title:       req.Title,
-		Description: req.Description,
-		Priority:    req.Priority,
-		Source:      "coordinator",
-		Status:      "in_progress",
+		Title:          req.Title,
+		Description:    req.Description,
+		Priority:       req.Priority,
+		Source:         "coordinator",
+		Status:         "in_progress",
+		DeliberationID: req.DeliberationID,
 	}
 	if err := bt.store.Add(parent); err != nil {
 		return backlogDecomposeResponse{}, fmt.Errorf("create plan: %w", err)

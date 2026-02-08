@@ -54,6 +54,27 @@ func migrate(db *sql.DB) error {
 	// Additive migration: add parent_id column if missing (existing databases).
 	_, _ = db.Exec(`ALTER TABLE backlog ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_backlog_parent ON backlog(parent_id)`)
+
+	// Additive migration: add deliberation_id column for linking to strategic deliberations.
+	_, _ = db.Exec(`ALTER TABLE backlog ADD COLUMN deliberation_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_backlog_deliberation ON backlog(deliberation_id)`)
+
+	// Create deliberations table for storing strategic deliberation results.
+	_, _ = db.Exec(`
+		CREATE TABLE IF NOT EXISTS deliberations (
+			id          TEXT PRIMARY KEY,
+			task        TEXT NOT NULL,
+			constraints TEXT NOT NULL DEFAULT '[]',
+			approaches  TEXT NOT NULL DEFAULT '[]',
+			selected    TEXT NOT NULL DEFAULT '',
+			rationale   TEXT NOT NULL DEFAULT '',
+			risks       TEXT NOT NULL DEFAULT '[]',
+			mitigations TEXT NOT NULL DEFAULT '[]',
+			created_at  TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_deliberations_created ON deliberations(created_at);
+	`)
+
 	return nil
 }
 
@@ -82,9 +103,9 @@ func (s *Store) Add(item *Item) error {
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO backlog (id, title, description, priority, status, source, parent_id, context, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.Title, item.Description, item.Priority, item.Status, item.Source, item.ParentID,
+		INSERT INTO backlog (id, title, description, priority, status, source, parent_id, deliberation_id, context, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.Title, item.Description, item.Priority, item.Status, item.Source, item.ParentID, item.DeliberationID,
 		string(ctxJSON), now.Format(time.RFC3339), now.Format(time.RFC3339),
 	)
 	return err
@@ -92,7 +113,7 @@ func (s *Store) Add(item *Item) error {
 
 // Get returns a single backlog item by ID.
 func (s *Store) Get(id string) (*Item, error) {
-	row := s.db.QueryRow(`SELECT id, title, description, priority, status, source, parent_id, context, created_at, updated_at FROM backlog WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, title, description, priority, status, source, parent_id, deliberation_id, context, created_at, updated_at FROM backlog WHERE id = ?`, id)
 	item, err := scanItem(row)
 	if err != nil {
 		return nil, err
@@ -130,7 +151,7 @@ func (s *Store) CheckParentCompletion(parentID string) (bool, error) {
 
 // List returns backlog items matching the filter.
 func (s *Store) List(f Filter) ([]*Item, error) {
-	query := `SELECT id, title, description, priority, status, source, parent_id, context, created_at, updated_at FROM backlog WHERE 1=1`
+	query := `SELECT id, title, description, priority, status, source, parent_id, deliberation_id, context, created_at, updated_at FROM backlog WHERE 1=1`
 	var args []any
 
 	if f.Status != "" {
@@ -211,6 +232,10 @@ func (s *Store) Update(id string, u Update) error {
 		sets = append(sets, "parent_id = ?")
 		args = append(args, *u.ParentID)
 	}
+	if u.DeliberationID != nil {
+		sets = append(sets, "deliberation_id = ?")
+		args = append(args, *u.DeliberationID)
+	}
 
 	args = append(args, id)
 
@@ -279,7 +304,7 @@ func scanItem(row *sql.Row) (*Item, error) {
 	var item Item
 	var ctxJSON, createdAt, updatedAt string
 	err := row.Scan(&item.ID, &item.Title, &item.Description, &item.Priority,
-		&item.Status, &item.Source, &item.ParentID, &ctxJSON, &createdAt, &updatedAt)
+		&item.Status, &item.Source, &item.ParentID, &item.DeliberationID, &ctxJSON, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +318,7 @@ func scanItemRows(rows *sql.Rows) (*Item, error) {
 	var item Item
 	var ctxJSON, createdAt, updatedAt string
 	err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.Priority,
-		&item.Status, &item.Source, &item.ParentID, &ctxJSON, &createdAt, &updatedAt)
+		&item.Status, &item.Source, &item.ParentID, &item.DeliberationID, &ctxJSON, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -301,4 +326,44 @@ func scanItemRows(rows *sql.Rows) (*Item, error) {
 	item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	item.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	return &item, nil
+}
+
+// AddDeliberation stores a strategic deliberation record.
+func (s *Store) AddDeliberation(d *DeliberationRecord) error {
+	constraints, _ := json.Marshal(d.Constraints)
+	approaches, _ := json.Marshal(d.Approaches)
+	risks, _ := json.Marshal(d.Risks)
+	mitigations, _ := json.Marshal(d.Mitigations)
+
+	_, err := s.db.Exec(`
+		INSERT INTO deliberations (id, task, constraints, approaches, selected, rationale, risks, mitigations, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.Task, string(constraints), string(approaches), d.Selected, d.Rationale,
+		string(risks), string(mitigations), d.CreatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+// GetDeliberation retrieves a deliberation record by ID.
+func (s *Store) GetDeliberation(id string) (*DeliberationRecord, error) {
+	row := s.db.QueryRow(`
+		SELECT id, task, constraints, approaches, selected, rationale, risks, mitigations, created_at
+		FROM deliberations WHERE id = ?`, id)
+
+	var d DeliberationRecord
+	var constraints, approaches, risks, mitigations, createdAt string
+
+	err := row.Scan(&d.ID, &d.Task, &constraints, &approaches, &d.Selected, &d.Rationale,
+		&risks, &mitigations, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = json.Unmarshal([]byte(constraints), &d.Constraints)
+	_ = json.Unmarshal([]byte(approaches), &d.Approaches)
+	_ = json.Unmarshal([]byte(risks), &d.Risks)
+	_ = json.Unmarshal([]byte(mitigations), &d.Mitigations)
+	d.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+
+	return &d, nil
 }

@@ -149,12 +149,16 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create tools
 	toolList := tools.DefaultTools(workspace)
 
+	// Declare variables for Tier 2 model (used by reasoning and deliberation tools)
+	var tier2ModelLimited model.Model
+	var tier2ModelString string
+
 	// Create Tier 2 model for reasoning escalation if enabled
 	if cfg.Reasoning.Enabled {
-		tier2ModelString := cfg.ReasoningTier2Model(configModel)
+		tier2ModelString = cfg.ReasoningTier2Model(configModel)
 		tier2Model := createTier2ModelForGateway(tier2ModelString, logger)
 		if tier2Model != nil {
-			tier2ModelLimited := kaggenModel.NewRateLimitedModel(tier2Model, 1) // Conservative rate limit for deep thinking
+			tier2ModelLimited = kaggenModel.NewRateLimitedModel(tier2Model, 1) // Conservative rate limit for deep thinking
 			reasoningTool := tools.NewReasoningTool(tier2ModelLimited, nil, cfg.Reasoning, tier2ModelString, logger)
 			if reasoningTool != nil {
 				toolList = append(toolList, reasoningTool)
@@ -187,6 +191,15 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	cronTS, cronTools := tools.NewCronToolSet(cfg)
 	toolList = append(toolList, cronTools...)
 	logger.Info("backlog store enabled", "db", cfg.BacklogDBPath())
+
+	// Register deliberation tool if Tier 2 model is available
+	if tier2ModelLimited != nil {
+		deliberationTool := tools.NewDeliberationTool(tier2ModelLimited, backlogStore, cfg.Reasoning, tier2ModelString, logger)
+		if deliberationTool != nil {
+			toolList = append(toolList, deliberationTool)
+			logger.Info("plan_deliberate enabled")
+		}
+	}
 
 	// Memory service (passed to server if available)
 	var memService tmemory.Service

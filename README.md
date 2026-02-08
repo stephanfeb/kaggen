@@ -223,6 +223,89 @@ The Tier 2 model returns structured analysis:
 }
 ```
 
+### Strategic Deliberation
+
+When tiered reasoning is enabled, the agent also gains access to the `plan_deliberate` tool for strategic decision-making before task decomposition. This creates an audit trail linking strategic choices to execution plans.
+
+#### When to Use Deliberation
+
+The coordinator uses `plan_deliberate` when:
+
+1. **Multiple valid approaches exist** with different trade-offs
+2. **Strategic or architectural decisions** are involved
+3. **Uncertainty about which approach is best** for the given constraints
+4. **Significant downstream impact** of the choice
+
+#### Deliberation Workflow
+
+```
+1. plan_deliberate    →  Evaluate approaches, select recommendation
+2. backlog_decompose  →  Create execution plan linked to deliberation
+3. dispatch_task      →  Execute each subtask
+```
+
+The `deliberation_id` returned by `plan_deliberate` can be passed to `backlog_decompose` to link the execution plan to the strategic deliberation, creating an audit trail.
+
+#### Deliberation Response
+
+```json
+{
+  "deliberation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "approaches": [
+    {
+      "name": "Approach A",
+      "strategy": "How this approach works",
+      "pros": ["advantage 1", "advantage 2"],
+      "cons": ["disadvantage 1"],
+      "skills_required": ["coder", "researcher"],
+      "effort": "medium"
+    },
+    {
+      "name": "Approach B",
+      "strategy": "Alternative strategy",
+      "pros": ["different advantage"],
+      "cons": ["different trade-off"],
+      "skills_required": ["coder"],
+      "effort": "low"
+    }
+  ],
+  "selected": "Approach A",
+  "rationale": "Why this approach is recommended given constraints",
+  "risks": ["risk 1", "risk 2"],
+  "mitigations": ["how to handle risk 1", "how to handle risk 2"],
+  "model_used": "anthropic/claude-opus-4-5-20251101"
+}
+```
+
+#### Deliberation Tool Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `task` | Yes | The task or goal to deliberate on |
+| `constraints` | No | Constraints to consider (e.g., `["time", "quality", "cost"]`) |
+| `exploration_budget` | No | Number of approaches to evaluate (default: 3, max: 5) |
+| `must_consider` | No | Specific approaches that must be included in the analysis |
+| `context` | No | Additional context about the problem domain |
+
+#### Linking to Backlog
+
+When calling `backlog_decompose` after deliberation, include the `deliberation_id`:
+
+```json
+{
+  "title": "Implement user authentication",
+  "description": "Add auth system based on JWT approach",
+  "deliberation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "subtasks": [
+    {"title": "Create JWT utility module"},
+    {"title": "Add login endpoint"},
+    {"title": "Add middleware for protected routes"}
+  ]
+}
+```
+
+This creates a parent backlog item linked to the deliberation record, enabling full traceability from strategic decision to execution.
+
 ### Environment variables
 
 | Variable | Description |

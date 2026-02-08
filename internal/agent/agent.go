@@ -897,6 +897,24 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "4. Present the recommendation to the user for approval\n"
 	instruction += "5. Execute the approved approach using appropriate sub-agents\n\n"
 
+	instruction += "\n### Strategic Deliberation\n\n"
+	instruction += "For complex tasks with multiple valid approaches, use `plan_deliberate` before decomposing into subtasks.\n\n"
+	instruction += "**When to Deliberate:**\n"
+	instruction += "- Task has multiple valid approaches with trade-offs\n"
+	instruction += "- Strategic or architectural decisions are involved\n"
+	instruction += "- Uncertainty about which approach is best\n"
+	instruction += "- Significant downstream impact of the choice\n\n"
+	instruction += "**When NOT to Deliberate:**\n"
+	instruction += "- Task has an obvious single solution\n"
+	instruction += "- Task is simple and straightforward\n"
+	instruction += "- User explicitly wants quick action\n\n"
+	instruction += "**Workflow:**\n"
+	instruction += "1. Call `plan_deliberate` with task, constraints, and exploration budget\n"
+	instruction += "2. Review the returned approaches and recommendation\n"
+	instruction += "3. Present options to the user if significant (or proceed if clear-cut)\n"
+	instruction += "4. Call `backlog_decompose` with the `deliberation_id` to create the execution plan\n"
+	instruction += "5. This creates an audit trail: deliberation -> plan -> subtasks\n\n"
+
 	// Load pipeline definitions for optional workflow section.
 	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")
 	pipelines, _ := pipeline.LoadAll(pipelinesDir)
