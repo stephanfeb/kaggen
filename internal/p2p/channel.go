@@ -253,6 +253,8 @@ func (c *P2PChannel) readLoop(client *p2pClient) {
 		}
 
 		// Build channel.Message.
+		// P2P connections are authenticated via libp2p and originate from the user's
+		// mobile app, so they should be treated as trusted (in allowlist).
 		msg := &channel.Message{
 			ID:             pbMsg.Id,
 			SessionID:      client.sessionID,
@@ -260,6 +262,7 @@ func (c *P2PChannel) readLoop(client *p2pClient) {
 			Content:        pbMsg.Content,
 			Channel:        "p2p",
 			ReplyToEventID: pbMsg.ReplyToEventId,
+			IsInAllowlist:  true, // P2P clients are trusted by default
 		}
 
 		// Generate message ID if not provided.
