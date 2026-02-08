@@ -653,6 +653,257 @@ If `device_name` is not set, the name is read from your `IDENTITY.md` file (e.g.
 | `user_rate_window` | `60` | Rate limit window in seconds |
 | `rate_limit_message` | (default) | Message sent when rate limited |
 
+## Trust Tiers
+
+Kaggen implements a trust-tier security system that classifies message senders and routes them through appropriate handlers. This prevents API cost attacks from unknown senders and enables proactive outbound messaging for trusted users.
+
+### Trust Levels
+
+| Tier | Description | Capabilities |
+|------|-------------|--------------|
+| **Owner** | Bot owner (configured phone/Telegram IDs) | Full access: all tools, shell, file system, proactive messaging |
+| **Authorized** | Allowlisted users (existing allowlist) | Standard access: conversation, tools per configuration |
+| **Third-party** | Unknown senders (not in any allowlist) | Sandboxed: conversation only, can request message relay to owner |
+
+### Configuration
+
+Add trust configuration to `~/.kaggen/config.json`:
+
+```json
+{
+  "trust": {
+    "owner_phones": ["+1234567890"],
+    "owner_telegram": [123456789],
+    "third_party": {
+      "enabled": true,
+      "use_local_llm": true,
+      "local_llm_model": "llama3.2:3b",
+      "max_session_length": 20,
+      "allow_relay": true,
+      "system_prompt": ""
+    }
+  }
+}
+```
+
+#### Trust Configuration Reference
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `owner_phones` | `[]` | Phone numbers with full owner access |
+| `owner_telegram` | `[]` | Telegram user IDs with full owner access |
+| `third_party.enabled` | `false` | Allow messages from unknown senders |
+| `third_party.use_local_llm` | `false` | Route third-party to local Ollama instead of frontier model |
+| `third_party.local_llm_model` | `"llama3.2:3b"` | Ollama model for third-party conversations |
+| `third_party.max_session_length` | `0` | Max messages per third-party session (0 = unlimited) |
+| `third_party.allow_relay` | `false` | Allow third-party to request message relay to owner |
+| `third_party.system_prompt` | (default) | Custom system prompt for sandboxed conversations |
+
+### How Trust Classification Works
+
+When a message arrives:
+
+1. **Owner check**: If the sender's phone or Telegram ID is in `owner_phones` or `owner_telegram`, they get full access
+2. **Allowlist check**: If the sender is in the channel's allowlist (`allowed_users`, `allowed_phones`), they're Authorized
+3. **Third-party**: All other senders are treated as Third-party
+
+```
+Incoming Message
+      │
+      ▼
+┌─────────────────┐
+│ Owner phones/   │──Yes──▶ TrustTierOwner (full access)
+│ Telegram IDs?   │
+└────────┬────────┘
+         │ No
+         ▼
+┌─────────────────┐
+│ In channel      │──Yes──▶ TrustTierAuthorized (standard access)
+│ allowlist?      │
+└────────┬────────┘
+         │ No
+         ▼
+   TrustTierThirdParty (sandboxed)
+```
+
+### Send Tools (Owner Only)
+
+Owners have access to proactive messaging tools:
+
+#### send_telegram
+
+Send messages to any Telegram chat:
+
+```json
+{
+  "tool": "send_telegram",
+  "input": {
+    "chat_id": 123456789,
+    "message": "Hello from Kaggen!"
+  }
+}
+```
+
+#### send_whatsapp
+
+Send messages to any WhatsApp number:
+
+```json
+{
+  "tool": "send_whatsapp",
+  "input": {
+    "phone": "+1234567890",
+    "message": "Hello from Kaggen!"
+  }
+}
+```
+
+> **Note:** These tools are only available to Owner-tier users. Attempts by Authorized or Third-party users will be rejected.
+
+### Third-Party Sandbox
+
+Third-party users interact with a sandboxed agent that has limited capabilities:
+
+#### What Third-Party Users Can Do
+
+- Have friendly conversations
+- Ask general knowledge questions
+- Request message relay to the owner
+
+#### What Third-Party Users Cannot Do
+
+- Access files, tools, or system commands
+- Send messages to other people
+- Access private or personal information
+- Perform any actions that modify systems
+
+#### Default Sandbox System Prompt
+
+```
+You are a helpful assistant in limited mode. You can:
+- Have friendly conversations
+- Answer general knowledge questions
+- Take messages for the owner (say "Please tell the owner..." or "Message for owner: ...")
+
+You cannot:
+- Access files, tools, or system commands
+- Send messages to other people
+- Access private or personal information
+- Perform any actions that modify systems
+
+If someone asks you to do something you cannot do, politely explain your limitations and suggest they contact the owner directly.
+
+Keep responses concise and helpful.
+```
+
+### Relay Requests
+
+When `allow_relay` is enabled, third-party users can request that messages be relayed to the owner:
+
+**Example phrases that trigger relay:**
+
+- "Please tell the owner I need help with my account"
+- "Message for owner: I have a question about pricing"
+- "Can you ask the owner about the project deadline?"
+- "Notify the owner that the payment was received"
+
+When a relay request is detected:
+
+1. The message is extracted and stored in a relay queue
+2. The owner is notified via their preferred channel (if configured)
+3. The third-party receives confirmation: "I've noted your message for the owner. They will be notified and may reach out to you."
+
+### Local LLM for Third-Party (Cost Protection)
+
+To prevent API cost attacks where unknown senders run up expensive frontier model bills, you can route third-party conversations through a local LLM (Ollama):
+
+```json
+{
+  "trust": {
+    "third_party": {
+      "enabled": true,
+      "use_local_llm": true,
+      "local_llm_model": "llama3.2:3b"
+    }
+  }
+}
+```
+
+#### Requirements
+
+1. Install [Ollama](https://ollama.com/):
+   ```bash
+   brew install ollama  # macOS
+   ollama serve
+   ```
+
+2. Pull a model:
+   ```bash
+   ollama pull llama3.2:3b
+   ```
+
+#### Fallback Behavior
+
+If Ollama is unavailable when a third-party message arrives:
+
+1. The system checks `http://localhost:11434/api/tags`
+2. If unavailable, falls back to frontier model with strict rate limiting
+3. Third-party usage is logged separately for cost tracking
+
+### Session Limits
+
+Limit how many messages third-party users can send per session:
+
+```json
+{
+  "trust": {
+    "third_party": {
+      "max_session_length": 20
+    }
+  }
+}
+```
+
+When the limit is exceeded, the user receives: "I'm sorry, but we've reached the message limit for this conversation. Please contact the owner directly for further assistance."
+
+### Example Configuration
+
+Full trust-tier configuration with all options:
+
+```json
+{
+  "trust": {
+    "owner_phones": ["+1234567890", "+0987654321"],
+    "owner_telegram": [123456789],
+    "third_party": {
+      "enabled": true,
+      "use_local_llm": true,
+      "local_llm_model": "llama3.2:3b",
+      "max_session_length": 20,
+      "allow_relay": true,
+      "system_prompt": "You are a helpful assistant. Keep responses brief."
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "bot_token": "...",
+      "allowed_users": [111111111, 222222222]
+    },
+    "whatsapp": {
+      "enabled": true,
+      "allowed_phones": ["+1111111111"]
+    }
+  }
+}
+```
+
+In this example:
+
+- `+1234567890` and `+0987654321` (phone) and Telegram user `123456789` are **Owners**
+- Telegram users `111111111`, `222222222` and WhatsApp phone `+1111111111` are **Authorized**
+- All other senders are **Third-party** and will be routed to the local LLM
+
 ## Memory Search
 
 Kaggen supports semantic memory search backed by [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector storage and [Ollama](https://ollama.com/) for local embeddings. When enabled, the agent can recall past conversations and stored knowledge using the `memory_search` tool, and persist new memories with the `memory_write` tool.
