@@ -877,6 +877,11 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "- User explicitly wants manual control\n"
 	instruction += "- The required capability is too complex for autonomous creation\n\n"
 
+	instruction += "\n### Choosing Between Reasoning Tools\n\n"
+	instruction += "Two tools provide deep analysis. Choose based on what follows:\n"
+	instruction += "- `reasoning_escalate`: For analysis leading to **direct execution** (no decomposition). Returns `next_steps`.\n"
+	instruction += "- `plan_deliberate`: For analysis leading to **task decomposition**. Returns `deliberation_id` to link to `backlog_decompose`.\n\n"
+
 	instruction += "\n### Deep Reasoning Escalation\n\n"
 	instruction += "For complex tasks requiring thorough analysis, use `reasoning_escalate`.\n\n"
 	instruction += "**When to Escalate:**\n"
@@ -914,6 +919,15 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "3. Present options to the user if significant (or proceed if clear-cut)\n"
 	instruction += "4. Call `backlog_decompose` with the `deliberation_id` to create the execution plan\n"
 	instruction += "5. This creates an audit trail: deliberation -> plan -> subtasks\n\n"
+
+	instruction += "\n### Creativity Tools\n\n"
+	instruction += "For novel or complex problems, use creativity tools:\n\n"
+	instruction += "**`explore_approaches`**: Generate multiple creative solutions using divergent thinking.\n"
+	instruction += "Use when: brainstorming, stuck on a problem, want unconventional options.\n\n"
+	instruction += "**`find_analogies`**: Search memory for similar past problems and adaptation suggestions.\n"
+	instruction += "Use when: problem seems familiar, want to learn from past work.\n\n"
+	instruction += "**`synthesize_solution`**: Combine partial solutions into a coherent whole.\n"
+	instruction += "Use when: have multiple partial approaches, need to integrate sub-agent results.\n\n"
 
 	// Load pipeline definitions for optional workflow section.
 	pipelinesDir := config.ExpandPath("~/.kaggen/pipelines")

@@ -306,6 +306,65 @@ When calling `backlog_decompose` after deliberation, include the `deliberation_i
 
 This creates a parent backlog item linked to the deliberation record, enabling full traceability from strategic decision to execution.
 
+### Creativity Tools
+
+When enabled, the agent gains access to tools for creative problem-solving.
+
+#### Enable Creativity Tools
+
+```json
+{
+  "creativity": {
+    "enabled": true,
+    "exploration_temp": 0.95,
+    "max_analogies": 5
+  }
+}
+```
+
+#### Available Tools
+
+| Tool | Purpose |
+|------|---------|
+| `explore_approaches` | Generate multiple creative approaches using elevated temperature |
+| `find_analogies` | Search memory for similar past problems with adaptation suggestions |
+| `synthesize_solution` | Combine partial solutions into coherent integrated plan |
+
+**Note:** Requires `reasoning.enabled: true` (uses same Tier-2 model). The `find_analogies` tool also requires `memory.search.enabled: true`.
+
+#### Tool Usage
+
+**`explore_approaches`** - Use when brainstorming or stuck on a problem:
+```json
+{
+  "task": "Design a caching strategy for API responses",
+  "num_approaches": 4,
+  "constraints": ["low latency", "memory efficient"],
+  "avoid_patterns": ["in-memory only"]
+}
+```
+
+**`find_analogies`** - Use to learn from past work:
+```json
+{
+  "problem": "Rate limiting for API endpoints",
+  "domain": "performance",
+  "keywords": ["throttle", "quota"]
+}
+```
+
+**`synthesize_solution`** - Use to combine partial solutions:
+```json
+{
+  "goal": "Complete authentication system",
+  "partial_solutions": [
+    {"description": "JWT token generation", "approach": "RS256 signing", "status": "complete"},
+    {"description": "Session management", "approach": "Redis store", "status": "partial", "gaps": ["expiry handling"]}
+  ],
+  "priority": "completeness"
+}
+```
+
 ### Environment variables
 
 | Variable | Description |

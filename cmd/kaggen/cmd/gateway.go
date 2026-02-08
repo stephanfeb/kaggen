@@ -252,6 +252,34 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Register creativity tools if enabled
+	if cfg.Creativity.Enabled && tier2ModelLimited != nil {
+		explorationTool := tools.NewExplorationTool(tier2ModelLimited, cfg.Creativity, tier2ModelString, logger)
+		if explorationTool != nil {
+			toolList = append(toolList, explorationTool)
+			logger.Info("explore_approaches enabled")
+		}
+
+		// Analogy tool requires memory service
+		if memService != nil {
+			maxAnalogies := cfg.Creativity.MaxAnalogies
+			if maxAnalogies <= 0 {
+				maxAnalogies = 5
+			}
+			analogyTool := tools.NewAnalogyTool(memService, tier2ModelLimited, tier2ModelString, maxAnalogies, logger)
+			if analogyTool != nil {
+				toolList = append(toolList, analogyTool)
+				logger.Info("find_analogies enabled")
+			}
+		}
+
+		synthesisTool := tools.NewSynthesisTool(tier2ModelLimited, cfg.Creativity, tier2ModelString, logger)
+		if synthesisTool != nil {
+			toolList = append(toolList, synthesisTool)
+			logger.Info("synthesize_solution enabled")
+		}
+	}
+
 	// Create file memory for bootstrap loading
 	fileMemory := memory.NewFileMemory(workspace)
 

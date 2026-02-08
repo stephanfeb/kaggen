@@ -23,8 +23,9 @@ type Config struct {
 	STT       STTConfig       `json:"stt,omitempty"`
 	Approval  ApprovalConfig  `json:"approval,omitempty"`
 	Security  SecurityConfig  `json:"security,omitempty"`
-	Reasoning ReasoningConfig `json:"reasoning,omitempty"`
-	P2P       P2PConfig       `json:"p2p,omitempty"`
+	Reasoning  ReasoningConfig  `json:"reasoning,omitempty"`
+	Creativity CreativityConfig `json:"creativity,omitempty"`
+	P2P        P2PConfig        `json:"p2p,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -218,6 +219,14 @@ type ReasoningConfig struct {
 	MaxSubtasksTrigger   int      `json:"max_subtasks_trigger,omitempty"`       // Subtask count that triggers escalation (default 5)
 	AutoEscalateKeywords []string `json:"auto_escalate_keywords,omitempty"`     // Keywords that trigger escalation
 	MaxTokens            int      `json:"max_tokens,omitempty"`                 // Max tokens for Tier 2 calls (default 8192)
+}
+
+// CreativityConfig configures tools for creative problem-solving.
+// Enables exploration of multiple approaches, analogy search, and solution synthesis.
+type CreativityConfig struct {
+	Enabled         bool    `json:"enabled"`                    // Enable creativity tools
+	ExplorationTemp float64 `json:"exploration_temp,omitempty"` // Temperature for exploration (default 0.95)
+	MaxAnalogies    int     `json:"max_analogies,omitempty"`    // Max analogies to return (default 5)
 }
 
 // P2PConfig configures libp2p connectivity for mobile clients.
