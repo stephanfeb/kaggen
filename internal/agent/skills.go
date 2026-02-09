@@ -16,6 +16,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/secrets"
 )
 
 // CaseInsensitiveRepository wraps a skill.Repository to provide case-insensitive lookups.
@@ -63,6 +64,7 @@ type skillFrontmatter struct {
 	Tools        []string // allowed tool names
 	GuardedTools []string // tools that require human approval before execution
 	NotifyTools  []string // tools that auto-execute but send a notification
+	Secrets      []string // secret names this skill needs (injected into http_request tool)
 	Delegate     string   // "claude" for subprocess dispatch, empty for LLM agent
 	ClaudeModel  string   // --model flag override
 	ClaudeTools  string   // --allowed-tools override
@@ -154,6 +156,25 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 			if len(fm.Tools) > 0 {
 				agentTools = filterTools(generalTools, fm.Tools)
 				logger.Info("skill tool filter", "skill", summary.Name, "allowed", fm.Tools)
+			}
+
+			// If skill declares secrets, fetch them and inject http_request tool
+			if len(fm.Secrets) > 0 {
+				skillSecrets := make(map[string]string)
+				store := secrets.DefaultStore()
+				for _, secretName := range fm.Secrets {
+					val, err := store.Get(secretName)
+					if err != nil {
+						logger.Warn("skill secret not found", "skill", summary.Name, "secret", secretName, "error", err)
+						continue
+					}
+					skillSecrets[secretName] = val
+				}
+				if len(skillSecrets) > 0 {
+					httpTool := NewHttpRequestTool(skillSecrets)
+					agentTools = append(agentTools, httpTool)
+					logger.Info("skill secrets injected", "skill", summary.Name, "secrets", len(skillSecrets))
+				}
 			}
 
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
@@ -285,6 +306,14 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 			fm.ClaudeTools = val
 		case "work_dir":
 			fm.WorkDir = config.ExpandPath(val)
+		case "secrets":
+			val = strings.Trim(val, "[]")
+			for _, s := range strings.Split(val, ",") {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					fm.Secrets = append(fm.Secrets, s)
+				}
+			}
 		}
 	}
 	return fm
