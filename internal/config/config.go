@@ -197,6 +197,12 @@ type AgentConfig struct {
 	ClaudeModel      string           `json:"claude_model,omitempty"`  // Default Claude model for sub-agent subprocess dispatch (e.g. "sonnet"), default "sonnet"
 	ClaudeTools      string           `json:"claude_tools,omitempty"`  // Default --allowed-tools for Claude sub-agents, default "Bash,Read,Edit,Write,Glob,Grep"
 	Supervisor       SupervisorConfig `json:"supervisor,omitempty"`    // Agent execution supervisor
+
+	// Context management - token-aware pruning to prevent context overflow
+	MaxInputTokens     int     `json:"max_input_tokens,omitempty"`      // Override provider's default max input tokens (0 = use provider default)
+	TokenSafetyMargin  float64 `json:"token_safety_margin,omitempty"`   // Safety margin as fraction of limit (0.1 = 10%, default 0.1)
+	ToolOutputMaxChars int     `json:"tool_output_max_chars,omitempty"` // Max chars for tool outputs before truncation (default 8000)
+	EnableContextPrune bool    `json:"enable_context_prune,omitempty"`  // Enable automatic context pruning (default true when max_input_tokens > 0)
 }
 
 // SupervisorConfig configures the agent execution supervisor that monitors
@@ -611,6 +617,31 @@ func (c *Config) ReasoningKeywords() []string {
 		return c.Reasoning.AutoEscalateKeywords
 	}
 	return DefaultAutoEscalateKeywords()
+}
+
+// ContextPruneEnabled returns whether automatic context pruning is enabled.
+func (c *Config) ContextPruneEnabled() bool {
+	// Enabled by default if max_input_tokens is set, otherwise respect explicit config
+	if c.Agent.MaxInputTokens > 0 {
+		return true
+	}
+	return c.Agent.EnableContextPrune
+}
+
+// ContextTokenSafetyMargin returns the safety margin as a fraction (0.0-1.0).
+func (c *Config) ContextTokenSafetyMargin() float64 {
+	if c.Agent.TokenSafetyMargin > 0 && c.Agent.TokenSafetyMargin < 1.0 {
+		return c.Agent.TokenSafetyMargin
+	}
+	return 0.1 // default 10%
+}
+
+// ContextToolOutputMaxChars returns the max chars for tool output truncation.
+func (c *Config) ContextToolOutputMaxChars() int {
+	if c.Agent.ToolOutputMaxChars > 0 {
+		return c.Agent.ToolOutputMaxChars
+	}
+	return 8000 // default
 }
 
 // AnthropicAPIKey returns the Anthropic API key from environment.

@@ -86,6 +86,7 @@ type agentOptions struct {
 	autoRules           []CompiledAutoRule
 	inFlightStore       *InFlightStore
 	guardedRunner       *GuardedSkillRunner
+	contextOpts         *ContextOptions // Token-aware context management
 }
 
 // WithExternalConfig injects external delivery configuration into the
@@ -137,6 +138,11 @@ func WithInFlightStore(s *InFlightStore) AgentOption {
 // WithGuardedRunner provides a GuardedSkillRunner for graph-based approval flows.
 func WithGuardedRunner(r *GuardedSkillRunner) AgentOption {
 	return func(o *agentOptions) { o.guardedRunner = r }
+}
+
+// WithContextOptions configures token-aware context management for async tasks.
+func WithContextOptions(opts ContextOptions) AgentOption {
+	return func(o *agentOptions) { o.contextOpts = &opts }
 }
 
 // NewAgent creates a new Kaggen agent using the Coordinator Team pattern.
@@ -214,6 +220,16 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	dispatchPipelineAgents := pipeline.AgentSet(dispatchPipelines)
 
 	dispatchTool, dispatcher := NewAsyncDispatchTool(agentMap, store, completeFn, m, memSvc, logger, dispatchPipelines, dispatchPipelineAgents, bStore, ao.supervisor, maxTurnsPerTask)
+
+	// Configure context management if options were provided.
+	if ao.contextOpts != nil {
+		dispatcher.SetContextOptions(*ao.contextOpts)
+		logger.Info("context management enabled for async tasks",
+			"budget_limit", ao.contextOpts.Budget.EffectiveLimit(),
+			"tool_output_max", ao.contextOpts.ToolOutputMax,
+			"prune_enabled", ao.contextOpts.PruneEnabled)
+	}
+
 	statusTool := NewTaskStatusTool(store)
 
 	pipelineStatusTool := NewPipelineStatusTool(store, dispatchPipelines)

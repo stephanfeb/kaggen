@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
+	kaggenmodel "github.com/yourusername/kaggen/internal/model"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -28,6 +28,13 @@ func NewAdapter(apiKey, modelName string) *Adapter {
 func (a *Adapter) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
+	}
+
+	// Pre-flight token check: prune messages if context manager is present.
+	if pruner := kaggenmodel.ContextPrunerFromContext(ctx); pruner != nil {
+		if prunedMsgs, pruned := pruner.CheckAndPrune(req.Messages); pruned {
+			req.Messages = prunedMsgs
+		}
 	}
 
 	responseChan := make(chan *model.Response, 1)

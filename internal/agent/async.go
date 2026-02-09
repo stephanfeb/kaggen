@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/yourusername/kaggen/internal/backlog"
+	kaggenmodel "github.com/yourusername/kaggen/internal/model"
 	"github.com/yourusername/kaggen/internal/pipeline"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -515,6 +516,11 @@ type asyncDispatcher struct {
 	pipelineAgents map[string]pipeline.PipelineAgent
 	maxTurns       int
 	supervisor     *Supervisor
+
+	// Context management
+	contextBudget       kaggenmodel.ProviderBudget // Token budget for context pruning
+	toolOutputMaxChars  int                        // Max chars for tool output truncation
+	contextPruneEnabled bool                       // Whether context pruning is enabled
 }
 
 // SetCompletionFunc updates the completion callback. This is used to wire up
@@ -646,6 +652,17 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		defer cancel()
 		d.store.SetCancelFunc(taskID, cancel)
 
+		// Create context manager for token tracking and pruning.
+		var contextMgr *ContextManager
+		if d.contextPruneEnabled {
+			contextMgr = NewContextManager(d.contextBudget, d.toolOutputMaxChars, d.logger)
+			bgCtx = WithContextManager(bgCtx, contextMgr)
+			d.logger.Debug("context manager enabled for task",
+				"task_id", taskID,
+				"budget_limit", d.contextBudget.EffectiveLimit(),
+				"tool_output_max", d.toolOutputMaxChars)
+		}
+
 		// Wrap context with the invocation so tools (e.g. memory_search)
 		// can retrieve it via agent.InvocationFromContext(ctx).
 		bgCtx = agent.NewInvocationContext(bgCtx, inv)
@@ -706,26 +723,68 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 					Output: evt.Response.Usage.CompletionTokens,
 					Total:  evt.Response.Usage.TotalTokens,
 				}
+
+				// Update context manager with actual token usage.
+				if contextMgr != nil && tokens.Input > 0 {
+					contextMgr.RecordActualUsage(tokens.Input)
+					if contextMgr.NeedsIntervention() {
+						d.logger.Warn("context approaching token limit",
+							"task_id", taskID,
+							"agent", req.AgentName,
+							"turn", turnCount,
+							"input_tokens", tokens.Input,
+							"limit", contextMgr.Limit(),
+							"prune_count", contextMgr.PruneCount())
+					}
+				}
 			}
 
 			if evt.Response.Error != nil {
+				errMsg := evt.Response.Error.Message
+
+				// Check for token overflow errors
+				if IsTokenOverflowError(fmt.Errorf("%s", errMsg)) {
+					d.logger.Error("token overflow error detected",
+						"task_id", taskID,
+						"agent", req.AgentName,
+						"turn", turnCount,
+						"error", errMsg,
+						"context_limit", func() int {
+							if contextMgr != nil {
+								return contextMgr.Limit()
+							}
+							return 0
+						}(),
+						"estimated_tokens", func() int {
+							if contextMgr != nil {
+								return contextMgr.EstimatedTokens()
+							}
+							return 0
+						}())
+					d.store.Fail(taskID, fmt.Sprintf("context overflow: %s", errMsg))
+					failBacklogItem()
+					d.getCompleteFn()(taskID, "", fmt.Errorf("context overflow: %s", errMsg), policy)
+					cancel()
+					return
+				}
+
 				d.store.AddEvent(taskID, &TaskEvent{
 					Timestamp: time.Now(),
 					Type:      "error",
 					Turn:      turnCount,
-					Content:   evt.Response.Error.Message,
+					Content:   errMsg,
 					Tokens:    tokens,
 				})
 				d.logger.Error("async task error",
 					"task_id", taskID,
 					"agent", req.AgentName,
 					"turn", turnCount,
-					"error", evt.Response.Error.Message)
+					"error", errMsg)
 				consecutiveErrors++
 				if consecutiveErrors >= maxConsecutiveErrors {
 					d.logger.Warn("circuit breaker: aborting after consecutive errors",
 						"task_id", taskID, "agent", req.AgentName, "count", consecutiveErrors)
-					d.store.Fail(taskID, fmt.Sprintf("aborted after %d consecutive errors: %s", consecutiveErrors, evt.Response.Error.Message))
+					d.store.Fail(taskID, fmt.Sprintf("aborted after %d consecutive errors: %s", consecutiveErrors, errMsg))
 					failBacklogItem()
 					d.getCompleteFn()(taskID, "", fmt.Errorf("aborted after %d consecutive errors", consecutiveErrors), policy)
 					cancel()
@@ -979,6 +1038,13 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 	}, nil
 }
 
+// ContextOptions configures context management for async task execution.
+type ContextOptions struct {
+	Budget          kaggenmodel.ProviderBudget // Token budget for context pruning
+	ToolOutputMax   int                        // Max chars for tool output truncation (default 8000)
+	PruneEnabled    bool                       // Whether context pruning is enabled
+}
+
 // NewAsyncDispatchTool creates a tool that dispatches tasks to sub-agents asynchronously.
 // It returns both the tool and the dispatcher, so the caller can update the
 // completion function later via SetCompletionFunc.
@@ -1006,4 +1072,14 @@ func NewAsyncDispatchTool(agents map[string]agent.Agent, store *InFlightStore, c
 		function.WithDescription("Dispatch a task to a specialist sub-agent for asynchronous execution. Returns immediately with a task ID. Use task_status to check progress. Available agents: use the agent_name parameter to specify which specialist to use."),
 	)
 	return t, d
+}
+
+// SetContextOptions configures context management for the dispatcher.
+func (d *asyncDispatcher) SetContextOptions(opts ContextOptions) {
+	d.contextBudget = opts.Budget
+	d.toolOutputMaxChars = opts.ToolOutputMax
+	d.contextPruneEnabled = opts.PruneEnabled
+	if d.toolOutputMaxChars <= 0 {
+		d.toolOutputMaxChars = 8000
+	}
 }
