@@ -499,7 +499,7 @@ async function checkAuth() {
 
     document.getElementById('login-loading').style.display = 'none';
 
-    if (!data.password_set) {
+    if (data.needs_setup) {
       // First-time setup
       document.getElementById('setup-form').style.display = 'flex';
       document.getElementById('login-form').style.display = 'none';

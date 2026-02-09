@@ -60,15 +60,18 @@ func NewDashboardAuth() *DashboardAuth {
 func (a *DashboardAuth) IsPasswordSet() bool {
 	_, err := keyring.Get(keychainService, keychainPasswordKey)
 	if err == nil {
+		slog.Debug("dashboard password found in keychain")
 		return true
 	}
 	// Check if it's a "not found" error vs access denied or other error
 	// If we can't access it but it exists, treat as "set" to avoid re-setup prompt
 	if err == keyring.ErrNotFound {
+		slog.Debug("dashboard password not found in keychain")
 		return false
 	}
 	// For other errors (access denied, etc.), assume password exists
 	// This prevents the setup form from showing when we just can't read it
+	slog.Warn("keychain access error, assuming password exists", "error", err)
 	return true
 }
 
