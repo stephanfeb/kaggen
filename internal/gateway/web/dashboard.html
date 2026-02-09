@@ -262,9 +262,77 @@ tr:hover { background: var(--bg-secondary); }
 .auth-status-item:last-child { border-bottom: none; }
 .auth-status-label { color: var(--text-muted); font-size: 12px; }
 .auth-status-value { color: var(--text-bright); font-size: 12px; }
+/* Login overlay */
+.login-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--bg); z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.login-overlay.hidden { display: none; }
+.login-container {
+  background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px;
+  padding: 32px 40px; width: 360px; text-align: center;
+}
+.login-logo { font-size: 28px; font-weight: 700; color: var(--text-bright); letter-spacing: 2px; margin-bottom: 8px; }
+.login-subtitle { font-size: 12px; color: var(--text-muted); margin-bottom: 24px; }
+.login-form { display: flex; flex-direction: column; gap: 12px; }
+.login-input {
+  background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); padding: 12px 16px; font-size: 13px; font-family: inherit; width: 100%;
+}
+.login-input:focus { outline: none; border-color: var(--accent); }
+.login-input::placeholder { color: var(--text-muted); }
+.login-btn {
+  background: var(--accent); border: none; color: var(--bg); padding: 12px 16px;
+  border-radius: 4px; cursor: pointer; font-size: 13px; font-family: inherit; font-weight: 600;
+  width: 100%; margin-top: 8px;
+}
+.login-btn:hover { opacity: 0.9; }
+.login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.login-error {
+  background: rgba(248,81,73,0.15); color: var(--red); padding: 8px 12px;
+  border-radius: 4px; font-size: 11px; margin-top: 8px; display: none;
+}
+.login-error.show { display: block; }
+.login-help { font-size: 11px; color: var(--text-muted); margin-top: 16px; }
+.logout-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;
+  font-family: inherit; margin-top: 8px;
+}
+.logout-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); }
 </style>
 </head>
 <body>
+<!-- Login overlay -->
+<div id="login-overlay" class="login-overlay">
+  <div class="login-container">
+    <div class="login-logo">KAGGEN</div>
+    <div class="login-subtitle">Agent Dashboard</div>
+
+    <!-- Setup form (first-time) -->
+    <div id="setup-form" class="login-form" style="display:none">
+      <p style="font-size:12px;color:var(--text);margin-bottom:8px">Set up your dashboard password:</p>
+      <input type="password" id="setup-password" class="login-input" placeholder="New password" autocomplete="new-password">
+      <input type="password" id="setup-confirm" class="login-input" placeholder="Confirm password" autocomplete="new-password">
+      <button id="setup-btn" class="login-btn" onclick="setupPassword()">Set Password</button>
+      <div id="setup-error" class="login-error"></div>
+    </div>
+
+    <!-- Login form -->
+    <div id="login-form" class="login-form" style="display:none">
+      <input type="password" id="login-password" class="login-input" placeholder="Password" autocomplete="current-password">
+      <button id="login-btn" class="login-btn" onclick="doLogin()">Login</button>
+      <div id="login-error" class="login-error"></div>
+      <div class="login-help">Password stored in system keychain</div>
+    </div>
+
+    <!-- Loading state -->
+    <div id="login-loading" style="color:var(--text-muted);font-size:12px">Checking authentication...</div>
+  </div>
+</div>
+
 <div class="container">
   <nav class="sidebar">
     <div class="sidebar-header">
@@ -281,6 +349,9 @@ tr:hover { background: var(--bg-secondary); }
       <li data-panel="config"><span class="icon">&#9998;</span> Config</li>
       <li data-panel="settings"><span class="icon">&#9881;</span> Settings</li>
     </ul>
+    <div class="sidebar-footer">
+      <button class="logout-btn" onclick="doLogout()">Logout</button>
+    </div>
   </nav>
   <main class="main">
     <div class="panel active" id="panel-overview">
@@ -418,6 +489,165 @@ tr:hover { background: var(--bg-secondary); }
 
 <script>
 const API = '';
+let isAuthenticated = false;
+
+// --- Authentication ---
+async function checkAuth() {
+  try {
+    const resp = await fetch(API + '/api/auth/status');
+    const data = await resp.json();
+
+    document.getElementById('login-loading').style.display = 'none';
+
+    if (!data.password_set) {
+      // First-time setup
+      document.getElementById('setup-form').style.display = 'flex';
+      document.getElementById('login-form').style.display = 'none';
+      document.getElementById('setup-password').focus();
+    } else if (!data.authenticated) {
+      // Need to login
+      document.getElementById('setup-form').style.display = 'none';
+      document.getElementById('login-form').style.display = 'flex';
+      document.getElementById('login-password').focus();
+    } else {
+      // Authenticated
+      isAuthenticated = true;
+      showDashboard();
+    }
+  } catch (err) {
+    // If auth endpoint fails, show dashboard (auth might not be configured)
+    console.warn('Auth check failed, showing dashboard:', err);
+    showDashboard();
+  }
+}
+
+function showDashboard() {
+  document.getElementById('login-overlay').classList.add('hidden');
+  loadPanel('overview');
+  startRefresh('overview');
+}
+
+async function setupPassword() {
+  const password = document.getElementById('setup-password').value;
+  const confirm = document.getElementById('setup-confirm').value;
+  const errorEl = document.getElementById('setup-error');
+  const btn = document.getElementById('setup-btn');
+
+  errorEl.classList.remove('show');
+
+  if (password.length < 8) {
+    errorEl.textContent = 'Password must be at least 8 characters';
+    errorEl.classList.add('show');
+    return;
+  }
+
+  if (password !== confirm) {
+    errorEl.textContent = 'Passwords do not match';
+    errorEl.classList.add('show');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Setting up...';
+
+  try {
+    const resp = await fetch(API + '/api/auth/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      errorEl.textContent = data.error;
+      errorEl.classList.add('show');
+      btn.disabled = false;
+      btn.textContent = 'Set Password';
+      return;
+    }
+
+    // Success - now logged in
+    isAuthenticated = true;
+    showDashboard();
+  } catch (err) {
+    errorEl.textContent = 'Setup failed: ' + err.message;
+    errorEl.classList.add('show');
+    btn.disabled = false;
+    btn.textContent = 'Set Password';
+  }
+}
+
+async function doLogin() {
+  const password = document.getElementById('login-password').value;
+  const errorEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
+
+  errorEl.classList.remove('show');
+
+  if (!password) {
+    errorEl.textContent = 'Please enter your password';
+    errorEl.classList.add('show');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Logging in...';
+
+  try {
+    const resp = await fetch(API + '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      errorEl.textContent = data.error;
+      errorEl.classList.add('show');
+      btn.disabled = false;
+      btn.textContent = 'Login';
+      document.getElementById('login-password').value = '';
+      document.getElementById('login-password').focus();
+      return;
+    }
+
+    // Success
+    isAuthenticated = true;
+    showDashboard();
+  } catch (err) {
+    errorEl.textContent = 'Login failed: ' + err.message;
+    errorEl.classList.add('show');
+    btn.disabled = false;
+    btn.textContent = 'Login';
+  }
+}
+
+async function doLogout() {
+  try {
+    await fetch(API + '/api/auth/logout', { method: 'POST' });
+  } catch {}
+  isAuthenticated = false;
+  stopRefresh();
+  disconnectSSE();
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('login-form').style.display = 'flex';
+  document.getElementById('setup-form').style.display = 'none';
+  document.getElementById('login-loading').style.display = 'none';
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-password').focus();
+}
+
+// Handle enter key on login/setup forms
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    if (document.activeElement.id === 'login-password') doLogin();
+    if (document.activeElement.id === 'setup-password' || document.activeElement.id === 'setup-confirm') setupPassword();
+  }
+});
+
+// Check auth on page load
+checkAuth();
+
 let currentPanel = 'overview';
 let refreshTimer = null;
 let sseConnection = null;
@@ -1374,8 +1604,8 @@ async function deleteSecret(key) {
 }
 
 // --- Init ---
-loadPanel('overview');
-startRefresh('overview');
+// Auth check is performed on page load in checkAuth()
+// Dashboard panels are loaded after successful authentication
 </script>
 <!-- QR Code library - davidshimjs/qrcodejs -->
 <script src="https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js"></script>

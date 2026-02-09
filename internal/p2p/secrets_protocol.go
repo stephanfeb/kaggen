@@ -9,7 +9,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 
 	"github.com/yourusername/kaggen/internal/auth"
-	"github.com/yourusername/kaggen/internal/secrets"
 )
 
 // SecretsProtocol handles the /kaggen/secrets/1.0.0 protocol.
@@ -44,89 +43,18 @@ func (p *SecretsProtocol) StreamHandler() network.StreamHandler {
 }
 
 func (p *SecretsProtocol) listSecrets(params json.RawMessage) (any, error) {
-	store := secrets.DefaultStore()
-	if store == nil || !store.Available() {
-		return map[string]any{
-			"available": false,
-			"keys":      []string{},
-			"error":     "Secret store not available. Set KAGGEN_MASTER_KEY for encrypted file storage.",
-		}, nil
-	}
-
-	keys, err := store.List()
-	if err != nil {
-		return map[string]any{
-			"available": true,
-			"keys":      []string{},
-			"error":     err.Error(),
-		}, nil
-	}
-
-	return map[string]any{
-		"available": true,
-		"backend":   store.Name(),
-		"keys":      keys,
-	}, nil
-}
-
-type setSecretParams struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	// Secrets management is now dashboard-only for security
+	return nil, fmt.Errorf("secrets management disabled via P2P - use the dashboard instead")
 }
 
 func (p *SecretsProtocol) setSecret(params json.RawMessage) (any, error) {
-	var args setSecretParams
-	if err := json.Unmarshal(params, &args); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
-	}
-
-	if args.Key == "" || args.Value == "" {
-		return nil, fmt.Errorf("key and value are required")
-	}
-
-	// Validate key name
-	for _, c := range args.Key {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
-			return nil, fmt.Errorf("key must be alphanumeric with dashes/underscores only")
-		}
-	}
-
-	store := secrets.DefaultStore()
-	if store == nil || !store.Available() {
-		return nil, fmt.Errorf("secret store not available")
-	}
-
-	if err := store.Set(args.Key, args.Value); err != nil {
-		return nil, fmt.Errorf("failed to store secret: %w", err)
-	}
-
-	return map[string]any{"success": true, "key": args.Key}, nil
-}
-
-type deleteSecretParams struct {
-	Key string `json:"key"`
+	// Secrets management is now dashboard-only for security
+	return nil, fmt.Errorf("secrets management disabled via P2P - use the dashboard instead")
 }
 
 func (p *SecretsProtocol) deleteSecret(params json.RawMessage) (any, error) {
-	var args deleteSecretParams
-	if err := json.Unmarshal(params, &args); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
-	}
-
-	if args.Key == "" {
-		return nil, fmt.Errorf("key is required")
-	}
-
-	store := secrets.DefaultStore()
-	if store == nil || !store.Available() {
-		return nil, fmt.Errorf("secret store not available")
-	}
-
-	if err := store.Delete(args.Key); err != nil {
-		return nil, fmt.Errorf("failed to delete secret: %w", err)
-	}
-
-	return map[string]any{"success": true, "key": args.Key}, nil
+	// Secrets management is now dashboard-only for security
+	return nil, fmt.Errorf("secrets management disabled via P2P - use the dashboard instead")
 }
 
 func (p *SecretsProtocol) listTokens(params json.RawMessage) (any, error) {

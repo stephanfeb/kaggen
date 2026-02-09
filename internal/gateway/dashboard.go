@@ -35,6 +35,7 @@ type DashboardAPI struct {
 	config         *config.Config
 	logStreamer    *LogStreamer
 	tokenStore     *auth.TokenStore
+	dashboardAuth  *DashboardAuth // dashboard login/session management
 	startTime      time.Time
 	wsClientCount  func() int
 	taskBroadcast  func(data []byte) // broadcasts to all WS clients
@@ -59,14 +60,15 @@ func NewDashboardAPI(
 	tokenStore, _ := auth.NewTokenStore(tokenFile)
 
 	return &DashboardAPI{
-		agentProvider: provider,
-		backlogStore:  store,
+		agentProvider:  provider,
+		backlogStore:   store,
 		sessionService: ss,
-		config:        cfg,
-		logStreamer:   ls,
-		tokenStore:    tokenStore,
-		startTime:     time.Now(),
-		wsClientCount: clientCount,
+		config:         cfg,
+		logStreamer:    ls,
+		tokenStore:     tokenStore,
+		dashboardAuth:  NewDashboardAuth(),
+		startTime:      time.Now(),
+		wsClientCount:  clientCount,
 	}
 }
 
@@ -832,10 +834,15 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/tokens", d.HandleTokens)
 	handleFunc("/api/tokens/generate", d.HandleTokenGenerate)
 	handleFunc("/api/tokens/revoke", d.HandleTokenRevoke)
-	// Secrets management
-	handleFunc("/api/secrets", d.HandleSecrets)
-	handleFunc("/api/secrets/set", d.HandleSecretsSet)
-	handleFunc("/api/secrets/delete", d.HandleSecretsDelete)
+	// Dashboard authentication
+	handleFunc("/api/auth/status", d.HandleAuthStatus)
+	handleFunc("/api/auth/setup", d.HandleAuthSetup)
+	handleFunc("/api/auth/login", d.HandleAuthLogin)
+	handleFunc("/api/auth/logout", d.HandleAuthLogout)
+	// Secrets management (requires auth)
+	handleFunc("/api/secrets", d.dashboardAuth.RequireAuth(d.HandleSecrets))
+	handleFunc("/api/secrets/set", d.dashboardAuth.RequireAuth(d.HandleSecretsSet))
+	handleFunc("/api/secrets/delete", d.dashboardAuth.RequireAuth(d.HandleSecretsDelete))
 }
 
 // SetHandler stores the message handler for approval completion injection.
@@ -1136,6 +1143,141 @@ func (d *DashboardAPI) HandleSettings(w http.ResponseWriter, r *http.Request) {
 		"secrets_backend":   secretsBackend,
 		"p2p":               p2pInfo,
 	})
+}
+
+// HandleAuthStatus returns authentication status for the dashboard.
+func (d *DashboardAPI) HandleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+
+	// Check if password is set
+	needsSetup := !d.dashboardAuth.IsPasswordSet()
+
+	// Check if current request has valid session
+	authenticated := false
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		authenticated = d.dashboardAuth.ValidateSession(cookie.Value)
+	}
+
+	writeJSON(w, map[string]any{
+		"needs_setup":   needsSetup,
+		"authenticated": authenticated,
+	})
+}
+
+// HandleAuthSetup sets up the initial dashboard password.
+func (d *DashboardAPI) HandleAuthSetup(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Don't allow setup if password already exists
+	if d.dashboardAuth.IsPasswordSet() {
+		http.Error(w, `{"error":"password already set"}`, http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Password) < 8 {
+		http.Error(w, `{"error":"password must be at least 8 characters"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := d.dashboardAuth.SetPassword(req.Password); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to set password: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	// Create session for the user
+	token, err := d.dashboardAuth.CreateSession()
+	if err != nil {
+		http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
+		return
+	}
+
+	d.dashboardAuth.SetSessionCookie(w, r, token)
+	writeJSON(w, map[string]any{"success": true})
+}
+
+// HandleAuthLogin handles dashboard login.
+func (d *DashboardAPI) HandleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	if !d.dashboardAuth.ValidatePassword(req.Password) {
+		http.Error(w, `{"error":"invalid password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Create session
+	token, err := d.dashboardAuth.CreateSession()
+	if err != nil {
+		http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
+		return
+	}
+
+	d.dashboardAuth.SetSessionCookie(w, r, token)
+	writeJSON(w, map[string]any{"success": true})
+}
+
+// HandleAuthLogout handles dashboard logout.
+func (d *DashboardAPI) HandleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Destroy session if exists
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		d.dashboardAuth.DestroySession(cookie.Value)
+	}
+
+	d.dashboardAuth.ClearSessionCookie(w)
+	writeJSON(w, map[string]any{"success": true})
 }
 
 // HandleSecrets returns the list of stored secret keys (not values).
