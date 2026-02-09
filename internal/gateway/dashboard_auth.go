@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -58,7 +59,17 @@ func NewDashboardAuth() *DashboardAuth {
 // IsPasswordSet checks if a dashboard password has been configured.
 func (a *DashboardAuth) IsPasswordSet() bool {
 	_, err := keyring.Get(keychainService, keychainPasswordKey)
-	return err == nil
+	if err == nil {
+		return true
+	}
+	// Check if it's a "not found" error vs access denied or other error
+	// If we can't access it but it exists, treat as "set" to avoid re-setup prompt
+	if err == keyring.ErrNotFound {
+		return false
+	}
+	// For other errors (access denied, etc.), assume password exists
+	// This prevents the setup form from showing when we just can't read it
+	return true
 }
 
 // SetPassword stores a new dashboard password (hashed) in the keychain.
@@ -89,11 +100,13 @@ func (a *DashboardAuth) SetPassword(password string) error {
 func (a *DashboardAuth) ValidatePassword(password string) bool {
 	data, err := keyring.Get(keychainService, keychainPasswordKey)
 	if err != nil {
+		slog.Warn("failed to read dashboard password from keychain", "error", err)
 		return false
 	}
 
 	var stored storedPassword
 	if err := json.Unmarshal([]byte(data), &stored); err != nil {
+		slog.Warn("failed to parse stored password", "error", err)
 		return false
 	}
 
