@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -20,8 +21,9 @@ type ContextManager struct {
 	mu              sync.Mutex
 	budget          kaggenmodel.ProviderBudget
 	estimatedTokens int
-	lastActualInput int // Last actual input tokens from API response
-	toolOutputLimit int // Max chars for tool outputs before truncation
+	lastActualInput int    // Last actual input tokens from API response
+	toolOutputLimit int    // Max chars for tool outputs before truncation
+	originalTask    string // The original task to always preserve during pruning
 	logger          *slog.Logger
 	pruneCount      int  // Number of times pruning has been triggered
 	enabled         bool // Whether context pruning is enabled
@@ -129,6 +131,21 @@ func (cm *ContextManager) PruneCount() int {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.pruneCount
+}
+
+// SetOriginalTask stores the original task for preservation during pruning.
+// This ensures the agent never loses track of what it was asked to do.
+func (cm *ContextManager) SetOriginalTask(task string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.originalTask = task
+}
+
+// OriginalTask returns the stored original task.
+func (cm *ContextManager) OriginalTask() string {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.originalTask
 }
 
 // NeedsIntervention returns true if token usage is approaching the limit.
@@ -254,7 +271,7 @@ func (cm *ContextManager) consolidateMessages(messages []model.Message) []model.
 	if droppedCount > 0 {
 		result = append(result, model.Message{
 			Role:    model.RoleUser,
-			Content: "[Earlier conversation context removed to manage context size. " + string(rune(droppedCount)) + " messages were consolidated.]",
+			Content: fmt.Sprintf("[Earlier conversation context removed to manage context size. %d messages were consolidated.]", droppedCount),
 		})
 	}
 
@@ -264,40 +281,40 @@ func (cm *ContextManager) consolidateMessages(messages []model.Message) []model.
 	return result
 }
 
-// emergencyPrune aggressively reduces context to bare minimum.
+// emergencyPrune aggressively reduces context to bare minimum while preserving the original task.
 func (cm *ContextManager) emergencyPrune(messages []model.Message) []model.Message {
 	var result []model.Message
-	var systemMsg *model.Message
 
 	// Keep system message
 	for _, msg := range messages {
 		if msg.Role == model.RoleSystem {
-			systemMsg = &msg
+			result = append(result, msg)
 			break
 		}
 	}
 
-	if systemMsg != nil {
-		result = append(result, *systemMsg)
+	// CRITICAL: Re-inject original task if we have it stored
+	cm.mu.Lock()
+	originalTask := cm.originalTask
+	cm.mu.Unlock()
+
+	if originalTask != "" {
+		result = append(result, model.Message{
+			Role:    model.RoleUser,
+			Content: "[CONTEXT EMERGENCY: Conversation condensed due to token limits]\n\n## ORIGINAL TASK (must complete):\n" + originalTask,
+		})
 	}
 
-	// Find last user message
-	var lastUserMsg *model.Message
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == model.RoleUser {
-			lastUserMsg = &messages[i]
-			break
-		}
-	}
-
-	// Create emergency context summary
+	// Create emergency context summary of progress made
 	summary := cm.createEmergencySummary(messages)
-	result = append(result, model.Message{
-		Role:    model.RoleUser,
-		Content: "[CONTEXT EMERGENCY: Previous conversation condensed due to token limits]\n\nSummary of prior work:\n" + summary,
-	})
+	if summary != "" {
+		result = append(result, model.Message{
+			Role:    model.RoleUser,
+			Content: "## PROGRESS SUMMARY:\n" + summary + "\n\nContinue working on the original task above.",
+		})
+	}
 
-	// Keep last 4 messages for continuity
+	// Keep last 4 messages for immediate continuity
 	nonSystem := make([]model.Message, 0)
 	for _, msg := range messages {
 		if msg.Role != model.RoleSystem {
@@ -307,8 +324,6 @@ func (cm *ContextManager) emergencyPrune(messages []model.Message) []model.Messa
 
 	if len(nonSystem) > 4 {
 		result = append(result, nonSystem[len(nonSystem)-4:]...)
-	} else if lastUserMsg != nil && len(nonSystem) == 0 {
-		result = append(result, *lastUserMsg)
 	} else {
 		result = append(result, nonSystem...)
 	}
@@ -319,6 +334,30 @@ func (cm *ContextManager) emergencyPrune(messages []model.Message) []model.Messa
 // createEmergencySummary extracts key information from messages for emergency context.
 func (cm *ContextManager) createEmergencySummary(messages []model.Message) string {
 	var summary strings.Builder
+
+	// Extract recent conclusions/progress from assistant messages
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role == model.RoleAssistant && len(msg.Content) > 50 {
+			content := strings.ToLower(msg.Content)
+			// Look for progress indicators
+			if strings.Contains(content, "completed") ||
+				strings.Contains(content, "created") ||
+				strings.Contains(content, "updated") ||
+				strings.Contains(content, "fixed") ||
+				strings.Contains(content, "implemented") ||
+				strings.Contains(content, "done") {
+				preview := msg.Content
+				if len(preview) > 300 {
+					preview = preview[:300] + "..."
+				}
+				summary.WriteString("Recent progress: ")
+				summary.WriteString(preview)
+				summary.WriteString("\n\n")
+				break // Only keep most recent progress update
+			}
+		}
+	}
 
 	// Extract tool calls made
 	toolCalls := make([]string, 0)
@@ -349,16 +388,12 @@ func (cm *ContextManager) createEmergencySummary(messages []model.Message) strin
 	// Extract any file paths mentioned
 	filePaths := extractFilePaths(messages)
 	if len(filePaths) > 0 {
-		summary.WriteString("Files referenced: ")
-		if len(filePaths) > 5 {
-			filePaths = filePaths[:5]
+		summary.WriteString("Files worked on: ")
+		if len(filePaths) > 8 {
+			filePaths = filePaths[:8]
 		}
 		summary.WriteString(strings.Join(filePaths, ", "))
 		summary.WriteString("\n")
-	}
-
-	if summary.Len() == 0 {
-		summary.WriteString("(No structured summary available)")
 	}
 
 	return summary.String()

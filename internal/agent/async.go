@@ -656,6 +656,8 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 		var contextMgr *ContextManager
 		if d.contextPruneEnabled {
 			contextMgr = NewContextManager(d.contextBudget, d.toolOutputMaxChars, d.logger)
+			// Store the original task so it's never lost during pruning
+			contextMgr.SetOriginalTask(taskMessage)
 			bgCtx = WithContextManager(bgCtx, contextMgr)
 			d.logger.Debug("context manager enabled for task",
 				"task_id", taskID,

@@ -3,6 +3,7 @@ package agent
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	kaggenmodel "github.com/yourusername/kaggen/internal/model"
@@ -127,6 +128,66 @@ func TestContextManager_NeedsIntervention(t *testing.T) {
 	if !cm.NeedsIntervention() {
 		t.Error("Should need intervention at 850 tokens (above 90% of 900)")
 	}
+}
+
+func TestContextManager_TaskPreservation(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// Create a budget with a very small limit to force emergency pruning
+	budget := kaggenmodel.ProviderBudget{
+		MaxInputTokens:  300, // Very small to force emergency pruning
+		MaxOutputTokens: 100,
+		SafetyMargin:    0.1, // Effective limit = 270
+	}
+
+	cm := NewContextManager(budget, 50, logger)
+
+	// Set the original task
+	originalTask := "Create a REST API endpoint for user authentication with JWT tokens"
+	cm.SetOriginalTask(originalTask)
+
+	// Verify task is stored
+	if cm.OriginalTask() != originalTask {
+		t.Errorf("Expected original task to be stored, got %q", cm.OriginalTask())
+	}
+
+	// Create messages that will trigger emergency pruning (90%+ = 243+ tokens)
+	// With 3 chars per token, we need about 800+ chars
+	messages := []model.Message{
+		{Role: model.RoleSystem, Content: "You are helpful."},
+		{Role: model.RoleUser, Content: "Build me something great"},
+		{Role: model.RoleAssistant, Content: "I'll help you. " + string(make([]byte, 400))},
+		{Role: model.RoleTool, Content: string(make([]byte, 400))},
+		{Role: model.RoleAssistant, Content: "I completed the task successfully."},
+	}
+
+	pruned, didPrune := cm.CheckAndPrune(messages)
+	if !didPrune {
+		t.Error("Expected emergency pruning to occur")
+	}
+
+	// Check that the original task is preserved in the pruned output
+	found := false
+	for _, msg := range pruned {
+		if strings.Contains(msg.Content, originalTask) {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Error("Original task should be preserved in pruned messages")
+		for i, msg := range pruned {
+			t.Logf("Message %d [%s]: %s", i, msg.Role, msg.Content[:min(100, len(msg.Content))])
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func TestIsTokenOverflowError(t *testing.T) {
