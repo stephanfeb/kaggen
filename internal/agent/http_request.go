@@ -3,9 +3,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -30,6 +32,7 @@ type HttpRequestArgs struct {
 	AuthScheme    string            `json:"auth_scheme,omitempty" jsonschema:"description=Auth scheme: bearer (default) or api-key."`
 	TimeoutSecs   int               `json:"timeout_seconds,omitempty" jsonschema:"description=Request timeout in seconds (default 30 max 300)."`
 	ContentType   string            `json:"content_type,omitempty" jsonschema:"description=Content-Type header (default: application/json for requests with body)."`
+	Insecure      bool              `json:"insecure,omitempty" jsonschema:"description=Skip TLS certificate verification (only allowed for localhost URLs)."`
 }
 
 // HttpRequestResult defines the output of the http_request tool.
@@ -153,8 +156,28 @@ func executeHttpRequest(ctx context.Context, args HttpRequestArgs, secrets map[s
 		req.Header.Set(k, v)
 	}
 
-	// Execute request
+	// Build HTTP client
 	client := &http.Client{}
+	if args.Insecure {
+		// Validate localhost-only for security
+		u, err := url.Parse(args.URL)
+		if err != nil {
+			result.Message = fmt.Sprintf("Error parsing URL: %v", err)
+			return result, fmt.Errorf("parse URL: %w", err)
+		}
+		host := strings.Split(u.Host, ":")[0]
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+			result.Message = "Error: insecure mode only allowed for localhost URLs"
+			return result, fmt.Errorf("insecure mode only allowed for localhost URLs")
+		}
+		client = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+	}
+
+	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
