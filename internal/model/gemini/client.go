@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/yourusername/kaggen/pkg/protocol"
@@ -16,7 +19,22 @@ import (
 const (
 	defaultBaseURL     = "https://generativelanguage.googleapis.com/v1beta/models"
 	defaultHTTPTimeout = 120 * time.Second
+	defaultMaxRetries  = 5
+	defaultMinBackoff  = 1 * time.Second
+	defaultMaxBackoff  = 60 * time.Second
 )
+
+// apiErrorResponse represents an error response from the Gemini API.
+type apiErrorResponse struct {
+	Error struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Details []struct {
+			Type       string `json:"@type"`
+			RetryDelay string `json:"retryDelay,omitempty"`
+		} `json:"details"`
+	} `json:"error"`
+}
 
 // Client implements the Model interface for Google's Gemini API.
 type Client struct {
@@ -268,6 +286,7 @@ func (c *Client) convertResponse(apiResp *apiResponse) *protocol.Response {
 }
 
 // sendAPIRequest sends a request to the Gemini API and returns the raw response.
+// It automatically retries on 429 rate limit errors with exponential backoff.
 func (c *Client) sendAPIRequest(ctx context.Context, req *apiRequest) (*apiResponse, error) {
 	reqBody, err := json.Marshal(req)
 	if err != nil {
@@ -276,35 +295,108 @@ func (c *Client) sendAPIRequest(ctx context.Context, req *apiRequest) (*apiRespo
 
 	url := fmt.Sprintf("%s/%s:generateContent?key=%s", c.baseURL, c.model, c.apiKey)
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
+	var lastErr error
+	for attempt := 0; attempt <= defaultMaxRetries; attempt++ {
+		// Check context before each attempt
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 
-	httpReq.Header.Set("Content-Type", "application/json")
+		// Create HTTP request
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
 
-	// Send request
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
+		// Send request
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("send request: %w", err)
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
+		// Success
+		if resp.StatusCode == http.StatusOK {
+			var apiResp apiResponse
+			if err := json.Unmarshal(body, &apiResp); err != nil {
+				return nil, fmt.Errorf("unmarshal response: %w", err)
+			}
+			return &apiResp, nil
+		}
+
+		// Rate limit - retry with backoff
+		if resp.StatusCode == http.StatusTooManyRequests {
+			backoff := calculateBackoff(body, attempt)
+			lastErr = fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+
+			if attempt < defaultMaxRetries {
+				slog.Info("gemini rate limit hit, retrying",
+					"attempt", attempt+1,
+					"max_retries", defaultMaxRetries,
+					"backoff", backoff.String(),
+					"model", c.model)
+
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(backoff):
+				}
+				continue
+			}
+		}
+
+		// Non-retryable error
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response
-	var apiResp apiResponse
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
+	return nil, fmt.Errorf("exceeded max retries (%d): %w", defaultMaxRetries, lastErr)
+}
+
+// calculateBackoff determines the backoff duration for a retry attempt.
+// It first tries to parse the retryDelay from Gemini's error response,
+// falling back to exponential backoff if not available.
+func calculateBackoff(body []byte, attempt int) time.Duration {
+	// Try to parse Gemini's suggested retry delay
+	var errResp apiErrorResponse
+	if err := json.Unmarshal(body, &errResp); err == nil {
+		for _, detail := range errResp.Error.Details {
+			if detail.RetryDelay != "" {
+				if d := parseRetryDelay(detail.RetryDelay); d > 0 {
+					// Add a small buffer to the suggested delay
+					return d + 500*time.Millisecond
+				}
+			}
+		}
 	}
 
-	return &apiResp, nil
+	// Fallback to exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 60s
+	backoff := defaultMinBackoff * time.Duration(1<<uint(attempt))
+	if backoff > defaultMaxBackoff {
+		backoff = defaultMaxBackoff
+	}
+	return backoff
+}
+
+// parseRetryDelay parses a duration string like "3s" or "3.475708169s".
+func parseRetryDelay(s string) time.Duration {
+	// Try standard duration format first
+	if d, err := time.ParseDuration(s); err == nil {
+		return d
+	}
+
+	// Try to extract seconds as a float (e.g., "3.475708169s")
+	re := regexp.MustCompile(`^(\d+\.?\d*)s$`)
+	if matches := re.FindStringSubmatch(s); len(matches) == 2 {
+		if secs, err := strconv.ParseFloat(matches[1], 64); err == nil {
+			return time.Duration(secs * float64(time.Second))
+		}
+	}
+
+	return 0
 }

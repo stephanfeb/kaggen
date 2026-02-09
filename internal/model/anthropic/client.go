@@ -7,14 +7,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/yourusername/kaggen/pkg/protocol"
 )
 
 const (
-	defaultAPIURL = "https://api.anthropic.com/v1/messages"
-	apiVersion    = "2023-06-01"
+	defaultAPIURL      = "https://api.anthropic.com/v1/messages"
+	apiVersion         = "2023-06-01"
+	defaultMaxRetries  = 5
+	defaultMinBackoff  = 1 * time.Second
+	defaultMaxBackoff  = 60 * time.Second
 )
 
 // Client implements the Model interface for Anthropic's Claude API.
@@ -270,36 +276,72 @@ func (c *Client) convertResponse(apiResp *apiResponse) *protocol.Response {
 
 // sendAPIRequest sends a request to the Anthropic API and returns the raw response.
 // This is used by both the legacy Generate method and the new trpc adapter.
+// It automatically retries on 429 rate limit errors with exponential backoff.
 func (c *Client) sendAPIRequest(ctx context.Context, req *apiRequest) (*apiResponse, error) {
 	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.apiURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
+	var lastErr error
+	for attempt := 0; attempt <= defaultMaxRetries; attempt++ {
+		// Check context before each attempt
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", apiVersion)
+		// Create HTTP request
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.apiURL, bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-api-key", c.apiKey)
+		httpReq.Header.Set("anthropic-version", apiVersion)
 
-	// Send request
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
+		// Send request
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("send request: %w", err)
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
 
-	// Handle error responses
-	if resp.StatusCode != http.StatusOK {
+		// Success
+		if resp.StatusCode == http.StatusOK {
+			var apiResp apiResponse
+			if err := json.Unmarshal(body, &apiResp); err != nil {
+				return nil, fmt.Errorf("unmarshal response: %w", err)
+			}
+			return &apiResp, nil
+		}
+
+		// Rate limit - retry with backoff
+		if resp.StatusCode == http.StatusTooManyRequests {
+			backoff := calculateAnthropicBackoff(resp.Header.Get("Retry-After"), attempt)
+			lastErr = fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+
+			if attempt < defaultMaxRetries {
+				slog.Info("anthropic rate limit hit, retrying",
+					"attempt", attempt+1,
+					"max_retries", defaultMaxRetries,
+					"backoff", backoff.String(),
+					"model", c.model)
+
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(backoff):
+				}
+				continue
+			}
+		}
+
+		// Non-retryable error
 		var apiErr apiError
 		if err := json.Unmarshal(body, &apiErr); err != nil {
 			return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
@@ -307,11 +349,23 @@ func (c *Client) sendAPIRequest(ctx context.Context, req *apiRequest) (*apiRespo
 		return nil, fmt.Errorf("API error: %s - %s", apiErr.Error.Type, apiErr.Error.Message)
 	}
 
-	// Parse response
-	var apiResp apiResponse
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
+	return nil, fmt.Errorf("exceeded max retries (%d): %w", defaultMaxRetries, lastErr)
+}
+
+// calculateAnthropicBackoff determines the backoff duration for a retry attempt.
+// It first tries to parse the Retry-After header, falling back to exponential backoff.
+func calculateAnthropicBackoff(retryAfter string, attempt int) time.Duration {
+	// Try to parse Retry-After header (seconds)
+	if retryAfter != "" {
+		if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
+			return time.Duration(secs)*time.Second + 500*time.Millisecond
+		}
 	}
 
-	return &apiResp, nil
+	// Fallback to exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 60s
+	backoff := defaultMinBackoff * time.Duration(1<<uint(attempt))
+	if backoff > defaultMaxBackoff {
+		backoff = defaultMaxBackoff
+	}
+	return backoff
 }
