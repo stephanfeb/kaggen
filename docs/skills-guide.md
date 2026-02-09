@@ -37,6 +37,7 @@ claude_tools: Bash,Read,Edit,Write,Glob,Grep  # Optional. Comma-separated.
 tools: [browser, memory_search]   # Optional. Tool filter for LLM agent mode.
 guarded_tools: [Bash]             # Optional. Tools requiring human approval.
 notify_tools: [Write]             # Optional. Tools that auto-execute with notification.
+secrets: [api-key-name]           # Optional. Secrets for http_request tool. See "API Integration".
 work_dir: ~/projects/foo          # Optional. --add-dir for claude subprocess.
 ---
 ```
@@ -51,6 +52,7 @@ work_dir: ~/projects/foo          # Optional. --add-dir for claude subprocess.
 | `tools` | LLM agent | Restricts which coordinator tools the agent can use. Omit for all tools. |
 | `guarded_tools` | Both | Tools that require human approval before execution. See [Guarded Tools](#guarded-tools). |
 | `notify_tools` | Both | Tools that auto-execute but send a notification. See [Guarded Tools](#guarded-tools). |
+| `secrets` | LLM agent | Secret names for API authentication. See [API Integration](#api-integration-with-secrets). |
 | `work_dir` | Claude agent | Working directory added via `--add-dir`. Supports `~` expansion. |
 
 ### Body (Instructions)
@@ -248,6 +250,145 @@ POST /api/approvals/approve          — approve (body: {"id": "<approval_id>"})
 POST /api/approvals/reject           — reject  (body: {"id": "<approval_id>", "reason": "..."})
 ```
 
+## API Integration with Secrets
+
+Skills can call external APIs with authentication using the `secrets` frontmatter field and the `http_request` tool. Secrets are injected securely — the LLM never sees the actual secret values.
+
+### How It Works
+
+1. Store your API key in the secrets store:
+   ```bash
+   kaggen secrets set plane-api-key
+   # Enter your API key when prompted
+   ```
+
+2. Declare the secret in your skill's frontmatter:
+   ```yaml
+   ---
+   name: plane
+   description: Manage issues in Plane
+   secrets: [plane-api-key]
+   ---
+   ```
+
+3. At load time, Kaggen fetches the secrets and injects them into the `http_request` tool's closure
+
+4. In your skill instructions, document how to use `http_request` with the secret reference:
+   ```markdown
+   Use http_request to call the Plane API:
+   - url: https://api.plane.so/api/v1/workspaces/{workspace}/issues/
+   - method: POST
+   - auth_secret: plane-api-key
+   - body: {"name": "...", "description": "..."}
+   ```
+
+5. The LLM calls `http_request` with `auth_secret: "plane-api-key"` (the name, not the value)
+
+6. The tool resolves the secret internally and adds the `Authorization: Bearer <secret>` header
+
+### The `http_request` Tool
+
+When a skill declares `secrets`, the `http_request` tool is automatically added to its available tools.
+
+**Arguments:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `url` | Yes | The URL to request |
+| `method` | Yes | HTTP method: GET, POST, PUT, PATCH, DELETE |
+| `headers` | No | Additional HTTP headers (map) |
+| `body` | No | Request body (typically JSON) |
+| `auth_secret` | No | Secret name for authentication |
+| `auth_header` | No | Custom header name (default: `Authorization`) |
+| `auth_scheme` | No | Auth scheme: `bearer` (default), `api-key`, `basic` |
+| `timeout_seconds` | No | Request timeout (default: 30, max: 300) |
+| `content_type` | No | Content-Type header (default: `application/json` for requests with body) |
+
+**Returns:**
+
+```json
+{
+  "status_code": 200,
+  "status": "200 OK",
+  "headers": {"Content-Type": "application/json", ...},
+  "body": "{...}",
+  "message": "HTTP POST https://api.example.com/... -> 200 OK"
+}
+```
+
+### Example: Plane Integration Skill
+
+```yaml
+---
+name: plane
+description: Manage issues and projects in Plane
+secrets: [plane-api-key]
+---
+```
+
+```markdown
+# Plane Skill
+
+You manage issues in Plane via the API.
+
+## Configuration
+
+- Base URL: https://api.plane.so/api/v1
+- Workspace slug: `my-workspace` (adjust as needed)
+- Project ID: Ask the user or list projects first
+
+## Create Issue
+
+Use http_request:
+- url: https://api.plane.so/api/v1/workspaces/{workspace}/projects/{project}/issues/
+- method: POST
+- auth_secret: plane-api-key
+- body: {"name": "Issue title", "description": "Details...", "priority": "medium"}
+
+## List Issues
+
+- url: https://api.plane.so/api/v1/workspaces/{workspace}/projects/{project}/issues/
+- method: GET
+- auth_secret: plane-api-key
+
+## Update Issue
+
+- url: https://api.plane.so/api/v1/workspaces/{workspace}/projects/{project}/issues/{issue_id}/
+- method: PATCH
+- auth_secret: plane-api-key
+- body: {"state": "done"}
+```
+
+### Security Model
+
+- **Scoped access:** Each skill can only access secrets it declares in frontmatter
+- **No context exposure:** Secret values never appear in the LLM context, tool arguments, or responses
+- **Reference-based:** The LLM uses secret names (`auth_secret: "plane-api-key"`), not values
+- **Logged safely:** HTTP requests are logged without exposing auth headers
+
+### Different Auth Schemes
+
+**Bearer token (default):**
+```
+auth_secret: my-api-key
+# Adds: Authorization: Bearer <secret>
+```
+
+**API key in custom header:**
+```
+auth_secret: my-api-key
+auth_header: X-API-Key
+auth_scheme: api-key
+# Adds: X-API-Key: <secret>
+```
+
+**Basic auth:**
+```
+auth_secret: my-basic-creds  # Store as base64-encoded "user:pass"
+auth_scheme: basic
+# Adds: Authorization: Basic <secret>
+```
+
 ## Writing Good Instructions
 
 ### For LLM Agent Skills
@@ -345,4 +486,6 @@ Skills are loaded at startup and on SIGHUP (hot-reload without restart).
 - [ ] Body instructions match the agent type (direct prompt for claude, tool docs for LLM)
 - [ ] Scripts have shebang, `set -euo pipefail`, and `--help` support
 - [ ] `guarded_tools` (if used) lists only tools declared in `tools` or available by default
+- [ ] `secrets` (if used) lists secrets that exist in the store (`kaggen secrets list`)
+- [ ] API instructions document `http_request` usage with `auth_secret` references
 - [ ] Tested manually: dispatch a task and verify the agent behaves correctly
