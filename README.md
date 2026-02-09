@@ -203,6 +203,81 @@ The agent automatically escalates to the Tier 2 model when:
 3. **Low confidence**: Agent has low confidence in the best approach
 4. **Explicit call**: Agent invokes `reasoning_escalate` tool directly
 
+### Context Management
+
+Kaggen includes automatic context window management to prevent token overflow errors when agents accumulate large conversation histories. This is especially important for long-running async tasks that may exceed provider token limits.
+
+#### The Problem
+
+Each LLM provider has different input token limits:
+
+| Provider | Max Input Tokens |
+|----------|------------------|
+| Anthropic Claude | 200,000 |
+| Google Gemini | 1,048,576 |
+| ZAI GLM | 131,072 |
+
+Without context management, long-running tasks can fail with errors like:
+```
+"The input token count exceeds the maximum number of tokens allowed"
+```
+
+#### How It Works
+
+Context management uses a tiered pruning strategy:
+
+| Threshold | Action | Impact |
+|-----------|--------|--------|
+| **60%** | Truncate tool outputs | Large tool results (file reads, bash output) are shortened |
+| **75%** | Consolidate messages | Keep first 2 + last 8 messages, drop middle |
+| **90%** | Emergency pruning | Aggressive reduction with task re-injection |
+
+**Task Preservation**: The original task is always preserved and re-injected after emergency pruning, ensuring the agent never loses track of what it was asked to do.
+
+#### Enable Context Management
+
+```json
+{
+  "agent": {
+    "max_input_tokens": 900000,
+    "token_safety_margin": 0.1,
+    "tool_output_max_chars": 8000,
+    "enable_context_prune": true
+  }
+}
+```
+
+#### Configuration Reference
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_input_tokens` | (provider default) | Override max input tokens (0 = use provider default) |
+| `token_safety_margin` | `0.1` | Safety margin as fraction of limit (0.1 = 10%) |
+| `tool_output_max_chars` | `8000` | Max characters for tool outputs before truncation |
+| `enable_context_prune` | `true` when `max_input_tokens` is set | Enable automatic context pruning |
+
+#### Provider Defaults
+
+When `max_input_tokens` is not set, Kaggen uses conservative defaults:
+
+```
+Anthropic: 180,000 effective (200K × 0.9)
+Gemini:    943,718 effective (1M × 0.9)
+ZAI:       117,964 effective (128K × 0.9)
+```
+
+#### Monitoring
+
+Context pruning events are logged with details:
+
+```
+level=INFO msg="context manager: level 1 pruning (tool output truncation)"
+  estimated_tokens=650000 limit=943718 threshold=60%
+
+level=WARN msg="context manager: level 3 emergency pruning"
+  estimated_tokens=900000 limit=943718 threshold=90%
+```
+
 #### Escalation Response
 
 The Tier 2 model returns structured analysis:
