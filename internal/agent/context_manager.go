@@ -225,6 +225,7 @@ func (cm *ContextManager) truncateToolOutputs(messages []model.Message) []model.
 }
 
 // consolidateMessages merges consecutive same-role messages and removes old context.
+// Preserves the original task in the consolidation marker to prevent agents from going off-task.
 func (cm *ContextManager) consolidateMessages(messages []model.Message) []model.Message {
 	if len(messages) <= 4 {
 		return messages
@@ -266,12 +267,27 @@ func (cm *ContextManager) consolidateMessages(messages []model.Message) []model.
 	// Add first messages
 	result = append(result, nonSystem[:keepFirst]...)
 
-	// Add consolidation marker
+	// Add consolidation marker with original task reminder
 	droppedCount := len(nonSystem) - keepFirst - keepLast
 	if droppedCount > 0 {
+		// CRITICAL FIX: Include original task in consolidation marker to prevent
+		// agents from going off-task when the task message is in the dropped middle section.
+		cm.mu.Lock()
+		originalTask := cm.originalTask
+		cm.mu.Unlock()
+
+		var markerContent strings.Builder
+		markerContent.WriteString(fmt.Sprintf("[Earlier conversation context removed to manage context size. %d messages were consolidated.]\n", droppedCount))
+
+		if originalTask != "" {
+			markerContent.WriteString("\n## REMINDER - Original Task:\n")
+			markerContent.WriteString(originalTask)
+			markerContent.WriteString("\n\nContinue working on this task.")
+		}
+
 		result = append(result, model.Message{
 			Role:    model.RoleUser,
-			Content: fmt.Sprintf("[Earlier conversation context removed to manage context size. %d messages were consolidated.]", droppedCount),
+			Content: markerContent.String(),
 		})
 	}
 
@@ -282,6 +298,7 @@ func (cm *ContextManager) consolidateMessages(messages []model.Message) []model.
 }
 
 // emergencyPrune aggressively reduces context to bare minimum while preserving the original task.
+// CRITICAL: Always injects at least one user message to prevent Gemini sanitization errors.
 func (cm *ContextManager) emergencyPrune(messages []model.Message) []model.Message {
 	var result []model.Message
 
@@ -293,26 +310,38 @@ func (cm *ContextManager) emergencyPrune(messages []model.Message) []model.Messa
 		}
 	}
 
-	// CRITICAL: Re-inject original task if we have it stored
+	// Get original task and summary
 	cm.mu.Lock()
 	originalTask := cm.originalTask
 	cm.mu.Unlock()
 
+	summary := cm.createEmergencySummary(messages)
+
+	// Build context restoration message - MUST always have content to prevent
+	// "no valid messages after sanitization" errors from Gemini adapter.
+	var contextMsg strings.Builder
+	contextMsg.WriteString("[CONTEXT EMERGENCY: Conversation condensed due to token limits]\n\n")
+
 	if originalTask != "" {
-		result = append(result, model.Message{
-			Role:    model.RoleUser,
-			Content: "[CONTEXT EMERGENCY: Conversation condensed due to token limits]\n\n## ORIGINAL TASK (must complete):\n" + originalTask,
-		})
+		contextMsg.WriteString("## ORIGINAL TASK (must complete):\n")
+		contextMsg.WriteString(originalTask)
+		contextMsg.WriteString("\n\n")
 	}
 
-	// Create emergency context summary of progress made
-	summary := cm.createEmergencySummary(messages)
 	if summary != "" {
-		result = append(result, model.Message{
-			Role:    model.RoleUser,
-			Content: "## PROGRESS SUMMARY:\n" + summary + "\n\nContinue working on the original task above.",
-		})
+		contextMsg.WriteString("## PROGRESS SUMMARY:\n")
+		contextMsg.WriteString(summary)
+		contextMsg.WriteString("\n\n")
 	}
+
+	contextMsg.WriteString("Continue working on the task above.")
+
+	// Always add this user message - prevents empty-content errors when
+	// Gemini's sanitizeContents strips all messages looking for a user message.
+	result = append(result, model.Message{
+		Role:    model.RoleUser,
+		Content: contextMsg.String(),
+	})
 
 	// Keep last 4 messages for immediate continuity
 	nonSystem := make([]model.Message, 0)
