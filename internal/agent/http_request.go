@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourusername/kaggen/internal/oauth"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
@@ -30,6 +32,7 @@ type HttpRequestArgs struct {
 	AuthSecret    string            `json:"auth_secret,omitempty" jsonschema:"description=Name of the secret to use for authentication. The secret value is injected automatically."`
 	AuthHeader    string            `json:"auth_header,omitempty" jsonschema:"description=Custom header name for auth (default: Authorization)."`
 	AuthScheme    string            `json:"auth_scheme,omitempty" jsonschema:"description=Auth scheme: bearer (default) or api-key."`
+	OAuthProvider string            `json:"oauth_provider,omitempty" jsonschema:"description=OAuth provider name (e.g. google or github). Uses stored OAuth token for authentication. Mutually exclusive with auth_secret."`
 	TimeoutSecs   int               `json:"timeout_seconds,omitempty" jsonschema:"description=Request timeout in seconds (default 30 max 300)."`
 	ContentType   string            `json:"content_type,omitempty" jsonschema:"description=Content-Type header (default: application/json for requests with body)."`
 	Insecure      bool              `json:"insecure,omitempty" jsonschema:"description=Skip TLS certificate verification (only allowed for localhost URLs)."`
@@ -44,21 +47,38 @@ type HttpRequestResult struct {
 	Message    string            `json:"message"`
 }
 
+// OAuthTokenGetter is a function that retrieves an OAuth token for a user/provider.
+type OAuthTokenGetter func(userID, provider string) (*oauth.Token, error)
+
 // NewHttpRequestTool creates a new http_request tool with the given secrets map.
 // The secrets map contains secret_name -> secret_value mappings for this skill.
 // Secret values are never exposed to the LLM - only secret names are used in args.
 func NewHttpRequestTool(secrets map[string]string) tool.CallableTool {
+	return NewHttpRequestToolWithOAuth(secrets, "", nil, nil)
+}
+
+// NewHttpRequestToolWithOAuth creates a new http_request tool with OAuth support.
+// The userID is used to look up OAuth tokens for the current user.
+// The oauthProviders list restricts which OAuth providers the skill can use.
+// The tokenGetter retrieves OAuth tokens from the token store.
+func NewHttpRequestToolWithOAuth(secrets map[string]string, userID string, oauthProviders []string, tokenGetter OAuthTokenGetter) tool.CallableTool {
+	// Build allowed providers set for fast lookup
+	allowedProviders := make(map[string]bool)
+	for _, p := range oauthProviders {
+		allowedProviders[p] = true
+	}
+
 	return function.NewFunctionTool(
 		func(ctx context.Context, args HttpRequestArgs) (*HttpRequestResult, error) {
-			return executeHttpRequest(ctx, args, secrets)
+			return executeHttpRequest(ctx, args, secrets, userID, allowedProviders, tokenGetter)
 		},
 		function.WithName("http_request"),
-		function.WithDescription("Make HTTP requests to external APIs. Use auth_secret to reference a secret by name for authentication - the actual secret value is injected automatically and never visible."),
+		function.WithDescription("Make HTTP requests to external APIs. Use auth_secret to reference a secret by name, or oauth_provider for OAuth-protected APIs. Authentication is injected automatically and never visible."),
 	)
 }
 
 // executeHttpRequest performs the actual HTTP request.
-func executeHttpRequest(ctx context.Context, args HttpRequestArgs, secrets map[string]string) (*HttpRequestResult, error) {
+func executeHttpRequest(ctx context.Context, args HttpRequestArgs, secrets map[string]string, userID string, allowedProviders map[string]bool, tokenGetter OAuthTokenGetter) (*HttpRequestResult, error) {
 	result := &HttpRequestResult{}
 
 	// Validate required fields
@@ -69,6 +89,12 @@ func executeHttpRequest(ctx context.Context, args HttpRequestArgs, secrets map[s
 	if args.Method == "" {
 		result.Message = "Error: method is required"
 		return result, fmt.Errorf("method is required")
+	}
+
+	// Validate mutually exclusive auth options
+	if args.AuthSecret != "" && args.OAuthProvider != "" {
+		result.Message = "Error: auth_secret and oauth_provider are mutually exclusive"
+		return result, fmt.Errorf("auth_secret and oauth_provider are mutually exclusive")
 	}
 
 	// Normalize method
@@ -83,6 +109,41 @@ func executeHttpRequest(ctx context.Context, args HttpRequestArgs, secrets map[s
 	headers := make(map[string]string)
 	for k, v := range args.Headers {
 		headers[k] = v
+	}
+
+	// Handle OAuth authentication
+	if args.OAuthProvider != "" {
+		// Check if provider is allowed for this skill
+		if len(allowedProviders) > 0 && !allowedProviders[args.OAuthProvider] {
+			result.Message = fmt.Sprintf("Error: OAuth provider %q not available to this skill", args.OAuthProvider)
+			return result, fmt.Errorf("oauth provider %q not available to this skill", args.OAuthProvider)
+		}
+
+		if tokenGetter == nil {
+			result.Message = "Error: OAuth not configured"
+			return result, fmt.Errorf("oauth not configured")
+		}
+
+		token, err := tokenGetter(userID, args.OAuthProvider)
+		if err != nil {
+			if errors.Is(err, oauth.ErrTokenNotFound) {
+				result.Message = fmt.Sprintf("OAuth authorization required for %s. Please authorize via dashboard.", args.OAuthProvider)
+				return result, nil // Return gracefully so LLM can inform user
+			}
+			if errors.Is(err, oauth.ErrTokenExpired) {
+				result.Message = fmt.Sprintf("OAuth token for %s has expired. Please re-authorize via dashboard.", args.OAuthProvider)
+				return result, nil
+			}
+			result.Message = fmt.Sprintf("Error: OAuth token retrieval failed: %v", err)
+			return result, fmt.Errorf("oauth token retrieval failed: %w", err)
+		}
+
+		// Inject OAuth token
+		tokenType := token.TokenType
+		if tokenType == "" {
+			tokenType = "Bearer"
+		}
+		headers["Authorization"] = tokenType + " " + token.AccessToken
 	}
 
 	// Handle authentication via secret injection

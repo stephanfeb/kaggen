@@ -27,6 +27,7 @@ type Config struct {
 	Creativity CreativityConfig `json:"creativity,omitempty"`
 	P2P        P2PConfig        `json:"p2p,omitempty"`
 	Trust      TrustConfig      `json:"trust,omitempty"`
+	OAuth      OAuthConfig      `json:"oauth,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -266,6 +267,87 @@ type ThirdPartyConfig struct {
 	MaxSessionLength int    `json:"max_session_length,omitempty"` // Max messages per session (0 = no limit)
 	AllowRelay       bool   `json:"allow_relay"`                 // Allow relay requests to owner
 	SystemPrompt     string `json:"system_prompt,omitempty"`     // Custom sandboxed system prompt
+}
+
+// OAuthConfig configures OAuth 2.0 providers for skill integrations.
+type OAuthConfig struct {
+	Providers    map[string]OAuthProvider `json:"providers,omitempty"`
+	CallbackPath string                   `json:"callback_path,omitempty"` // default "/api/oauth/callback"
+	TokenDBPath  string                   `json:"token_db_path,omitempty"` // default "~/.kaggen/oauth_tokens.db"
+}
+
+// OAuthProvider defines an OAuth 2.0 provider configuration.
+type OAuthProvider struct {
+	ClientID     string   `json:"client_id"`               // secret:key reference supported
+	ClientSecret string   `json:"client_secret"`           // secret:key reference supported
+	AuthURL      string   `json:"auth_url,omitempty"`      // auto-populated for known providers
+	TokenURL     string   `json:"token_url,omitempty"`     // auto-populated for known providers
+	Scopes       []string `json:"scopes,omitempty"`        // OAuth scopes to request
+	PKCE         bool     `json:"pkce,omitempty"`          // auto-set for known providers
+	RedirectURI  string   `json:"redirect_uri,omitempty"`  // override callback URI (rare)
+}
+
+// KnownOAuthProvider contains the pre-configured settings for known providers.
+type KnownOAuthProvider struct {
+	AuthURL  string
+	TokenURL string
+	PKCE     bool
+}
+
+// knownOAuthProviders contains default configurations for well-known OAuth providers.
+var knownOAuthProviders = map[string]KnownOAuthProvider{
+	"google": {
+		AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+		TokenURL: "https://oauth2.googleapis.com/token",
+		PKCE:     true,
+	},
+	"github": {
+		AuthURL:  "https://github.com/login/oauth/authorize",
+		TokenURL: "https://github.com/login/oauth/access_token",
+		PKCE:     false,
+	},
+}
+
+// GetOAuthProvider returns the resolved OAuth provider configuration.
+// For known providers (google, github), it fills in default auth/token URLs.
+func (c *Config) GetOAuthProvider(name string) (OAuthProvider, bool) {
+	provider, ok := c.OAuth.Providers[name]
+	if !ok {
+		return OAuthProvider{}, false
+	}
+
+	// Fill in defaults for known providers
+	if known, isKnown := knownOAuthProviders[name]; isKnown {
+		if provider.AuthURL == "" {
+			provider.AuthURL = known.AuthURL
+		}
+		if provider.TokenURL == "" {
+			provider.TokenURL = known.TokenURL
+		}
+		// Only override PKCE if not explicitly set (Go zero value is false)
+		// For known providers that require PKCE, we always enable it
+		if known.PKCE {
+			provider.PKCE = true
+		}
+	}
+
+	return provider, true
+}
+
+// OAuthCallbackPath returns the OAuth callback path.
+func (c *Config) OAuthCallbackPath() string {
+	if c.OAuth.CallbackPath != "" {
+		return c.OAuth.CallbackPath
+	}
+	return "/api/oauth/callback"
+}
+
+// OAuthTokenDBPath returns the expanded path to the OAuth token database.
+func (c *Config) OAuthTokenDBPath() string {
+	if c.OAuth.TokenDBPath != "" {
+		return ExpandPath(c.OAuth.TokenDBPath)
+	}
+	return ExpandPath("~/.kaggen/oauth_tokens.db")
 }
 
 // TLSConfig configures TLS/SSL for secure connections.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -18,6 +19,28 @@ import (
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/secrets"
 )
+
+// globalOAuthTokenGetter is set by the server when OAuth is configured.
+// It's used by skills to retrieve OAuth tokens.
+var (
+	globalOAuthTokenGetter OAuthTokenGetter
+	oauthMu                sync.RWMutex
+)
+
+// SetOAuthTokenGetter sets the global OAuth token getter.
+// This is called by the server on startup when OAuth is configured.
+func SetOAuthTokenGetter(getter OAuthTokenGetter) {
+	oauthMu.Lock()
+	defer oauthMu.Unlock()
+	globalOAuthTokenGetter = getter
+}
+
+// getOAuthTokenGetter returns the current global OAuth token getter.
+func getOAuthTokenGetter() OAuthTokenGetter {
+	oauthMu.RLock()
+	defer oauthMu.RUnlock()
+	return globalOAuthTokenGetter
+}
 
 // CaseInsensitiveRepository wraps a skill.Repository to provide case-insensitive lookups.
 // This handles LLMs like Gemini that may capitalize skill names (e.g., "Pandoc" vs "pandoc").
@@ -61,14 +84,15 @@ func (r *CaseInsensitiveRepository) Path(name string) (string, error) {
 
 // skillFrontmatter holds parsed SKILL.md frontmatter fields.
 type skillFrontmatter struct {
-	Tools        []string // allowed tool names
-	GuardedTools []string // tools that require human approval before execution
-	NotifyTools  []string // tools that auto-execute but send a notification
-	Secrets      []string // secret names this skill needs (injected into http_request tool)
-	Delegate     string   // "claude" for subprocess dispatch, empty for LLM agent
-	ClaudeModel  string   // --model flag override
-	ClaudeTools  string   // --allowed-tools override
-	WorkDir      string   // --add-dir override
+	Tools          []string // allowed tool names
+	GuardedTools   []string // tools that require human approval before execution
+	NotifyTools    []string // tools that auto-execute but send a notification
+	Secrets        []string // secret names this skill needs (injected into http_request tool)
+	OAuthProviders []string // OAuth provider names this skill can use (e.g. ["google", "github"])
+	Delegate       string   // "claude" for subprocess dispatch, empty for LLM agent
+	ClaudeModel    string   // --model flag override
+	ClaudeTools    string   // --allowed-tools override
+	WorkDir        string   // --add-dir override
 }
 
 // BuildSubAgents creates a specialist sub-agent for each skill in the repository,
@@ -158,22 +182,45 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill tool filter", "skill", summary.Name, "allowed", fm.Tools)
 			}
 
-			// If skill declares secrets, fetch them and inject http_request tool
-			if len(fm.Secrets) > 0 {
+			// If skill declares secrets or oauth_providers, inject http_request tool with appropriate auth
+			if len(fm.Secrets) > 0 || len(fm.OAuthProviders) > 0 {
 				skillSecrets := make(map[string]string)
-				store := secrets.DefaultStore()
-				for _, secretName := range fm.Secrets {
-					val, err := store.Get(secretName)
-					if err != nil {
-						logger.Warn("skill secret not found", "skill", summary.Name, "secret", secretName, "error", err)
-						continue
+
+				// Fetch secrets
+				if len(fm.Secrets) > 0 {
+					store := secrets.DefaultStore()
+					for _, secretName := range fm.Secrets {
+						val, err := store.Get(secretName)
+						if err != nil {
+							logger.Warn("skill secret not found", "skill", summary.Name, "secret", secretName, "error", err)
+							continue
+						}
+						skillSecrets[secretName] = val
 					}
-					skillSecrets[secretName] = val
 				}
-				if len(skillSecrets) > 0 {
-					httpTool := NewHttpRequestTool(skillSecrets)
-					agentTools = append(agentTools, httpTool)
-					logger.Info("skill secrets injected", "skill", summary.Name, "secrets", len(skillSecrets))
+
+				// Validate OAuth providers are configured
+				if len(fm.OAuthProviders) > 0 && cfg != nil {
+					for _, provider := range fm.OAuthProviders {
+						if _, ok := cfg.GetOAuthProvider(provider); !ok {
+							logger.Warn("skill oauth provider not configured", "skill", summary.Name, "provider", provider)
+						}
+					}
+				}
+
+				// Create http_request tool with OAuth support
+				// Note: userID is "default" for now - skills don't have user context at build time
+				// The actual user ID should be passed through the request context at runtime
+				httpTool := NewHttpRequestToolWithOAuth(
+					skillSecrets,
+					"default", // TODO: get user ID from context at runtime
+					fm.OAuthProviders,
+					getOAuthTokenGetter(),
+				)
+				agentTools = append(agentTools, httpTool)
+
+				if len(skillSecrets) > 0 || len(fm.OAuthProviders) > 0 {
+					logger.Info("skill auth injected", "skill", summary.Name, "secrets", len(skillSecrets), "oauth_providers", fm.OAuthProviders)
 				}
 			}
 
@@ -312,6 +359,14 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 				s = strings.TrimSpace(s)
 				if s != "" {
 					fm.Secrets = append(fm.Secrets, s)
+				}
+			}
+		case "oauth_providers":
+			val = strings.Trim(val, "[]")
+			for _, p := range strings.Split(val, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					fm.OAuthProviders = append(fm.OAuthProviders, p)
 				}
 			}
 		}

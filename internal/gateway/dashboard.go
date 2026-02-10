@@ -843,6 +843,12 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/secrets", d.dashboardAuth.RequireAuth(d.HandleSecrets))
 	handleFunc("/api/secrets/set", d.dashboardAuth.RequireAuth(d.HandleSecretsSet))
 	handleFunc("/api/secrets/delete", d.dashboardAuth.RequireAuth(d.HandleSecretsDelete))
+	// OAuth management
+	handleFunc("/api/oauth/providers", d.dashboardAuth.RequireAuth(d.HandleOAuthProviders))
+	handleFunc("/api/oauth/authorize", d.dashboardAuth.RequireAuth(d.HandleOAuthAuthorize))
+	handleFunc("/api/oauth/callback", d.HandleOAuthCallback) // No auth - callback from OAuth provider
+	handleFunc("/api/oauth/revoke", d.dashboardAuth.RequireAuth(d.HandleOAuthRevoke))
+	handleFunc("/api/oauth/status", d.dashboardAuth.RequireAuth(d.HandleOAuthStatus))
 }
 
 // SetHandler stores the message handler for approval completion injection.
