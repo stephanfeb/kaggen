@@ -743,13 +743,22 @@ func (h *Handler) InjectCompletion(ctx context.Context, sessionID, userID, taskI
 		metadata = map[string]any{}
 	}
 
+	// Copy metadata but exclude trust_tier - internal completion messages should
+	// be re-classified as trusted, not inherit the original sender's trust tier.
+	cleanMeta := make(map[string]any)
+	for k, v := range metadata {
+		if k != "trust_tier" {
+			cleanMeta[k] = v
+		}
+	}
+
 	msg := &channel.Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
 		UserID:    userID,
 		Content:   content,
 		Channel:   "internal",
-		Metadata:  copyMetadata(metadata),
+		Metadata:  cleanMeta,
 	}
 
 	return h.HandleMessage(ctx, msg, respond)
