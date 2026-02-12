@@ -52,6 +52,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 | `kaggen gateway` | Start the WebSocket + Telegram gateway server |
 | `kaggen status` | Show current configuration and workspace status |
 | `kaggen eval` | Run evaluation tests for agent performance |
+| `kaggen test-local` | Test local LLM (Ollama) routing for third-party messages |
+| `kaggen history` | Show proactive job execution history (cron, webhooks) |
 | `kaggen token generate` | Generate a new authentication token |
 | `kaggen token list` | List configured authentication tokens |
 | `kaggen token revoke` | Revoke an authentication token |
@@ -61,12 +63,26 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 | `kaggen secrets delete` | Delete a stored secret |
 | `kaggen secrets import-env` | Import a secret from an environment variable |
 | `kaggen security-audit` | Run security checks on the installation |
+| `kaggen completion` | Generate shell autocompletion scripts (bash, zsh, fish, powershell) |
 
 ### Agent flags
 
 ```
 -s, --session string   Session ID to use (default "main")
 -v, --verbose          Enable verbose logging
+```
+
+### History flags
+
+```
+--limit int      Maximum number of results (default 20)
+--name string    Filter by job name
+```
+
+### Test-local flags
+
+```
+[message]   Optional message to send (omit for interactive mode)
 ```
 
 ## Configuration
@@ -972,6 +988,35 @@ If Ollama is unavailable when a third-party message arrives:
 1. The system checks `http://localhost:11434/api/tags`
 2. If unavailable, falls back to frontier model with strict rate limiting
 3. Third-party usage is logged separately for cost tracking
+
+#### Testing Local LLM
+
+Use the `test-local` command to verify your local LLM setup without needing a second account:
+
+```bash
+# Single message test
+kaggen test-local "Hello, who are you?"
+
+# Interactive mode (maintains conversation history)
+kaggen test-local
+```
+
+In interactive mode:
+- Type messages and see local LLM responses
+- Use `/clear` to reset conversation history
+- Type `exit` or `quit` to end
+
+Example output:
+```
+Local LLM Test
+==============
+Model: llama3.2:3b
+System prompt: You are a helpful assistant. Keep responses brief.
+
+You: Hello, who are you?
+
+Local LLM: I'm an AI assistant running locally on your machine.
+```
 
 ### Session Limits
 
