@@ -125,13 +125,20 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 
 // HandleMessage processes an incoming message and sends responses via the callback.
 func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respond func(*channel.Response) error) error {
-	// Classify trust tier for this message.
-	tier := trust.ClassifyWithAllowlist(
-		msg.SenderPhone,
-		msg.SenderTelegramID,
-		h.trustConfig,
-		msg.IsInAllowlist,
-	)
+	// Internal channel messages (e.g., async task completions) are always trusted.
+	// They originate from the system itself, not from external senders.
+	var tier trust.TrustTier
+	if msg.Channel == "internal" {
+		tier = trust.TrustTierOwner
+	} else {
+		// Classify trust tier for this message.
+		tier = trust.ClassifyWithAllowlist(
+			msg.SenderPhone,
+			msg.SenderTelegramID,
+			h.trustConfig,
+			msg.IsInAllowlist,
+		)
+	}
 
 	h.logger.Info("handling message",
 		"session_id", msg.SessionID,
