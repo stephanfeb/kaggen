@@ -148,6 +148,7 @@ stream, err := host.NewStream(ctx, peerInfo.ID, "/kaggen/sessions/1.0.0")
 | `/kaggen/system/1.0.0` | Request/Response | System info (overview, config, skills, backlog) |
 | `/kaggen/secrets/1.0.0` | Request/Response | Secret/token management |
 | `/kaggen/files/1.0.0` | Request/Response | File downloads |
+| `/kaggen/thirdparty/1.0.0` | Request/Response | Third-party conversation browsing |
 
 ### Authentication
 
@@ -1111,3 +1112,4 @@ protoc --kotlin_out=. chat.proto api.proto
 - [libp2p Concepts](https://docs.libp2p.io/concepts/)
 - [Protocol Buffers](https://developers.google.com/protocol-buffers)
 - [Kaggen README](../README.md) - P2P configuration options
+- [Third-Party Conversations Integration](thirdparty-conversations-integration.md) - Browse local LLM conversations
