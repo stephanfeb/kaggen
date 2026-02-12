@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,24 @@ import (
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/trust"
 )
+
+// PromptBasedFunctionInstructions is prepended to the system prompt when the model
+// doesn't support native Ollama tools. This enables function calling via output parsing.
+const PromptBasedFunctionInstructions = `AVAILABLE FUNCTIONS:
+You have access to a relay function. When you decide to use it, output ONLY the function call in this exact format on its own line - no other text before or after:
+
+[relay_message(message="<the message>", urgency="<low|normal|high>")]
+
+Use relay_message when the visitor explicitly asks you to pass a message, notify, inform, or contact the Prime Operator.
+
+Example: User says "Tell the Prime Operator I need help with order #123"
+Your response should be ONLY: [relay_message(message="Visitor needs help with order #123", urgency="normal")]
+
+After outputting the function call, do NOT add any additional text. The system will handle the response.
+
+---
+
+`
 
 // LocalAgent provides a local LLM (Ollama) backed agent for third-party conversations.
 // This allows handling third-party messages without incurring frontier model API costs.
@@ -34,6 +53,11 @@ type LocalAgent struct {
 	store      *trust.ThirdPartyStore
 	notifier   *trust.TelegramOwnerNotifier
 	relayStore *trust.RelayStore
+
+	// Tool capability tracking (auto-detected on first call)
+	toolCapMu           sync.RWMutex
+	toolCapChecked      bool
+	supportsNativeTools bool
 }
 
 // localSessionStore stores conversation history per session.
@@ -185,6 +209,53 @@ func relayMessageTool() ollamaTool {
 	}
 }
 
+// Regex patterns for parsing prompt-based function calls.
+// Matches: [relay_message(message="...", urgency="...")]
+var (
+	promptFuncRegex = regexp.MustCompile(`\[relay_message\(([^)]+)\)\]`)
+	argRegex        = regexp.MustCompile(`(\w+)=["']([^"']+)["']`)
+)
+
+// parseNativeToolCall extracts relay args from native Ollama tool calls.
+func parseNativeToolCall(toolCalls []ollamaToolCall) *relayMessageArgs {
+	for _, tc := range toolCalls {
+		if tc.Function.Name == "relay_message" {
+			var args relayMessageArgs
+			if json.Unmarshal(tc.Function.Arguments, &args) == nil {
+				return &args
+			}
+		}
+	}
+	return nil
+}
+
+// parsePromptBasedCall extracts relay args from prompt-based output.
+// Matches: [relay_message(message="...", urgency="...")]
+func parsePromptBasedCall(content string) *relayMessageArgs {
+	matches := promptFuncRegex.FindStringSubmatch(content)
+	if len(matches) < 2 {
+		return nil
+	}
+
+	args := &relayMessageArgs{Urgency: "normal"}
+	argMatches := argRegex.FindAllStringSubmatch(matches[1], -1)
+	for _, m := range argMatches {
+		if len(m) >= 3 {
+			switch m[1] {
+			case "message":
+				args.Message = m[2]
+			case "urgency":
+				args.Urgency = m[2]
+			}
+		}
+	}
+
+	if args.Message == "" {
+		return nil
+	}
+	return args
+}
+
 // NewLocalAgent creates a new local LLM agent using Ollama.
 func NewLocalAgent(cfg *config.ThirdPartyConfig, logger *slog.Logger) *LocalAgent {
 	if logger == nil {
@@ -234,6 +305,42 @@ func (a *LocalAgent) SetRelayStore(store *trust.RelayStore) {
 	a.relayStore = store
 }
 
+// supportsTools returns whether the model supports native Ollama tools.
+// Auto-detected on first call attempt.
+func (a *LocalAgent) supportsTools() bool {
+	a.toolCapMu.RLock()
+	defer a.toolCapMu.RUnlock()
+	return a.supportsNativeTools
+}
+
+// isToolCapChecked returns whether tool capability has been checked.
+func (a *LocalAgent) isToolCapChecked() bool {
+	a.toolCapMu.RLock()
+	defer a.toolCapMu.RUnlock()
+	return a.toolCapChecked
+}
+
+// markToolSupport caches whether the model supports native tools.
+func (a *LocalAgent) markToolSupport(supported bool) {
+	a.toolCapMu.Lock()
+	defer a.toolCapMu.Unlock()
+	a.toolCapChecked = true
+	a.supportsNativeTools = supported
+}
+
+// buildSystemPrompt returns the full system prompt.
+// Adds function calling instructions only if model doesn't support native tools.
+func (a *LocalAgent) buildSystemPrompt() string {
+	a.toolCapMu.RLock()
+	needsPromptFunctions := a.toolCapChecked && !a.supportsNativeTools
+	a.toolCapMu.RUnlock()
+
+	if needsPromptFunctions {
+		return PromptBasedFunctionInstructions + a.systemPrompt
+	}
+	return a.systemPrompt
+}
+
 // Summarize uses the local LLM to summarize text.
 // Implements trust.Summarizer interface for digest notifications.
 func (a *LocalAgent) Summarize(ctx context.Context, prompt string) string {
@@ -250,6 +357,7 @@ func (a *LocalAgent) Summarize(ctx context.Context, prompt string) string {
 }
 
 // HandleMessage processes a third-party message using the local LLM.
+// Uses adaptive function calling: tries native Ollama tools first, falls back to prompt-based.
 func (a *LocalAgent) HandleMessage(ctx context.Context, msg *channel.Message) (*channel.Response, error) {
 	a.logger.Info("local agent handling message",
 		"session_id", msg.SessionID,
@@ -258,10 +366,10 @@ func (a *LocalAgent) HandleMessage(ctx context.Context, msg *channel.Message) (*
 	// Get existing history or start fresh.
 	history := a.sessions.getHistory(msg.SessionID)
 	if len(history) == 0 {
-		// Add system prompt as first message.
+		// Add system prompt as first message (may include function instructions if needed).
 		history = append(history, ollamaChatMessage{
 			Role:    "system",
-			Content: a.systemPrompt,
+			Content: a.buildSystemPrompt(),
 		})
 		a.sessions.addMessage(msg.SessionID, history[0])
 	}
@@ -274,11 +382,45 @@ func (a *LocalAgent) HandleMessage(ctx context.Context, msg *channel.Message) (*
 	a.sessions.addMessage(msg.SessionID, userMsg)
 	history = append(history, userMsg)
 
-	// Define tools (only relay_message for now).
+	// Adaptive function calling: try native tools first, fallback to prompt-based.
 	tools := []ollamaTool{relayMessageTool()}
+	var chatResp *ollamaChatResponse
+	var err error
 
-	// Call Ollama with tools.
-	chatResp, err := a.chatWithTools(ctx, history, tools)
+	if !a.isToolCapChecked() || a.supportsTools() {
+		// Try native tools (first call or model supports them).
+		chatResp, err = a.chatWithTools(ctx, history, tools)
+
+		// Check for "does not support tools" error.
+		if err != nil && strings.Contains(err.Error(), "does not support tools") {
+			a.markToolSupport(false)
+			a.logger.Info("model does not support native tools, switching to prompt-based",
+				"model", a.model)
+
+			// Rebuild history with function instructions prepended to system prompt.
+			if len(history) > 0 && history[0].Role == "system" {
+				history[0].Content = a.buildSystemPrompt()
+				// Update the stored system prompt for this session.
+				a.sessions.clearSession(msg.SessionID)
+				for _, m := range history {
+					a.sessions.addMessage(msg.SessionID, m)
+				}
+			}
+
+			// Retry without tools parameter.
+			chatResp, err = a.chatWithTools(ctx, history, nil)
+		} else if err == nil {
+			// Native tools worked - mark as supported.
+			if !a.isToolCapChecked() {
+				a.markToolSupport(true)
+				a.logger.Info("model supports native tools", "model", a.model)
+			}
+		}
+	} else {
+		// Model known to not support tools - use prompt-based directly.
+		chatResp, err = a.chatWithTools(ctx, history, nil)
+	}
+
 	if err != nil {
 		a.logger.Error("local agent chat failed", "error", err)
 		return &channel.Response{
@@ -292,36 +434,31 @@ func (a *LocalAgent) HandleMessage(ctx context.Context, msg *channel.Message) (*
 
 	var response string
 	var relayExecuted bool
+	var relayArgs *relayMessageArgs
 
-	// Check if the LLM wants to call a tool.
+	// Check for function calls (either native or parsed from output).
 	if len(chatResp.Message.ToolCalls) > 0 {
-		for _, toolCall := range chatResp.Message.ToolCalls {
-			if toolCall.Function.Name == "relay_message" {
-				// Parse the relay message arguments.
-				var args relayMessageArgs
-				if err := json.Unmarshal(toolCall.Function.Arguments, &args); err != nil {
-					a.logger.Warn("failed to parse relay_message args", "error", err)
-					continue
-				}
+		// Native tool call from Ollama.
+		relayArgs = parseNativeToolCall(chatResp.Message.ToolCalls)
+	} else {
+		// Try parsing from output text (prompt-based function calling).
+		relayArgs = parsePromptBasedCall(chatResp.Message.Content)
+	}
 
-				a.logger.Info("relay_message tool called",
-					"message", args.Message,
-					"urgency", args.Urgency,
-					"session_id", msg.SessionID)
+	if relayArgs != nil {
+		a.logger.Info("relay_message function detected",
+			"message", relayArgs.Message,
+			"urgency", relayArgs.Urgency,
+			"session_id", msg.SessionID,
+			"native_tools", a.supportsTools())
 
-				// Execute the relay.
-				relayExecuted = a.executeRelay(ctx, msg, args)
-			}
-		}
+		// Execute the relay.
+		relayExecuted = a.executeRelay(ctx, msg, *relayArgs)
 
-		// Generate a follow-up response after tool execution.
 		if relayExecuted {
 			response = "I have relayed your message to the Prime Operator. They will be notified shortly."
 		} else {
-			response = chatResp.Message.Content
-			if response == "" {
-				response = "I attempted to relay your message, but encountered an issue. Please try again."
-			}
+			response = "I attempted to relay your message, but encountered an issue. Please try again."
 		}
 	} else {
 		response = strings.TrimSpace(chatResp.Message.Content)
