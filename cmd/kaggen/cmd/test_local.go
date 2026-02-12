@@ -14,6 +14,7 @@ import (
 	"github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
+	"github.com/yourusername/kaggen/internal/trust"
 )
 
 var testLocalCmd = &cobra.Command{
@@ -54,6 +55,23 @@ func runTestLocal(cmd *cobra.Command, args []string) error {
 
 	// Create local agent
 	localAgent := agent.NewLocalAgent(&cfg.Trust.ThirdParty, logger)
+
+	// Wire up the third-party store for persistence
+	storePath := config.ExpandPath("~/.kaggen/thirdparty.db")
+	store, err := trust.NewThirdPartyStore(storePath)
+	if err != nil {
+		logger.Warn("failed to create third-party store", "error", err)
+	} else {
+		localAgent.SetStore(store)
+		defer store.Close()
+		logger.Info("third-party store connected", "path", storePath)
+	}
+
+	// Wire up the relay store for relay_message tool
+	relayStorePath := config.ExpandPath("~/.kaggen/relays.json")
+	relayStore := trust.NewRelayStore(relayStorePath, logger)
+	localAgent.SetRelayStore(relayStore)
+	logger.Info("relay store connected", "path", relayStorePath)
 
 	// Check if Ollama is available
 	ctx := context.Background()

@@ -105,9 +105,12 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 	var thirdPartyStore *trust.ThirdPartyStore
 	if trustCfg != nil && trustCfg.ThirdParty.Enabled {
 		relayStorePath := config.ExpandPath("~/.kaggen/relays.json")
+		relayStore := trust.NewRelayStore(relayStorePath, logger)
 		sandbox = trust.NewSandbox(&trustCfg.ThirdParty, relayStorePath, nil, logger)
 		if trustCfg.ThirdParty.UseLocalLLM {
 			localAgent = kaggenAgent.NewLocalAgent(&trustCfg.ThirdParty, logger)
+			// Wire relay store into local agent for tool-based relays.
+			localAgent.SetRelayStore(relayStore)
 		}
 		// Create third-party message store for persistence and mobile browsing.
 		storePath := config.ExpandPath("~/.kaggen/thirdparty.db")
