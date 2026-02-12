@@ -12,6 +12,7 @@ import (
 	"time"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	tmemory "trpc.group/trpc-go/trpc-agent-go/memory"
@@ -29,6 +30,7 @@ import (
 	"github.com/yourusername/kaggen/internal/gateway"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/model/anthropic"
+	"github.com/yourusername/kaggen/internal/oauth"
 	"github.com/yourusername/kaggen/internal/model/gemini"
 	"github.com/yourusername/kaggen/internal/model/zai"
 	kaggenModel "github.com/yourusername/kaggen/internal/model"
@@ -378,6 +380,24 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	// Create dashboard API (client count wired after server creation).
 	dashboardAPI := gateway.NewDashboardAPI(provider, backlogStore, sanitizedSession, cfg, logStreamer, nil)
 
+	// Initialize OAuth if configured
+	if len(cfg.OAuth.Providers) > 0 {
+		tokenStore, err := oauth.NewSQLiteStore(cfg.OAuthTokenDBPath())
+		if err != nil {
+			logger.Warn("OAuth token store unavailable", "error", err)
+		} else {
+			// Construct callback URL
+			callbackURL := fmt.Sprintf("http://localhost:%d%s", cfg.Gateway.Port, cfg.OAuthCallbackPath())
+			if cfg.Gateway.CallbackBaseURL != "" {
+				callbackURL = cfg.Gateway.CallbackBaseURL + cfg.OAuthCallbackPath()
+			}
+
+			oauthManager := oauth.NewFlowManager(cfg, tokenStore, callbackURL, logger)
+			gateway.SetOAuthManager(oauthManager)
+			logger.Info("OAuth enabled", "providers", len(cfg.OAuth.Providers), "callback", callbackURL)
+		}
+	}
+
 	// Create gateway server (with optional memory service)
 	server := gateway.NewServer(cfg, sanitizedSession, provider, logger, dashboardAPI, memService)
 
@@ -480,6 +500,29 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		); err != nil {
 			logger.Warn("failed to inject completion", "task_id", taskID, "error", err)
 		}
+	})
+
+	// Wire task dispatch acknowledgments: when a task is dispatched, notify the user immediately.
+	factory.SetAckFunc(func(sessionID, message string) error {
+		respond, meta, ok := server.Handler().Responders().Get(sessionID)
+		if !ok {
+			return nil // No responder registered, nothing to do
+		}
+
+		resp := &kaggenChannel.Response{
+			ID:        uuid.New().String(),
+			SessionID: sessionID,
+			Type:      "task_dispatched",
+			Content:   message,
+			Done:      false,
+		}
+		if meta != nil {
+			resp.Metadata = make(map[string]any)
+			for k, v := range meta {
+				resp.Metadata[k] = v
+			}
+		}
+		return respond(resp)
 	})
 
 	// Wire approval notifications: when a guarded tool is invoked, notify the client.

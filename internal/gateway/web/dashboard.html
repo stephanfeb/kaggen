@@ -302,6 +302,29 @@ tr:hover { background: var(--bg-secondary); }
 }
 .logout-btn:hover { color: var(--text); border-color: var(--text-muted); }
 .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); }
+/* OAuth provider cards */
+.oauth-providers { display: grid; gap: 12px; }
+.oauth-provider-card {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: var(--bg-tertiary); border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.oauth-provider-info { display: flex; align-items: center; gap: 12px; }
+.oauth-provider-icon { font-size: 24px; width: 32px; text-align: center; }
+.oauth-provider-name { font-weight: 600; color: var(--text-bright); }
+.oauth-provider-scopes { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.oauth-provider-actions { display: flex; gap: 8px; align-items: center; }
+.oauth-connect-btn {
+  background: var(--accent); border: none; color: var(--bg); padding: 6px 14px;
+  border-radius: 4px; cursor: pointer; font-size: 12px; font-family: inherit; font-weight: 500;
+}
+.oauth-connect-btn:hover { opacity: 0.9; }
+.oauth-disconnect-btn {
+  background: transparent; border: 1px solid var(--red); color: var(--red);
+  padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: inherit;
+}
+.oauth-disconnect-btn:hover { background: rgba(248,81,73,0.15); }
+.oauth-no-providers { text-align: center; padding: 24px; color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -414,6 +437,10 @@ tr:hover { background: var(--bg-secondary); }
         <div class="settings-section">
           <div class="section-header">Authentication Status</div>
           <div id="auth-status" class="settings-card">Loading...</div>
+        </div>
+        <div class="settings-section">
+          <div class="section-header">OAuth Connections</div>
+          <div id="oauth-connections" class="settings-card">Loading...</div>
         </div>
         <div class="settings-section" id="p2p-section" style="display:none;">
           <div class="section-header">P2P Network (libp2p)</div>
@@ -1360,6 +1387,7 @@ async function loadSettings() {
 
   loadTokenList();
   loadSecrets();
+  loadOAuthProviders();
 }
 
 async function loadTokenList() {
@@ -1495,6 +1523,135 @@ async function revokeToken(id) {
   });
   loadTokenList();
 }
+
+// --- OAuth Connections ---
+let oauthPopup = null;
+
+async function loadOAuthProviders() {
+  const el = document.getElementById('oauth-connections');
+  try {
+    const data = await fetchJSON('/api/oauth/providers?user_id=default');
+
+    if (!data.available) {
+      el.innerHTML = `<div class="oauth-no-providers">
+        <span class="badge badge-yellow">OAuth not configured</span>
+        <p style="margin-top:8px;font-size:12px">Add OAuth providers to config.json to enable connections.</p>
+      </div>`;
+      return;
+    }
+
+    if (!data.providers || data.providers.length === 0) {
+      el.innerHTML = `<div class="oauth-no-providers">
+        <p>No OAuth providers configured.</p>
+        <p style="margin-top:8px;font-size:11px;color:var(--text-muted)">Add providers to the oauth.providers section in config.json</p>
+      </div>`;
+      return;
+    }
+
+    const icons = {
+      google: '\ud83c\udf10',
+      github: '\ud83d\udc19',
+      slack: '\ud83d\udcac',
+      microsoft: '\ud83d\udcbb',
+      default: '\ud83d\udd11'
+    };
+
+    el.innerHTML = `<div class="oauth-providers">
+      ${data.providers.map(p => {
+        const icon = icons[p.name.toLowerCase()] || icons.default;
+        const scopeText = p.scopes && p.scopes.length > 0
+          ? p.scopes.map(s => s.split('/').pop().split(':').pop()).join(', ')
+          : '';
+        return `<div class="oauth-provider-card">
+          <div class="oauth-provider-info">
+            <span class="oauth-provider-icon">${icon}</span>
+            <div>
+              <div class="oauth-provider-name">${esc(p.name)}</div>
+              ${p.connected
+                ? `<div class="oauth-provider-scopes">${esc(scopeText)}</div>`
+                : `<div class="oauth-provider-scopes">Not connected</div>`
+              }
+            </div>
+          </div>
+          <div class="oauth-provider-actions">
+            ${p.connected
+              ? `<span class="badge badge-green">Connected</span>
+                 <button class="oauth-disconnect-btn" onclick="oauthDisconnect('${esc(p.name)}')">Disconnect</button>`
+              : `<button class="oauth-connect-btn" onclick="oauthConnect('${esc(p.name)}')">Connect</button>`
+            }
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  } catch (err) {
+    el.innerHTML = `<div class="oauth-no-providers">
+      <span class="badge badge-red">Error</span>
+      <p style="margin-top:8px;font-size:12px">${esc(err.message)}</p>
+    </div>`;
+  }
+}
+
+async function oauthConnect(provider) {
+  try {
+    const resp = await fetch(API + '/api/oauth/authorize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, user_id: 'default' })
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      alert('Error: ' + data.error);
+      return;
+    }
+
+    // Open OAuth popup
+    const width = 600;
+    const height = 700;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+    oauthPopup = window.open(
+      data.auth_url,
+      'oauth_popup',
+      `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no`
+    );
+  } catch (err) {
+    alert('Failed to start OAuth: ' + err.message);
+  }
+}
+
+async function oauthDisconnect(provider) {
+  if (!confirm(`Disconnect from ${provider}? You'll need to re-authorize to use this provider again.`)) return;
+
+  try {
+    const resp = await fetch(API + '/api/oauth/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, user_id: 'default' })
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      alert('Error: ' + data.error);
+      return;
+    }
+
+    loadOAuthProviders();
+  } catch (err) {
+    alert('Failed to disconnect: ' + err.message);
+  }
+}
+
+// Listen for OAuth popup completion
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'oauth_complete') {
+    if (oauthPopup) {
+      oauthPopup.close();
+      oauthPopup = null;
+    }
+    loadOAuthProviders();
+  }
+});
 
 // --- Secrets Management ---
 async function loadSecrets() {
