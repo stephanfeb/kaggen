@@ -224,15 +224,12 @@ in the kaggen dashboard under Settings > OAuth Connections."
 
 This complete example shows how to set up Gmail access.
 
-### Step 1: Create Google OAuth App
+### Step 1: Create Google Cloud Project
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Navigate to **APIs & Services > Credentials**
-4. Click **Create Credentials > OAuth client ID**
-5. Select **Web application**
-6. Add authorized redirect URI: `http://localhost:18789/api/oauth/callback`
-7. Copy the Client ID and Client Secret
+2. Click **Select a project** (top bar) → **New Project**
+3. Name it (e.g., "Kaggen") and click **Create**
+4. Wait for project creation, then select it
 
 ### Step 2: Enable Gmail API
 
@@ -240,7 +237,67 @@ This complete example shows how to set up Gmail access.
 2. Search for "Gmail API"
 3. Click **Enable**
 
-### Step 3: Configure Kaggen
+### Step 3: Configure OAuth in Google Auth Platform
+
+Google's OAuth configuration is now in the **Google Auth Platform** interface:
+
+1. Go to **APIs & Services > OAuth consent screen** (or search "Google Auth Platform")
+2. You'll see the new interface with these sections in the sidebar:
+   - Overview
+   - Branding
+   - Audience
+   - Clients
+   - Data Access
+   - Verification Center
+   - Settings
+
+#### 3a. Set Audience
+
+1. Click **Audience** in the sidebar
+2. Select **External** (for personal Gmail accounts) or **Internal** (for Google Workspace)
+3. Save changes
+
+#### 3b. Configure Branding
+
+1. Click **Branding** in the sidebar
+2. Fill in required fields:
+   - **App name**: "Kaggen" (or your preferred name)
+   - **User support email**: Your email address
+   - **Developer contact email**: Your email address
+3. Save changes
+
+#### 3c. Configure Data Access (Scopes)
+
+1. Click **Data Access** in the sidebar
+2. Click **Add or remove scopes**
+3. Search and select the Gmail scopes you need:
+   - `https://www.googleapis.com/auth/gmail.readonly` - Read emails
+   - `https://www.googleapis.com/auth/gmail.send` - Send emails
+   - `https://www.googleapis.com/auth/gmail.labels` - Manage labels (optional)
+4. Save changes
+
+#### 3d. Create OAuth Client
+
+1. Click **Clients** in the sidebar
+2. Click **Create Client** or **+ Add Client**
+3. Select **Web application**
+4. Configure:
+   - **Name**: "Kaggen Dashboard"
+   - **Authorized redirect URIs**: Add `http://localhost:18789/api/oauth/callback`
+5. Click **Create**
+6. Copy the **Client ID** and **Client Secret** (save these securely!)
+
+#### 3e. Add Test Users (if in Testing mode)
+
+If your app is in "Testing" publishing status:
+1. Click **Audience** in the sidebar
+2. Under **Test users**, click **Add users**
+3. Add your Gmail address
+4. Save changes
+
+> **Note**: In testing mode, only added test users can authorize. For broader access, you'll need to publish the app and potentially go through Google's verification process.
+
+### Step 4: Configure Kaggen
 
 Add to `~/.kaggen/config.json`:
 
@@ -524,17 +581,35 @@ Response:
 
 ## Common OAuth Scopes
 
-### Google
+### Google Gmail
 
 | Scope | Description |
 |-------|-------------|
-| `gmail.readonly` | Read emails |
-| `gmail.send` | Send emails |
-| `gmail.modify` | Read, send, delete, manage labels |
-| `calendar.readonly` | Read calendar events |
-| `calendar.events` | Read and write calendar events |
-| `drive.readonly` | Read Google Drive files |
-| `drive.file` | Access files created by the app |
+| `https://www.googleapis.com/auth/gmail.readonly` | Read emails and metadata (no send/delete) |
+| `https://www.googleapis.com/auth/gmail.send` | Send emails only (no read) |
+| `https://www.googleapis.com/auth/gmail.compose` | Create drafts and send emails |
+| `https://www.googleapis.com/auth/gmail.modify` | Full access: read, send, delete, manage labels |
+| `https://www.googleapis.com/auth/gmail.labels` | Create, read, update, delete labels only |
+| `https://www.googleapis.com/auth/gmail.metadata` | Read metadata only (headers, no body content) |
+| `https://www.googleapis.com/auth/gmail.settings.basic` | Manage basic mail settings |
+
+**Recommended for Kaggen**: `gmail.readonly` + `gmail.send` (read and send without delete)
+
+### Google Calendar
+
+| Scope | Description |
+|-------|-------------|
+| `https://www.googleapis.com/auth/calendar.readonly` | Read calendar events |
+| `https://www.googleapis.com/auth/calendar.events` | Read and write events |
+| `https://www.googleapis.com/auth/calendar` | Full calendar access |
+
+### Google Drive
+
+| Scope | Description |
+|-------|-------------|
+| `https://www.googleapis.com/auth/drive.readonly` | Read all Drive files |
+| `https://www.googleapis.com/auth/drive.file` | Access files created/opened by the app |
+| `https://www.googleapis.com/auth/drive.metadata.readonly` | Read file metadata only |
 
 ### GitHub
 
