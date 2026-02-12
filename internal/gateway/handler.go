@@ -85,6 +85,7 @@ type Handler struct {
 	sandbox         *trust.Sandbox
 	localAgent      *kaggenAgent.LocalAgent
 	thirdPartyStore *trust.ThirdPartyStore
+	attachmentStore *trust.AttachmentStore
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
@@ -103,6 +104,7 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 	var sandbox *trust.Sandbox
 	var localAgent *kaggenAgent.LocalAgent
 	var thirdPartyStore *trust.ThirdPartyStore
+	var attachmentStore *trust.AttachmentStore
 	if trustCfg != nil && trustCfg.ThirdParty.Enabled {
 		relayStorePath := config.ExpandPath("~/.kaggen/relays.json")
 		relayStore := trust.NewRelayStore(relayStorePath, logger)
@@ -125,6 +127,15 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 				localAgent.SetStore(thirdPartyStore)
 			}
 		}
+
+		// Create attachment store for email attachments.
+		attachPath := config.ExpandPath("~/.kaggen/attachments")
+		attachmentStore, err = trust.NewAttachmentStore(attachPath)
+		if err != nil {
+			logger.Warn("failed to create attachment store", "error", err)
+		} else {
+			logger.Info("attachment store initialized", "path", attachPath)
+		}
 	}
 
 	return &Handler{
@@ -139,6 +150,7 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 		sandbox:         sandbox,
 		localAgent:      localAgent,
 		thirdPartyStore: thirdPartyStore,
+		attachmentStore: attachmentStore,
 	}
 }
 
@@ -799,6 +811,11 @@ func (h *Handler) Responders() *SessionResponder {
 // ThirdPartyStore returns the third-party message store, or nil if not configured.
 func (h *Handler) ThirdPartyStore() *trust.ThirdPartyStore {
 	return h.thirdPartyStore
+}
+
+// AttachmentStore returns the attachment store for email attachments, or nil if not configured.
+func (h *Handler) AttachmentStore() *trust.AttachmentStore {
+	return h.attachmentStore
 }
 
 // LocalAgent returns the local LLM agent, or nil if not configured.

@@ -276,7 +276,7 @@ func listEmailsAction(ctx context.Context, args EmailToolArgs, token *oauth.Toke
 		limit = 10
 	}
 
-	c, err := connectEmailIMAP(args.Email, token.AccessToken, provider)
+	c, err := ConnectEmailIMAP(args.Email, token.AccessToken, provider)
 	if err != nil {
 		result.Message = err.Error()
 		return result, nil
@@ -322,10 +322,10 @@ func listEmailsAction(ctx context.Context, args EmailToolArgs, token *oauth.Toke
 			Date:    msg.Envelope.Date.Format(time.RFC3339),
 		}
 		if len(msg.Envelope.From) > 0 {
-			em.From = formatEmailAddress(msg.Envelope.From[0])
+			em.From = FormatEmailAddress(msg.Envelope.From[0])
 		}
 		for _, addr := range msg.Envelope.To {
-			em.To = append(em.To, formatEmailAddress(addr))
+			em.To = append(em.To, FormatEmailAddress(addr))
 		}
 		result.Messages = append(result.Messages, em)
 	}
@@ -359,7 +359,7 @@ func readEmailAction(ctx context.Context, args EmailToolArgs, token *oauth.Token
 		folder = "INBOX"
 	}
 
-	c, err := connectEmailIMAP(args.Email, token.AccessToken, provider)
+	c, err := ConnectEmailIMAP(args.Email, token.AccessToken, provider)
 	if err != nil {
 		result.Message = err.Error()
 		return result, nil
@@ -403,10 +403,10 @@ func readEmailAction(ctx context.Context, args EmailToolArgs, token *oauth.Token
 		Date:    msg.Envelope.Date.Format(time.RFC3339),
 	}
 	if len(msg.Envelope.From) > 0 {
-		em.From = formatEmailAddress(msg.Envelope.From[0])
+		em.From = FormatEmailAddress(msg.Envelope.From[0])
 	}
 	for _, addr := range msg.Envelope.To {
-		em.To = append(em.To, formatEmailAddress(addr))
+		em.To = append(em.To, FormatEmailAddress(addr))
 	}
 
 	// Extract body
@@ -447,7 +447,7 @@ func searchEmailsAction(ctx context.Context, args EmailToolArgs, token *oauth.To
 		limit = 10
 	}
 
-	c, err := connectEmailIMAP(args.Email, token.AccessToken, provider)
+	c, err := ConnectEmailIMAP(args.Email, token.AccessToken, provider)
 	if err != nil {
 		result.Message = err.Error()
 		return result, nil
@@ -504,7 +504,7 @@ func searchEmailsAction(ctx context.Context, args EmailToolArgs, token *oauth.To
 			Date:    msg.Envelope.Date.Format(time.RFC3339),
 		}
 		if len(msg.Envelope.From) > 0 {
-			em.From = formatEmailAddress(msg.Envelope.From[0])
+			em.From = FormatEmailAddress(msg.Envelope.From[0])
 		}
 		result.Messages = append(result.Messages, em)
 	}
@@ -519,8 +519,8 @@ func searchEmailsAction(ctx context.Context, args EmailToolArgs, token *oauth.To
 	return result, nil
 }
 
-// connectEmailIMAP establishes an IMAP connection with XOAUTH2.
-func connectEmailIMAP(email, accessToken string, provider config.OAuthProvider) (*client.Client, error) {
+// ConnectEmailIMAP establishes an IMAP connection with XOAUTH2.
+func ConnectEmailIMAP(email, accessToken string, provider config.OAuthProvider) (*client.Client, error) {
 	addr := fmt.Sprintf("%s:%d", provider.IMAP.Host, provider.IMAP.Port)
 
 	var c *client.Client
@@ -585,8 +585,8 @@ func (c *emailXoauth2Client) Next(fromServer []byte, more bool) ([]byte, error) 
 	return nil, nil
 }
 
-// formatEmailAddress formats an IMAP address.
-func formatEmailAddress(addr *imap.Address) string {
+// FormatEmailAddress formats an IMAP address.
+func FormatEmailAddress(addr *imap.Address) string {
 	if addr == nil {
 		return ""
 	}

@@ -480,7 +480,7 @@ func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
 
 	// Third-party browsing protocol (for mobile app to view third-party conversations)
 	if thirdPartyStore := s.handler.ThirdPartyStore(); thirdPartyStore != nil {
-		thirdPartyProto := p2p.NewThirdPartyProtocol(thirdPartyStore, s.logger)
+		thirdPartyProto := p2p.NewThirdPartyProtocol(thirdPartyStore, s.handler.AttachmentStore(), s.logger)
 		host.SetStreamHandler(p2p.ThirdPartyProtocolID, thirdPartyProto.StreamHandler())
 		s.logger.Info("P2P protocol registered", "protocol", p2p.ThirdPartyProtocolID)
 	}

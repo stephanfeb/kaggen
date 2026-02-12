@@ -27,7 +27,8 @@ type Config struct {
 	Creativity CreativityConfig `json:"creativity,omitempty"`
 	P2P        P2PConfig        `json:"p2p,omitempty"`
 	Trust      TrustConfig      `json:"trust,omitempty"`
-	OAuth      OAuthConfig      `json:"oauth,omitempty"`
+	OAuth       OAuthConfig       `json:"oauth,omitempty"`
+	EmailPoller EmailPollerConfig `json:"email_poller,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -276,6 +277,17 @@ type OAuthConfig struct {
 	TokenDBPath  string                   `json:"token_db_path,omitempty"` // default "~/.kaggen/oauth_tokens.db"
 }
 
+// EmailPollerConfig configures the background email ingestion service.
+// When enabled, the poller periodically checks configured IMAP folders
+// for new emails and stores them in thirdparty.db for human review.
+type EmailPollerConfig struct {
+	Enabled  bool     `json:"enabled"`            // Enable email polling
+	Provider string   `json:"provider"`           // OAuth provider name (e.g. "google")
+	Email    string   `json:"email"`              // Email address to poll
+	Interval string   `json:"interval,omitempty"` // Poll interval as Go duration (default "5m")
+	Folders  []string `json:"folders,omitempty"`  // IMAP folders to poll (default ["INBOX"])
+}
+
 // OAuthProvider defines an OAuth 2.0 provider configuration.
 type OAuthProvider struct {
 	ClientID     string            `json:"client_id"`               // secret:key reference supported
@@ -394,6 +406,27 @@ func (c *Config) OAuthTokenDBPath() string {
 		return ExpandPath(c.OAuth.TokenDBPath)
 	}
 	return ExpandPath("~/.kaggen/oauth_tokens.db")
+}
+
+// EmailPollerInterval returns the poll interval or the default ("5m").
+func (c *Config) EmailPollerInterval() string {
+	if c.EmailPoller.Interval != "" {
+		return c.EmailPoller.Interval
+	}
+	return "5m"
+}
+
+// EmailPollerFolders returns the folders to poll or the default (["INBOX"]).
+func (c *Config) EmailPollerFolders() []string {
+	if len(c.EmailPoller.Folders) > 0 {
+		return c.EmailPoller.Folders
+	}
+	return []string{"INBOX"}
+}
+
+// AttachmentsPath returns the expanded path to the attachments directory.
+func (c *Config) AttachmentsPath() string {
+	return ExpandPath("~/.kaggen/attachments")
 }
 
 // TLSConfig configures TLS/SSL for secure connections.
