@@ -600,6 +600,12 @@ func (a *Agent) SetCompletionFunc(fn CompletionFunc) {
 	a.dispatcher.SetCompletionFunc(fn)
 }
 
+// SetAckFunc sets the acknowledgment callback for task dispatch notifications.
+// Call this after handler construction to enable user feedback before task dispatch.
+func (a *Agent) SetAckFunc(fn func(sessionID, message string) error) {
+	a.dispatcher.SetAckFunc(fn)
+}
+
 // SetApprovalNotifyFunc sets the callback used to send approval notifications
 // to clients. Call this after handler/channel construction.
 func (a *Agent) SetApprovalNotifyFunc(fn ApprovalNotifyFunc) {

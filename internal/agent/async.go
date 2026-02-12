@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -63,11 +64,20 @@ type TaskEvent struct {
 
 // ApprovalRequest holds details about a tool call awaiting human approval.
 type ApprovalRequest struct {
-	ToolName    string    `json:"tool_name"`
-	Arguments   string    `json:"arguments"`    // raw JSON tool arguments
-	SkillName   string    `json:"skill_name"`
-	Description string    `json:"description"`  // human-readable summary
-	RequestedAt time.Time `json:"requested_at"`
+	ToolName     string        `json:"tool_name"`
+	Arguments    string        `json:"arguments"`              // raw JSON tool arguments
+	SkillName    string        `json:"skill_name"`
+	Description  string        `json:"description"`            // human-readable summary
+	RequestedAt  time.Time     `json:"requested_at"`
+	EmailPreview *EmailPreview `json:"email_preview,omitempty"` // populated for email tool
+}
+
+// EmailPreview provides a structured preview of an email for approval UI.
+type EmailPreview struct {
+	To      []string `json:"to"`
+	CC      []string `json:"cc,omitempty"`
+	Subject string   `json:"subject"`
+	Body    string   `json:"body"` // truncated to 1000 chars
 }
 
 // TaskState tracks the state of an async sub-agent task.
@@ -356,6 +366,13 @@ func (s *InFlightStore) Cancel(id string) bool {
 func (s *InFlightStore) RegisterApproval(id, skillName, toolName, args, description, sessionID, userID string, timeout time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Extract email preview if this is an email send
+	var emailPreview *EmailPreview
+	if toolName == "email" {
+		emailPreview = extractEmailPreview(toolName, json.RawMessage(args))
+	}
+
 	s.tasks[id] = &TaskState{
 		ID:        id,
 		AgentName: skillName,
@@ -368,11 +385,12 @@ func (s *InFlightStore) RegisterApproval(id, skillName, toolName, args, descript
 		External:  true, // reuse external reaper for timeout
 		TimeoutAt: time.Now().Add(timeout),
 		ApprovalRequest: &ApprovalRequest{
-			ToolName:    toolName,
-			Arguments:   args,
-			SkillName:   skillName,
-			Description: description,
-			RequestedAt: time.Now(),
+			ToolName:     toolName,
+			Arguments:    args,
+			SkillName:    skillName,
+			Description:  description,
+			RequestedAt:  time.Now(),
+			EmailPreview: emailPreview,
 		},
 	}
 }
@@ -521,6 +539,9 @@ type asyncDispatcher struct {
 	contextBudget       kaggenmodel.ProviderBudget // Token budget for context pruning
 	toolOutputMaxChars  int                        // Max chars for tool output truncation
 	contextPruneEnabled bool                       // Whether context pruning is enabled
+
+	// User feedback
+	ackFunc func(sessionID, message string) error // Acknowledgment callback for task dispatch
 }
 
 // SetCompletionFunc updates the completion callback. This is used to wire up
@@ -535,6 +556,20 @@ func (d *asyncDispatcher) getCompleteFn() CompletionFunc {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.completeFn
+}
+
+// SetAckFunc sets the acknowledgment callback for task dispatch notifications.
+// This is called before a task is dispatched to notify the user that work is starting.
+func (d *asyncDispatcher) SetAckFunc(fn func(sessionID, message string) error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ackFunc = fn
+}
+
+func (d *asyncDispatcher) getAckFunc() func(sessionID, message string) error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.ackFunc
 }
 
 // dispatch spawns a sub-agent in a goroutine and returns immediately.
@@ -592,6 +627,18 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 	taskID := uuid.New().String()
 	d.store.Register(taskID, req.AgentName, req.Task, policy, sessionID, userID)
 	d.logger.Info("dispatched async task", "task_id", taskID, "agent", req.AgentName, "policy", policy, "session_id", sessionID)
+
+	// Send acknowledgment to user before dispatching (best effort, don't block on errors)
+	if sessionID != "" {
+		if ackFn := d.getAckFunc(); ackFn != nil {
+			taskPreview := req.Task
+			if len(taskPreview) > 100 {
+				taskPreview = taskPreview[:100] + "..."
+			}
+			ackMsg := fmt.Sprintf("Asking %s: %s", req.AgentName, taskPreview)
+			_ = ackFn(sessionID, ackMsg)
+		}
+	}
 
 	// Inject project-specific context (AGENTS.md) if a project directory
 	// is referenced in the task text.

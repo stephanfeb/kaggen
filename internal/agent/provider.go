@@ -90,3 +90,8 @@ func (p *AgentProvider) SetCompletionFunc(fn CompletionFunc) {
 func (p *AgentProvider) SetApprovalNotifyFunc(fn ApprovalNotifyFunc) {
 	p.current.Load().SetApprovalNotifyFunc(fn)
 }
+
+// SetAckFunc sets the acknowledgment callback on the current agent.
+func (p *AgentProvider) SetAckFunc(fn func(sessionID, message string) error) {
+	p.current.Load().SetAckFunc(fn)
+}

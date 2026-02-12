@@ -184,6 +184,7 @@ type AgentFactory struct {
 	backlogStore    *backlog.Store
 	skillDirs       []string
 	completeFn      CompletionFunc
+	ackFunc         func(sessionID, message string) error // Task dispatch acknowledgment
 	provider        *AgentProvider
 	logger          *slog.Logger
 	maxHistoryRuns  int
@@ -315,6 +316,17 @@ func (f *AgentFactory) SetCompletionFunc(fn CompletionFunc) {
 
 	// Also apply to the current agent immediately.
 	f.provider.SetCompletionFunc(fn)
+}
+
+// SetAckFunc stores the acknowledgment callback for task dispatch notifications.
+// It is re-applied to each newly built agent during Rebuild().
+func (f *AgentFactory) SetAckFunc(fn func(sessionID, message string) error) {
+	f.mu.Lock()
+	f.ackFunc = fn
+	f.mu.Unlock()
+
+	// Also apply to the current agent immediately.
+	f.provider.SetAckFunc(fn)
 }
 
 // Rebuild loads skills from disk, builds new sub-agents and a new Agent,

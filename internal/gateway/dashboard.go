@@ -864,15 +864,16 @@ func (d *DashboardAPI) HandleApprovals(w http.ResponseWriter, r *http.Request) {
 	all := store.List(agent.TaskPendingApproval)
 
 	type approvalOut struct {
-		ID          string                  `json:"id"`
-		ToolName    string                  `json:"tool_name"`
-		SkillName   string                  `json:"skill_name"`
-		Description string                  `json:"description"`
-		Arguments   string                  `json:"arguments"`
-		SessionID   string                  `json:"session_id"`
-		UserID      string                  `json:"user_id"`
-		RequestedAt string                  `json:"requested_at"`
-		TimeoutAt   string                  `json:"timeout_at"`
+		ID           string              `json:"id"`
+		ToolName     string              `json:"tool_name"`
+		SkillName    string              `json:"skill_name"`
+		Description  string              `json:"description"`
+		Arguments    string              `json:"arguments"`
+		SessionID    string              `json:"session_id"`
+		UserID       string              `json:"user_id"`
+		RequestedAt  string              `json:"requested_at"`
+		TimeoutAt    string              `json:"timeout_at"`
+		EmailPreview *agent.EmailPreview `json:"email_preview,omitempty"`
 	}
 
 	out := make([]approvalOut, 0, len(all))
@@ -881,15 +882,16 @@ func (d *DashboardAPI) HandleApprovals(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out = append(out, approvalOut{
-			ID:          t.ID,
-			ToolName:    t.ApprovalRequest.ToolName,
-			SkillName:   t.ApprovalRequest.SkillName,
-			Description: t.ApprovalRequest.Description,
-			Arguments:   t.ApprovalRequest.Arguments,
-			SessionID:   t.SessionID,
-			UserID:      t.UserID,
-			RequestedAt: t.ApprovalRequest.RequestedAt.Format(time.RFC3339),
-			TimeoutAt:   t.TimeoutAt.Format(time.RFC3339),
+			ID:           t.ID,
+			ToolName:     t.ApprovalRequest.ToolName,
+			SkillName:    t.ApprovalRequest.SkillName,
+			Description:  t.ApprovalRequest.Description,
+			Arguments:    t.ApprovalRequest.Arguments,
+			SessionID:    t.SessionID,
+			UserID:       t.UserID,
+			RequestedAt:  t.ApprovalRequest.RequestedAt.Format(time.RFC3339),
+			TimeoutAt:    t.TimeoutAt.Format(time.RFC3339),
+			EmailPreview: t.ApprovalRequest.EmailPreview,
 		})
 	}
 	writeJSON(w, out)
