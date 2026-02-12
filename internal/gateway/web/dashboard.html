@@ -184,6 +184,26 @@ tr:hover { background: var(--bg-secondary); }
 .skill-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
 .skill-card .name { color: var(--text-bright); font-weight: 600; margin-bottom: 4px; }
 .skill-card .desc { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+/* Approval cards */
+.approval-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; margin-bottom: 12px; }
+.approval-card.email-approval { border-left: 3px solid var(--yellow); }
+.approval-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.approval-skill { color: var(--text-muted); font-size: 11px; }
+.approval-time { color: var(--text-muted); font-size: 11px; margin-left: auto; }
+.approval-description { color: var(--text); font-size: 12px; margin-bottom: 12px; }
+.approval-args { background: var(--bg-tertiary); border-radius: 4px; padding: 8px 12px; margin-bottom: 12px; overflow-x: auto; }
+.approval-args pre { font-family: inherit; font-size: 11px; color: var(--text-muted); margin: 0; white-space: pre-wrap; word-break: break-all; }
+.email-preview { background: var(--bg-tertiary); border-radius: 4px; padding: 12px 16px; margin-bottom: 12px; }
+.email-field { font-size: 12px; margin-bottom: 6px; }
+.email-label { color: var(--text-muted); font-weight: 500; margin-right: 8px; }
+.email-body { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+.email-body pre { font-family: inherit; font-size: 12px; color: var(--text); margin: 0; white-space: pre-wrap; line-height: 1.5; }
+.approval-actions { display: flex; gap: 8px; }
+.approve-btn, .reject-btn { padding: 6px 16px; border-radius: 4px; font-size: 12px; font-family: inherit; cursor: pointer; border: none; }
+.approve-btn { background: var(--green); color: var(--bg); }
+.approve-btn:hover { opacity: 0.9; }
+.reject-btn { background: var(--bg-tertiary); color: var(--text-muted); border: 1px solid var(--border); }
+.reject-btn:hover { color: var(--text); border-color: var(--text-muted); }
 /* Config viewer */
 .config-viewer { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; overflow-x: auto; }
 .config-viewer pre { color: var(--text); font-family: inherit; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
@@ -366,6 +386,7 @@ tr:hover { background: var(--bg-secondary); }
       <li data-panel="overview" class="active"><span class="icon">&#9632;</span> Overview</li>
       <li data-panel="tasks"><span class="icon">&#9654;</span> Tasks <span class="badge" id="badge-tasks">0</span></li>
       <li data-panel="backlog"><span class="icon">&#9776;</span> Backlog <span class="badge" id="badge-backlog">0</span></li>
+      <li data-panel="approvals"><span class="icon">&#10003;</span> Approvals <span class="badge" id="badge-approvals">0</span></li>
       <li data-panel="skills"><span class="icon">&#9881;</span> Skills <span class="badge" id="badge-skills">0</span></li>
       <li data-panel="sessions"><span class="icon">&#9700;</span> Sessions</li>
       <li data-panel="logs"><span class="icon">&#9656;</span> Logs</li>
@@ -406,6 +427,10 @@ tr:hover { background: var(--bg-secondary); }
     <div class="panel" id="panel-skills">
       <div class="panel-title">Loaded Skills</div>
       <div class="skill-list" id="skill-list"></div>
+    </div>
+    <div class="panel" id="panel-approvals">
+      <div class="panel-title">Pending Approvals</div>
+      <div id="approvals-list"></div>
     </div>
     <div class="panel" id="panel-sessions">
       <div class="panel-title">Sessions</div>
@@ -716,6 +741,7 @@ async function loadPanel(panel) {
     case 'overview': return loadOverview();
     case 'tasks': return loadTasks();
     case 'backlog': return loadBacklog();
+    case 'approvals': return loadApprovals();
     case 'skills': return loadSkills();
     case 'sessions': return loadSessions();
     case 'config': return loadConfig();
@@ -724,7 +750,7 @@ async function loadPanel(panel) {
 }
 
 function startRefresh(panel) {
-  const intervals = { overview: 5000, tasks: 3000, backlog: 5000, sessions: 10000 };
+  const intervals = { overview: 5000, tasks: 3000, backlog: 5000, approvals: 3000, sessions: 10000 };
   const ms = intervals[panel];
   if (ms) refreshTimer = setInterval(() => loadPanel(panel), ms);
 }
@@ -763,6 +789,7 @@ async function loadOverview() {
     { label: 'Completed', value: d.tasks_completed || 0, cls: 'badge-green' },
     { label: 'Failed', value: d.tasks_failed || 0, cls: d.tasks_failed > 0 ? 'badge-red' : 'badge-gray' },
     { label: 'Backlog Pending', value: d.backlog_pending },
+    { label: 'Pending Approvals', value: d.pending_approvals || 0, cls: d.pending_approvals > 0 ? 'badge-yellow' : 'badge-gray' },
     { label: 'Skills', value: d.skills_loaded },
     { label: 'Tokens (In)', value: fmtNum(d.total_tokens_input || 0) },
     { label: 'Tokens (Out)', value: fmtNum(d.total_tokens_output || 0) },
@@ -777,6 +804,7 @@ async function loadOverview() {
   ).join('');
   document.getElementById('badge-tasks').textContent = d.inflight_tasks || d.total_tasks || 0;
   document.getElementById('badge-backlog').textContent = d.backlog_pending || 0;
+  document.getElementById('badge-approvals').textContent = d.pending_approvals || 0;
   document.getElementById('badge-skills').textContent = d.skills_loaded || 0;
 }
 
@@ -1154,6 +1182,99 @@ async function loadBacklog() {
       <td>${timeAgo(i.created_at)}</td>
     </tr>`).join('')}
   </table>`;
+}
+
+// --- Approvals ---
+async function loadApprovals() {
+  const approvals = await fetchJSON('/api/approvals');
+  const el = document.getElementById('approvals-list');
+  document.getElementById('badge-approvals').textContent = approvals?.length || 0;
+
+  if (!approvals || approvals.length === 0) {
+    el.innerHTML = '<div class="empty">No pending approvals</div>';
+    return;
+  }
+
+  el.innerHTML = approvals.map(a => {
+    const isEmail = a.email_preview != null;
+
+    if (isEmail) {
+      const preview = a.email_preview;
+      return `
+        <div class="approval-card email-approval">
+          <div class="approval-header">
+            <span class="badge badge-yellow">Email Approval</span>
+            <span class="approval-skill">${esc(a.skill_name || 'unknown')}</span>
+            <span class="approval-time">${timeAgo(a.requested_at)}</span>
+          </div>
+          <div class="email-preview">
+            <div class="email-field"><span class="email-label">To:</span> ${esc(preview.to?.join(', ') || '')}</div>
+            ${preview.cc?.length ? `<div class="email-field"><span class="email-label">CC:</span> ${esc(preview.cc.join(', '))}</div>` : ''}
+            <div class="email-field"><span class="email-label">Subject:</span> ${esc(preview.subject || '')}</div>
+            <div class="email-body"><pre>${esc(preview.body || '')}</pre></div>
+          </div>
+          <div class="approval-actions">
+            <button class="approve-btn" onclick="approveRequest('${a.id}')">Send Email</button>
+            <button class="reject-btn" onclick="rejectRequest('${a.id}')">Cancel</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // Generic tool approval
+    return `
+      <div class="approval-card">
+        <div class="approval-header">
+          <span class="badge badge-blue">${esc(a.tool_name)}</span>
+          <span class="approval-skill">${esc(a.skill_name || 'unknown')}</span>
+          <span class="approval-time">${timeAgo(a.requested_at)}</span>
+        </div>
+        <div class="approval-description">${esc(a.description)}</div>
+        <div class="approval-args"><pre>${esc(a.arguments)}</pre></div>
+        <div class="approval-actions">
+          <button class="approve-btn" onclick="approveRequest('${a.id}')">Approve</button>
+          <button class="reject-btn" onclick="rejectRequest('${a.id}')">Reject</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function approveRequest(id) {
+  try {
+    const resp = await fetch(API + '/api/approvals/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      alert('Error: ' + data.error);
+    } else {
+      loadApprovals();
+    }
+  } catch (err) {
+    alert('Error approving request: ' + err.message);
+  }
+}
+
+async function rejectRequest(id) {
+  const reason = prompt('Rejection reason (optional):') || '';
+  try {
+    const resp = await fetch(API + '/api/approvals/reject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, reason })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      alert('Error: ' + data.error);
+    } else {
+      loadApprovals();
+    }
+  } catch (err) {
+    alert('Error rejecting request: ' + err.message);
+  }
 }
 
 // --- Skills ---

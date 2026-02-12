@@ -160,6 +160,9 @@ func (d *DashboardAPI) HandleOverview(w http.ResponseWriter, r *http.Request) {
 	// Count skills
 	skillCount := len(d.agentProvider.SubAgents())
 
+	// Count pending approvals
+	pendingApprovals := len(store.List(agent.TaskPendingApproval))
+
 	resp := map[string]any{
 		"status":              "healthy",
 		"uptime_seconds":      int64(uptime.Seconds()),
@@ -172,6 +175,7 @@ func (d *DashboardAPI) HandleOverview(w http.ResponseWriter, r *http.Request) {
 		"tasks_failed":        failed,
 		"tasks_cancelled":     cancelled,
 		"backlog_pending":     backlogPending,
+		"pending_approvals":   pendingApprovals,
 		"skills_loaded":       skillCount,
 		"memory_enabled":      d.config.Memory.Search.Enabled,
 		"telegram_enabled":    d.config.Channels.Telegram.Enabled,
