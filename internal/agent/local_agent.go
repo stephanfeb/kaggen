@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/trust"
@@ -27,6 +29,10 @@ type LocalAgent struct {
 	httpClient   *http.Client
 	logger       *slog.Logger
 	sessions     *localSessionStore
+
+	// Persistence and notification (optional)
+	store    *trust.ThirdPartyStore
+	notifier *trust.TelegramOwnerNotifier
 }
 
 // localSessionStore stores conversation history per session.
@@ -142,6 +148,31 @@ func (a *LocalAgent) SetBaseURL(url string) {
 	a.baseURL = url
 }
 
+// SetStore sets the third-party message store for persistence.
+func (a *LocalAgent) SetStore(store *trust.ThirdPartyStore) {
+	a.store = store
+}
+
+// SetNotifier sets the owner notifier for digest notifications.
+func (a *LocalAgent) SetNotifier(notifier *trust.TelegramOwnerNotifier) {
+	a.notifier = notifier
+}
+
+// Summarize uses the local LLM to summarize text.
+// Implements trust.Summarizer interface for digest notifications.
+func (a *LocalAgent) Summarize(ctx context.Context, prompt string) string {
+	msgs := []ollamaChatMessage{
+		{Role: "system", Content: "You are a helpful assistant. Summarize the following concisely."},
+		{Role: "user", Content: prompt},
+	}
+	result, err := a.chat(ctx, msgs)
+	if err != nil {
+		a.logger.Warn("summarization failed", "error", err)
+		return "(summarization failed)"
+	}
+	return result
+}
+
 // HandleMessage processes a third-party message using the local LLM.
 func (a *LocalAgent) HandleMessage(ctx context.Context, msg *channel.Message) (*channel.Response, error) {
 	a.logger.Info("local agent handling message",
@@ -185,6 +216,35 @@ func (a *LocalAgent) HandleMessage(ctx context.Context, msg *channel.Message) (*
 		Role:    "assistant",
 		Content: response,
 	})
+
+	// Persist to store and queue notification (if configured).
+	if a.store != nil || a.notifier != nil {
+		tpMsg := &trust.ThirdPartyMessage{
+			ID:               uuid.New().String(),
+			SessionID:        msg.SessionID,
+			SenderPhone:      msg.SenderPhone,
+			SenderTelegramID: msg.SenderTelegramID,
+			Channel:          msg.Channel,
+			UserMessage:      msg.Content,
+			LLMResponse:      response,
+			CreatedAt:        time.Now(),
+		}
+		if name, ok := msg.Metadata["push_name"].(string); ok {
+			tpMsg.SenderName = name
+		}
+
+		// Persist to SQLite store
+		if a.store != nil {
+			if err := a.store.Add(tpMsg); err != nil {
+				a.logger.Warn("failed to persist third-party message", "error", err)
+			}
+		}
+
+		// Queue for batched notification
+		if a.notifier != nil {
+			a.notifier.QueueNotification(tpMsg)
+		}
+	}
 
 	return &channel.Response{
 		SessionID: msg.SessionID,

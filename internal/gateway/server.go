@@ -120,6 +120,9 @@ func NewServer(cfg *config.Config, sessionService session.Service, ag agent.Agen
 			}
 			tgChannel = channel.NewTelegramChannel(token, &cfg.Channels.Telegram, sessionService, logger, sttURL)
 			router.AddChannel(tgChannel)
+
+			// Wire up third-party notifier now that Telegram channel is available.
+			handler.SetupThirdPartyNotifier(tgChannel.SendText)
 		} else {
 			logger.Warn("telegram enabled but no bot token configured")
 		}
@@ -474,4 +477,11 @@ func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
 	filesProto := p2p.NewFilesProtocol(s.logger)
 	host.SetStreamHandler(p2p.FilesProtocolID, filesProto.StreamHandler())
 	s.logger.Info("P2P protocol registered", "protocol", p2p.FilesProtocolID)
+
+	// Third-party browsing protocol (for mobile app to view third-party conversations)
+	if thirdPartyStore := s.handler.ThirdPartyStore(); thirdPartyStore != nil {
+		thirdPartyProto := p2p.NewThirdPartyProtocol(thirdPartyStore, s.logger)
+		host.SetStreamHandler(p2p.ThirdPartyProtocolID, thirdPartyProto.StreamHandler())
+		s.logger.Info("P2P protocol registered", "protocol", p2p.ThirdPartyProtocolID)
+	}
 }

@@ -74,16 +74,17 @@ type ThreadForker interface {
 
 // Handler processes messages from channels using the trpc-agent-go Runner.
 type Handler struct {
-	runner        runner.Runner
-	logger        *slog.Logger
-	responders    *SessionResponder
-	forker        ThreadForker
-	inFlight      *kaggenAgent.InFlightStore
-	auditStore    *kaggenAgent.AuditStore
-	guardedRunner *kaggenAgent.GuardedSkillRunner
-	trustConfig   *config.TrustConfig
-	sandbox       *trust.Sandbox
-	localAgent    *kaggenAgent.LocalAgent
+	runner          runner.Runner
+	logger          *slog.Logger
+	responders      *SessionResponder
+	forker          ThreadForker
+	inFlight        *kaggenAgent.InFlightStore
+	auditStore      *kaggenAgent.AuditStore
+	guardedRunner   *kaggenAgent.GuardedSkillRunner
+	trustConfig     *config.TrustConfig
+	sandbox         *trust.Sandbox
+	localAgent      *kaggenAgent.LocalAgent
+	thirdPartyStore *trust.ThirdPartyStore
 }
 
 // NewHandler creates a new message handler with a trpc-agent-go Runner.
@@ -98,28 +99,43 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 
 	r := runner.NewRunner(appName, ag, opts...)
 
-	// Initialize sandbox and local agent for third-party messages.
+	// Initialize sandbox, local agent, and third-party store for third-party messages.
 	var sandbox *trust.Sandbox
 	var localAgent *kaggenAgent.LocalAgent
+	var thirdPartyStore *trust.ThirdPartyStore
 	if trustCfg != nil && trustCfg.ThirdParty.Enabled {
 		relayStorePath := config.ExpandPath("~/.kaggen/relays.json")
 		sandbox = trust.NewSandbox(&trustCfg.ThirdParty, relayStorePath, nil, logger)
 		if trustCfg.ThirdParty.UseLocalLLM {
 			localAgent = kaggenAgent.NewLocalAgent(&trustCfg.ThirdParty, logger)
 		}
+		// Create third-party message store for persistence and mobile browsing.
+		storePath := config.ExpandPath("~/.kaggen/thirdparty.db")
+		var err error
+		thirdPartyStore, err = trust.NewThirdPartyStore(storePath)
+		if err != nil {
+			logger.Warn("failed to create third-party store", "error", err)
+		} else {
+			logger.Info("third-party store initialized", "path", storePath)
+			// Wire store into local agent for persistence.
+			if localAgent != nil {
+				localAgent.SetStore(thirdPartyStore)
+			}
+		}
 	}
 
 	return &Handler{
-		runner:        r,
-		logger:        logger,
-		responders:    NewSessionResponder(),
-		forker:        forker,
-		inFlight:      inFlight,
-		auditStore:    auditStore,
-		guardedRunner: guardedRunner,
-		trustConfig:   trustCfg,
-		sandbox:       sandbox,
-		localAgent:    localAgent,
+		runner:          r,
+		logger:          logger,
+		responders:      NewSessionResponder(),
+		forker:          forker,
+		inFlight:        inFlight,
+		auditStore:      auditStore,
+		guardedRunner:   guardedRunner,
+		trustConfig:     trustCfg,
+		sandbox:         sandbox,
+		localAgent:      localAgent,
+		thirdPartyStore: thirdPartyStore,
 	}
 }
 
@@ -777,8 +793,48 @@ func (h *Handler) Responders() *SessionResponder {
 	return h.responders
 }
 
+// ThirdPartyStore returns the third-party message store, or nil if not configured.
+func (h *Handler) ThirdPartyStore() *trust.ThirdPartyStore {
+	return h.thirdPartyStore
+}
+
+// LocalAgent returns the local LLM agent, or nil if not configured.
+func (h *Handler) LocalAgent() *kaggenAgent.LocalAgent {
+	return h.localAgent
+}
+
+// SetupThirdPartyNotifier creates and wires the Telegram owner notifier for third-party messages.
+// Call this after the Telegram channel is available.
+func (h *Handler) SetupThirdPartyNotifier(sendFunc trust.TelegramSendFunc) {
+	if h.thirdPartyStore == nil || h.localAgent == nil || h.trustConfig == nil {
+		return
+	}
+	if len(h.trustConfig.OwnerTelegram) == 0 {
+		h.logger.Warn("third-party notifier: no owner telegram IDs configured")
+		return
+	}
+
+	notifier := trust.NewTelegramOwnerNotifier(
+		sendFunc,
+		h.trustConfig.OwnerTelegram,
+		h.thirdPartyStore,
+		h.localAgent, // LocalAgent implements trust.Summarizer
+		h.logger,
+	)
+	h.localAgent.SetNotifier(notifier)
+	h.logger.Info("third-party notifier initialized",
+		"owner_count", len(h.trustConfig.OwnerTelegram),
+		"digest_interval", "5m")
+}
+
 // Close closes the handler and releases resources.
 func (h *Handler) Close() error {
+	// Close third-party store if configured.
+	if h.thirdPartyStore != nil {
+		if err := h.thirdPartyStore.Close(); err != nil {
+			h.logger.Warn("error closing third-party store", "error", err)
+		}
+	}
 	if closer, ok := h.runner.(interface{ Close() error }); ok {
 		return closer.Close()
 	}
