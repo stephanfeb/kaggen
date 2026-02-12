@@ -285,6 +285,16 @@ type OAuthProvider struct {
 	Scopes       []string `json:"scopes,omitempty"`        // OAuth scopes to request
 	PKCE         bool     `json:"pkce,omitempty"`          // auto-set for known providers
 	RedirectURI  string   `json:"redirect_uri,omitempty"`  // override callback URI (rare)
+	SMTP         *EmailServer `json:"smtp,omitempty"`      // SMTP server for sending emails
+	IMAP         *EmailServer `json:"imap,omitempty"`      // IMAP server for reading emails
+}
+
+// EmailServer configures SMTP or IMAP server connection details.
+type EmailServer struct {
+	Host     string `json:"host"`               // Server hostname (e.g., smtp.gmail.com)
+	Port     int    `json:"port"`               // Server port (e.g., 587 for SMTP, 993 for IMAP)
+	TLS      bool   `json:"tls,omitempty"`      // Use implicit TLS (typically port 465/993)
+	StartTLS bool   `json:"starttls,omitempty"` // Use STARTTLS (typically port 587)
 }
 
 // KnownOAuthProvider contains the pre-configured settings for known providers.
@@ -292,6 +302,8 @@ type KnownOAuthProvider struct {
 	AuthURL  string
 	TokenURL string
 	PKCE     bool
+	SMTP     *EmailServer // Default SMTP server (if provider supports email)
+	IMAP     *EmailServer // Default IMAP server (if provider supports email)
 }
 
 // knownOAuthProviders contains default configurations for well-known OAuth providers.
@@ -300,16 +312,26 @@ var knownOAuthProviders = map[string]KnownOAuthProvider{
 		AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
 		TokenURL: "https://oauth2.googleapis.com/token",
 		PKCE:     true,
+		SMTP:     &EmailServer{Host: "smtp.gmail.com", Port: 587, StartTLS: true},
+		IMAP:     &EmailServer{Host: "imap.gmail.com", Port: 993, TLS: true},
 	},
 	"github": {
 		AuthURL:  "https://github.com/login/oauth/authorize",
 		TokenURL: "https://github.com/login/oauth/access_token",
 		PKCE:     false,
+		// GitHub doesn't provide email servers
+	},
+	"microsoft": {
+		AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+		TokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		PKCE:     true,
+		SMTP:     &EmailServer{Host: "smtp.office365.com", Port: 587, StartTLS: true},
+		IMAP:     &EmailServer{Host: "outlook.office365.com", Port: 993, TLS: true},
 	},
 }
 
 // GetOAuthProvider returns the resolved OAuth provider configuration.
-// For known providers (google, github), it fills in default auth/token URLs.
+// For known providers (google, github, microsoft), it fills in default auth/token URLs and email servers.
 func (c *Config) GetOAuthProvider(name string) (OAuthProvider, bool) {
 	provider, ok := c.OAuth.Providers[name]
 	if !ok {
@@ -328,6 +350,13 @@ func (c *Config) GetOAuthProvider(name string) (OAuthProvider, bool) {
 		// For known providers that require PKCE, we always enable it
 		if known.PKCE {
 			provider.PKCE = true
+		}
+		// Fill in email server defaults if not explicitly configured
+		if provider.SMTP == nil && known.SMTP != nil {
+			provider.SMTP = known.SMTP
+		}
+		if provider.IMAP == nil && known.IMAP != nil {
+			provider.IMAP = known.IMAP
 		}
 	}
 

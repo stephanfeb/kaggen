@@ -600,15 +600,20 @@ Google's Advanced Protection Program blocks all unverified third-party apps. Thi
 
 | Scope | Description |
 |-------|-------------|
-| `https://www.googleapis.com/auth/gmail.readonly` | Read emails and metadata (no send/delete) |
-| `https://www.googleapis.com/auth/gmail.send` | Send emails only (no read) |
-| `https://www.googleapis.com/auth/gmail.compose` | Create drafts and send emails |
-| `https://www.googleapis.com/auth/gmail.modify` | Full access: read, send, delete, manage labels |
+| `https://www.googleapis.com/auth/gmail.readonly` | Read emails via REST API (no send/delete) |
+| `https://www.googleapis.com/auth/gmail.send` | Send emails via REST API only (no read) |
+| `https://www.googleapis.com/auth/gmail.compose` | Create drafts and send emails via REST API |
+| `https://www.googleapis.com/auth/gmail.modify` | Full access via REST API: read, send, delete, manage labels |
 | `https://www.googleapis.com/auth/gmail.labels` | Create, read, update, delete labels only |
 | `https://www.googleapis.com/auth/gmail.metadata` | Read metadata only (headers, no body content) |
 | `https://www.googleapis.com/auth/gmail.settings.basic` | Manage basic mail settings |
+| `https://mail.google.com/` | **Full Gmail access via SMTP/IMAP** (required for `email` tool) |
 
-**Recommended for Kaggen**: `gmail.readonly` + `gmail.send` (read and send without delete)
+**Recommended scopes:**
+- **For `http_request` (REST API)**: `gmail.readonly` + `gmail.send`
+- **For `email` tool (SMTP/IMAP)**: `https://mail.google.com/`
+
+> **Note**: The `email` tool uses SMTP/IMAP protocols with XOAUTH2 authentication. This requires the full `https://mail.google.com/` scope. The more limited `gmail.*` scopes only work with the Gmail REST API via `http_request`.
 
 ### Google Calendar
 
