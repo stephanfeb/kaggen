@@ -111,6 +111,11 @@ func (fm *FlowManager) StartAuth(userID, providerName string) (string, error) {
 		params.Set("code_challenge_method", "S256")
 	}
 
+	// Add provider-specific auth params (e.g., access_type=offline for Google)
+	for k, v := range provider.AuthParams {
+		params.Set(k, v)
+	}
+
 	// Store pending flow
 	pending := &PendingFlow{
 		UserID:       userID,

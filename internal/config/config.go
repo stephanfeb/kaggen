@@ -278,15 +278,16 @@ type OAuthConfig struct {
 
 // OAuthProvider defines an OAuth 2.0 provider configuration.
 type OAuthProvider struct {
-	ClientID     string   `json:"client_id"`               // secret:key reference supported
-	ClientSecret string   `json:"client_secret"`           // secret:key reference supported
-	AuthURL      string   `json:"auth_url,omitempty"`      // auto-populated for known providers
-	TokenURL     string   `json:"token_url,omitempty"`     // auto-populated for known providers
-	Scopes       []string `json:"scopes,omitempty"`        // OAuth scopes to request
-	PKCE         bool     `json:"pkce,omitempty"`          // auto-set for known providers
-	RedirectURI  string   `json:"redirect_uri,omitempty"`  // override callback URI (rare)
-	SMTP         *EmailServer `json:"smtp,omitempty"`      // SMTP server for sending emails
-	IMAP         *EmailServer `json:"imap,omitempty"`      // IMAP server for reading emails
+	ClientID     string            `json:"client_id"`               // secret:key reference supported
+	ClientSecret string            `json:"client_secret"`           // secret:key reference supported
+	AuthURL      string            `json:"auth_url,omitempty"`      // auto-populated for known providers
+	TokenURL     string            `json:"token_url,omitempty"`     // auto-populated for known providers
+	Scopes       []string          `json:"scopes,omitempty"`        // OAuth scopes to request
+	PKCE         bool              `json:"pkce,omitempty"`          // auto-set for known providers
+	RedirectURI  string            `json:"redirect_uri,omitempty"`  // override callback URI (rare)
+	AuthParams   map[string]string `json:"auth_params,omitempty"`   // extra params for auth URL (e.g., access_type=offline)
+	SMTP         *EmailServer      `json:"smtp,omitempty"`          // SMTP server for sending emails
+	IMAP         *EmailServer      `json:"imap,omitempty"`          // IMAP server for reading emails
 }
 
 // EmailServer configures SMTP or IMAP server connection details.
@@ -299,11 +300,12 @@ type EmailServer struct {
 
 // KnownOAuthProvider contains the pre-configured settings for known providers.
 type KnownOAuthProvider struct {
-	AuthURL  string
-	TokenURL string
-	PKCE     bool
-	SMTP     *EmailServer // Default SMTP server (if provider supports email)
-	IMAP     *EmailServer // Default IMAP server (if provider supports email)
+	AuthURL    string
+	TokenURL   string
+	PKCE       bool
+	AuthParams map[string]string // Default auth params (e.g., access_type=offline)
+	SMTP       *EmailServer      // Default SMTP server (if provider supports email)
+	IMAP       *EmailServer      // Default IMAP server (if provider supports email)
 }
 
 // knownOAuthProviders contains default configurations for well-known OAuth providers.
@@ -312,8 +314,12 @@ var knownOAuthProviders = map[string]KnownOAuthProvider{
 		AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
 		TokenURL: "https://oauth2.googleapis.com/token",
 		PKCE:     true,
-		SMTP:     &EmailServer{Host: "smtp.gmail.com", Port: 587, StartTLS: true},
-		IMAP:     &EmailServer{Host: "imap.gmail.com", Port: 993, TLS: true},
+		AuthParams: map[string]string{
+			"access_type": "offline", // Required to get a refresh token
+			"prompt":      "consent", // Force consent to ensure refresh token is returned
+		},
+		SMTP: &EmailServer{Host: "smtp.gmail.com", Port: 587, StartTLS: true},
+		IMAP: &EmailServer{Host: "imap.gmail.com", Port: 993, TLS: true},
 	},
 	"github": {
 		AuthURL:  "https://github.com/login/oauth/authorize",
@@ -357,6 +363,17 @@ func (c *Config) GetOAuthProvider(name string) (OAuthProvider, bool) {
 		}
 		if provider.IMAP == nil && known.IMAP != nil {
 			provider.IMAP = known.IMAP
+		}
+		// Merge auth params (known defaults + user overrides)
+		if len(known.AuthParams) > 0 {
+			if provider.AuthParams == nil {
+				provider.AuthParams = make(map[string]string)
+			}
+			for k, v := range known.AuthParams {
+				if _, exists := provider.AuthParams[k]; !exists {
+					provider.AuthParams[k] = v
+				}
+			}
 		}
 	}
 
