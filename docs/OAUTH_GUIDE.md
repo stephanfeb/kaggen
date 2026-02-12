@@ -553,6 +553,8 @@ Response:
 - Check `~/.kaggen/config.json` has the `oauth` section
 - Ensure provider name matches exactly (case-sensitive)
 - Verify KAGGEN_MASTER_KEY is set for encrypted storage
+- **Verify secrets are actually stored** - using `secret:key-name` in config requires the secret to exist in the secrets store. Check dashboard Settings > Secrets or run `kaggen secrets list`
+- **Restart the gateway** after adding secrets or changing OAuth config
 
 ### "OAuth authorization required"
 
@@ -566,11 +568,24 @@ Response:
 - User needs to re-authorize via dashboard
 - Check if app was disconnected in provider's account settings
 
-### Callback URL mismatch
+### "redirect_uri_mismatch" (Error 400)
 
-- Ensure redirect URI in Google/GitHub app matches exactly
+- Ensure redirect URI in Google/GitHub app matches **exactly** what kaggen sends
 - Include port number if not 80/443
-- Check http vs https
+- **TLS mismatch**: If you have TLS enabled in gateway config, kaggen still defaults to `http://` unless you set `callback_base_url`
+  - Solution: Add `"callback_base_url": "https://localhost:18789"` to your gateway config
+  - Alternative: Add the `http://` URL to Google Cloud Console's authorized redirect URIs
+- The callback URL format is: `{scheme}://localhost:{port}/api/oauth/callback`
+
+### "Kaggen is not approved by Advanced Protection" (Error 400: policy_enforced)
+
+Google's Advanced Protection Program blocks all unverified third-party apps. This happens when the Google account has APP enabled.
+
+**Solutions:**
+
+1. **Use a different Google account** (recommended for personal use) - one without Advanced Protection enabled
+2. **Get your app verified by Google** - requires publishing the app, security review, and potentially a third-party audit. Only worth it for production apps with many users.
+3. **Disable Advanced Protection** on the account (not recommended - it's there for good security reasons)
 
 ### "Provider not available to this skill"
 

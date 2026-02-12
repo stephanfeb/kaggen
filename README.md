@@ -1269,6 +1269,50 @@ Secrets are stored encrypted at `~/.kaggen/secrets.enc`. The file uses:
 
 > **Note:** LLM API keys (Anthropic, Gemini, ZAI) should be set via environment variables rather than the secrets store, as they're checked before the secrets system initializes.
 
+## OAuth Integration
+
+Kaggen supports OAuth 2.0 for accessing protected APIs like Gmail, Google Calendar, and GitHub. Skills can make authenticated API requests without handling tokens directly.
+
+### Quick Setup
+
+1. Add provider to `~/.kaggen/config.json`:
+   ```json
+   {
+     "oauth": {
+       "providers": {
+         "google": {
+           "client_id": "secret:google-oauth-client-id",
+           "client_secret": "secret:google-oauth-client-secret",
+           "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]
+         }
+       }
+     }
+   }
+   ```
+
+2. Store credentials via dashboard (Settings > Secrets) or CLI:
+   ```bash
+   kaggen secrets set google-oauth-client-id
+   kaggen secrets set google-oauth-client-secret
+   ```
+
+3. If TLS is enabled, set the callback base URL:
+   ```json
+   {
+     "gateway": {
+       "callback_base_url": "https://localhost:18789"
+     }
+   }
+   ```
+
+4. Register redirect URI in Google Cloud Console:
+   - `https://localhost:18789/api/oauth/callback` (if TLS enabled)
+   - `http://localhost:18789/api/oauth/callback` (if TLS disabled)
+
+5. Restart gateway, then connect via dashboard (Settings > OAuth Connections)
+
+For complete setup including creating Google Cloud credentials, see [docs/OAUTH_GUIDE.md](docs/OAUTH_GUIDE.md).
+
 ## Security Hardening
 
 Kaggen includes multiple security features for production deployments. This section covers authentication, command sandboxing, approval workflows, and security auditing.
