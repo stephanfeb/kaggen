@@ -25,14 +25,15 @@ Add the provider to `~/.kaggen/config.json`:
         "client_id": "secret:google-oauth-client-id",
         "client_secret": "secret:google-oauth-client-secret",
         "scopes": [
-          "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/gmail.send"
+          "https://mail.google.com/"
         ]
       }
     }
   }
 }
 ```
+
+> **Important**: The `email` tool uses SMTP/IMAP with XOAUTH2 authentication, which requires the full `https://mail.google.com/` scope. The more limited scopes like `gmail.send` and `gmail.readonly` only work with the Gmail REST API via `http_request`.
 
 ### 2. Store Client Credentials
 
@@ -271,10 +272,11 @@ Google's OAuth configuration is now in the **Google Auth Platform** interface:
 1. Click **Data Access** in the sidebar
 2. Click **Add or remove scopes**
 3. Search and select the Gmail scopes you need:
-   - `https://www.googleapis.com/auth/gmail.readonly` - Read emails
-   - `https://www.googleapis.com/auth/gmail.send` - Send emails
-   - `https://www.googleapis.com/auth/gmail.labels` - Manage labels (optional)
+   - **For `email` tool (SMTP/IMAP)**: `https://mail.google.com/` (required)
+   - **For REST API via `http_request`**: `gmail.readonly`, `gmail.send`, `gmail.labels`
 4. Save changes
+
+> **Important**: If using the `email` tool (SMTP/IMAP with XOAUTH2), you MUST add `https://mail.google.com/`. The limited `gmail.*` scopes only work with the Gmail REST API.
 
 #### 3d. Create OAuth Client
 
@@ -301,6 +303,24 @@ If your app is in "Testing" publishing status:
 
 Add to `~/.kaggen/config.json`:
 
+**For `email` tool (SMTP/IMAP - recommended):**
+```json
+{
+  "oauth": {
+    "providers": {
+      "google": {
+        "client_id": "secret:google-oauth-client-id",
+        "client_secret": "secret:google-oauth-client-secret",
+        "scopes": [
+          "https://mail.google.com/"
+        ]
+      }
+    }
+  }
+}
+```
+
+**For REST API via `http_request` (alternative):**
 ```json
 {
   "oauth": {
@@ -310,8 +330,7 @@ Add to `~/.kaggen/config.json`:
         "client_secret": "secret:google-oauth-client-secret",
         "scopes": [
           "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/gmail.send",
-          "https://www.googleapis.com/auth/gmail.labels"
+          "https://www.googleapis.com/auth/gmail.send"
         ]
       }
     }
@@ -319,14 +338,9 @@ Add to `~/.kaggen/config.json`:
 }
 ```
 
-Store the credentials (via dashboard or directly):
+Store the credentials via dashboard UI at Settings > Secrets.
 
-```bash
-# Store in secrets (requires KAGGEN_MASTER_KEY)
-# Best done via dashboard UI at Settings > Secrets
-```
-
-### Step 4: Create Gmail Skill
+### Step 5: Create Gmail Skill
 
 Create `~/.kaggen/workspace/skills/gmail/SKILL.md`:
 
