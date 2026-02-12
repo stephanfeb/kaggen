@@ -394,6 +394,11 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 			oauthManager := oauth.NewFlowManager(cfg, tokenStore, callbackURL, logger)
 			gateway.SetOAuthManager(oauthManager)
+
+			// Set up OAuth getters for skill tools (email, http_request)
+			kaggenAgent.SetOAuthTokenGetter(oauthManager.GetToken)
+			kaggenAgent.SetOAuthProviderGetter(cfg.GetOAuthProvider)
+
 			logger.Info("OAuth enabled", "providers", len(cfg.OAuth.Providers), "callback", callbackURL)
 		}
 	}

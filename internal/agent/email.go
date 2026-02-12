@@ -1,4 +1,4 @@
-package tools
+package agent
 
 import (
 	"context"
@@ -47,16 +47,16 @@ type EmailToolArgs struct {
 	Limit    int      `json:"limit,omitempty" jsonschema:"description=Maximum messages to return (default: 10 max: 50). Used for list/search actions"`
 }
 
-// EmailResult is the result of an email operation.
-type EmailResult struct {
-	Success  bool             `json:"success"`
-	Message  string           `json:"message"`
-	Messages []EmailMessage   `json:"messages,omitempty"` // For list/search
-	Email    *EmailMessage    `json:"email,omitempty"`    // For read
+// EmailToolResult is the result of an email operation.
+type EmailToolResult struct {
+	Success  bool                `json:"success"`
+	Message  string              `json:"message"`
+	Messages []EmailToolMessage  `json:"messages,omitempty"` // For list/search
+	Email    *EmailToolMessage   `json:"email,omitempty"`    // For read
 }
 
-// EmailMessage represents an email message summary.
-type EmailMessage struct {
+// EmailToolMessage represents an email message summary.
+type EmailToolMessage struct {
 	SeqNum  uint32   `json:"seq_num"`
 	Subject string   `json:"subject"`
 	From    string   `json:"from"`
@@ -74,16 +74,16 @@ func NewEmailTool(userID string, allowedProviders []string, tokenGetter EmailTok
 	}
 
 	return function.NewFunctionTool(
-		func(ctx context.Context, args EmailToolArgs) (*EmailResult, error) {
-			return executeEmail(ctx, args, userID, allowed, tokenGetter, providerGetter)
+		func(ctx context.Context, args EmailToolArgs) (*EmailToolResult, error) {
+			return executeEmailTool(ctx, args, userID, allowed, tokenGetter, providerGetter)
 		},
 		function.WithName("email"),
 		function.WithDescription("Send, list, read, and search emails via SMTP/IMAP with XOAUTH2 authentication. Requires OAuth authorization for the provider."),
 	)
 }
 
-func executeEmail(ctx context.Context, args EmailToolArgs, userID string, allowedProviders map[string]bool, tokenGetter EmailTokenGetter, providerGetter EmailProviderGetter) (*EmailResult, error) {
-	result := &EmailResult{}
+func executeEmailTool(ctx context.Context, args EmailToolArgs, userID string, allowedProviders map[string]bool, tokenGetter EmailTokenGetter, providerGetter EmailProviderGetter) (*EmailToolResult, error) {
+	result := &EmailToolResult{}
 
 	// Validate provider is allowed
 	if len(allowedProviders) > 0 && !allowedProviders[args.Provider] {
@@ -124,22 +124,22 @@ func executeEmail(ctx context.Context, args EmailToolArgs, userID string, allowe
 	// Execute action
 	switch args.Action {
 	case "send":
-		return sendEmail(ctx, args, token, provider)
+		return sendEmailAction(ctx, args, token, provider)
 	case "list":
-		return listEmails(ctx, args, token, provider)
+		return listEmailsAction(ctx, args, token, provider)
 	case "read":
-		return readEmail(ctx, args, token, provider)
+		return readEmailAction(ctx, args, token, provider)
 	case "search":
-		return searchEmails(ctx, args, token, provider)
+		return searchEmailsAction(ctx, args, token, provider)
 	default:
 		result.Message = fmt.Sprintf("Unknown action %q. Use: send, list, read, or search", args.Action)
 		return result, nil
 	}
 }
 
-// sendEmail sends an email via SMTP with XOAUTH2.
-func sendEmail(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailResult, error) {
-	result := &EmailResult{}
+// sendEmailAction sends an email via SMTP with XOAUTH2.
+func sendEmailAction(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailToolResult, error) {
+	result := &EmailToolResult{}
 
 	// Validate required fields
 	if len(args.To) == 0 {
@@ -213,7 +213,7 @@ func sendEmail(ctx context.Context, args EmailToolArgs, token *oauth.Token, prov
 	}
 
 	// Authenticate with XOAUTH2
-	auth := &xoauth2Client{username: args.Email, token: token.AccessToken}
+	auth := &emailXoauth2Client{username: args.Email, token: token.AccessToken}
 	if err := c.Auth(auth); err != nil {
 		result.Message = fmt.Sprintf("XOAUTH2 authentication failed: %v", err)
 		return result, nil
@@ -255,9 +255,9 @@ func sendEmail(ctx context.Context, args EmailToolArgs, token *oauth.Token, prov
 	return result, nil
 }
 
-// listEmails lists emails in a folder via IMAP.
-func listEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailResult, error) {
-	result := &EmailResult{}
+// listEmailsAction lists emails in a folder via IMAP.
+func listEmailsAction(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailToolResult, error) {
+	result := &EmailToolResult{}
 
 	if provider.IMAP == nil {
 		result.Message = fmt.Sprintf("IMAP server not configured for provider %q", args.Provider)
@@ -273,7 +273,7 @@ func listEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, pro
 		limit = 10
 	}
 
-	c, err := connectIMAP(args.Email, token.AccessToken, provider)
+	c, err := connectEmailIMAP(args.Email, token.AccessToken, provider)
 	if err != nil {
 		result.Message = err.Error()
 		return result, nil
@@ -290,7 +290,7 @@ func listEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, pro
 	if mbox.Messages == 0 {
 		result.Success = true
 		result.Message = fmt.Sprintf("No messages in %s", folder)
-		result.Messages = []EmailMessage{}
+		result.Messages = []EmailToolMessage{}
 		return result, nil
 	}
 
@@ -308,21 +308,21 @@ func listEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, pro
 		done <- c.Fetch(seqSet, []imap.FetchItem{imap.FetchEnvelope}, messages)
 	}()
 
-	result.Messages = []EmailMessage{}
+	result.Messages = []EmailToolMessage{}
 	for msg := range messages {
 		if msg.Envelope == nil {
 			continue
 		}
-		em := EmailMessage{
+		em := EmailToolMessage{
 			SeqNum:  msg.SeqNum,
 			Subject: msg.Envelope.Subject,
 			Date:    msg.Envelope.Date.Format(time.RFC3339),
 		}
 		if len(msg.Envelope.From) > 0 {
-			em.From = formatAddress(msg.Envelope.From[0])
+			em.From = formatEmailAddress(msg.Envelope.From[0])
 		}
 		for _, addr := range msg.Envelope.To {
-			em.To = append(em.To, formatAddress(addr))
+			em.To = append(em.To, formatEmailAddress(addr))
 		}
 		result.Messages = append(result.Messages, em)
 	}
@@ -337,9 +337,9 @@ func listEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, pro
 	return result, nil
 }
 
-// readEmail reads a specific email by sequence number.
-func readEmail(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailResult, error) {
-	result := &EmailResult{}
+// readEmailAction reads a specific email by sequence number.
+func readEmailAction(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailToolResult, error) {
+	result := &EmailToolResult{}
 
 	if provider.IMAP == nil {
 		result.Message = fmt.Sprintf("IMAP server not configured for provider %q", args.Provider)
@@ -356,7 +356,7 @@ func readEmail(ctx context.Context, args EmailToolArgs, token *oauth.Token, prov
 		folder = "INBOX"
 	}
 
-	c, err := connectIMAP(args.Email, token.AccessToken, provider)
+	c, err := connectEmailIMAP(args.Email, token.AccessToken, provider)
 	if err != nil {
 		result.Message = err.Error()
 		return result, nil
@@ -394,16 +394,16 @@ func readEmail(ctx context.Context, args EmailToolArgs, token *oauth.Token, prov
 		return result, nil
 	}
 
-	em := EmailMessage{
+	em := EmailToolMessage{
 		SeqNum:  msg.SeqNum,
 		Subject: msg.Envelope.Subject,
 		Date:    msg.Envelope.Date.Format(time.RFC3339),
 	}
 	if len(msg.Envelope.From) > 0 {
-		em.From = formatAddress(msg.Envelope.From[0])
+		em.From = formatEmailAddress(msg.Envelope.From[0])
 	}
 	for _, addr := range msg.Envelope.To {
-		em.To = append(em.To, formatAddress(addr))
+		em.To = append(em.To, formatEmailAddress(addr))
 	}
 
 	// Extract body
@@ -421,9 +421,9 @@ func readEmail(ctx context.Context, args EmailToolArgs, token *oauth.Token, prov
 	return result, nil
 }
 
-// searchEmails searches for emails matching a query.
-func searchEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailResult, error) {
-	result := &EmailResult{}
+// searchEmailsAction searches for emails matching a query.
+func searchEmailsAction(ctx context.Context, args EmailToolArgs, token *oauth.Token, provider config.OAuthProvider) (*EmailToolResult, error) {
+	result := &EmailToolResult{}
 
 	if provider.IMAP == nil {
 		result.Message = fmt.Sprintf("IMAP server not configured for provider %q", args.Provider)
@@ -444,7 +444,7 @@ func searchEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, p
 		limit = 10
 	}
 
-	c, err := connectIMAP(args.Email, token.AccessToken, provider)
+	c, err := connectEmailIMAP(args.Email, token.AccessToken, provider)
 	if err != nil {
 		result.Message = err.Error()
 		return result, nil
@@ -459,7 +459,7 @@ func searchEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, p
 	}
 
 	// Parse search criteria
-	criteria := parseSearchQuery(args.Query)
+	criteria := parseEmailSearchQuery(args.Query)
 
 	// Search
 	seqNums, err := c.Search(criteria)
@@ -471,7 +471,7 @@ func searchEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, p
 	if len(seqNums) == 0 {
 		result.Success = true
 		result.Message = "No messages found matching query"
-		result.Messages = []EmailMessage{}
+		result.Messages = []EmailToolMessage{}
 		return result, nil
 	}
 
@@ -490,18 +490,18 @@ func searchEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, p
 		done <- c.Fetch(seqSet, []imap.FetchItem{imap.FetchEnvelope}, messages)
 	}()
 
-	result.Messages = []EmailMessage{}
+	result.Messages = []EmailToolMessage{}
 	for msg := range messages {
 		if msg.Envelope == nil {
 			continue
 		}
-		em := EmailMessage{
+		em := EmailToolMessage{
 			SeqNum:  msg.SeqNum,
 			Subject: msg.Envelope.Subject,
 			Date:    msg.Envelope.Date.Format(time.RFC3339),
 		}
 		if len(msg.Envelope.From) > 0 {
-			em.From = formatAddress(msg.Envelope.From[0])
+			em.From = formatEmailAddress(msg.Envelope.From[0])
 		}
 		result.Messages = append(result.Messages, em)
 	}
@@ -516,8 +516,8 @@ func searchEmails(ctx context.Context, args EmailToolArgs, token *oauth.Token, p
 	return result, nil
 }
 
-// connectIMAP establishes an IMAP connection with XOAUTH2.
-func connectIMAP(email, accessToken string, provider config.OAuthProvider) (*client.Client, error) {
+// connectEmailIMAP establishes an IMAP connection with XOAUTH2.
+func connectEmailIMAP(email, accessToken string, provider config.OAuthProvider) (*client.Client, error) {
 	addr := fmt.Sprintf("%s:%d", provider.IMAP.Host, provider.IMAP.Port)
 
 	var c *client.Client
@@ -539,7 +539,7 @@ func connectIMAP(email, accessToken string, provider config.OAuthProvider) (*cli
 	}
 
 	// Authenticate with XOAUTH2
-	saslClient := &xoauth2SASLClient{username: email, token: accessToken}
+	saslClient := &emailXoauth2SASLClient{username: email, token: accessToken}
 	if err := c.Authenticate(saslClient); err != nil {
 		c.Logout()
 		return nil, fmt.Errorf("XOAUTH2 authentication failed: %w", err)
@@ -548,42 +548,42 @@ func connectIMAP(email, accessToken string, provider config.OAuthProvider) (*cli
 	return c, nil
 }
 
-// xoauth2SASLClient implements sasl.Client for XOAUTH2.
-type xoauth2SASLClient struct {
+// emailXoauth2SASLClient implements sasl.Client for XOAUTH2.
+type emailXoauth2SASLClient struct {
 	username string
 	token    string
 }
 
-func (c *xoauth2SASLClient) Start() (mech string, ir []byte, err error) {
+func (c *emailXoauth2SASLClient) Start() (mech string, ir []byte, err error) {
 	resp := fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", c.username, c.token)
 	return "XOAUTH2", []byte(resp), nil
 }
 
-func (c *xoauth2SASLClient) Next(challenge []byte) ([]byte, error) {
+func (c *emailXoauth2SASLClient) Next(challenge []byte) ([]byte, error) {
 	// XOAUTH2 doesn't expect challenges; if we get one, it's an error response
 	return nil, fmt.Errorf("server challenge (likely auth error): %s", string(challenge))
 }
 
-// xoauth2Client implements smtp.Auth for XOAUTH2.
-type xoauth2Client struct {
+// emailXoauth2Client implements smtp.Auth for XOAUTH2.
+type emailXoauth2Client struct {
 	username string
 	token    string
 }
 
-func (c *xoauth2Client) Start(server *smtp.ServerInfo) (string, []byte, error) {
+func (c *emailXoauth2Client) Start(server *smtp.ServerInfo) (string, []byte, error) {
 	resp := fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", c.username, c.token)
 	return "XOAUTH2", []byte(resp), nil
 }
 
-func (c *xoauth2Client) Next(fromServer []byte, more bool) ([]byte, error) {
+func (c *emailXoauth2Client) Next(fromServer []byte, more bool) ([]byte, error) {
 	if more {
 		return nil, fmt.Errorf("unexpected server challenge: %s", string(fromServer))
 	}
 	return nil, nil
 }
 
-// formatAddress formats an IMAP address.
-func formatAddress(addr *imap.Address) string {
+// formatEmailAddress formats an IMAP address.
+func formatEmailAddress(addr *imap.Address) string {
 	if addr == nil {
 		return ""
 	}
@@ -593,9 +593,9 @@ func formatAddress(addr *imap.Address) string {
 	return fmt.Sprintf("%s@%s", addr.MailboxName, addr.HostName)
 }
 
-// parseSearchQuery converts a simple search query to IMAP search criteria.
+// parseEmailSearchQuery converts a simple search query to IMAP search criteria.
 // Supports: from:email, to:email, subject:text, or plain text for body search.
-func parseSearchQuery(query string) *imap.SearchCriteria {
+func parseEmailSearchQuery(query string) *imap.SearchCriteria {
 	criteria := imap.NewSearchCriteria()
 
 	parts := strings.Fields(query)

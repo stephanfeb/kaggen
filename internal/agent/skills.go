@@ -23,8 +23,9 @@ import (
 // globalOAuthTokenGetter is set by the server when OAuth is configured.
 // It's used by skills to retrieve OAuth tokens.
 var (
-	globalOAuthTokenGetter OAuthTokenGetter
-	oauthMu                sync.RWMutex
+	globalOAuthTokenGetter    OAuthTokenGetter
+	globalOAuthProviderGetter func(provider string) (config.OAuthProvider, bool)
+	oauthMu                   sync.RWMutex
 )
 
 // SetOAuthTokenGetter sets the global OAuth token getter.
@@ -35,11 +36,26 @@ func SetOAuthTokenGetter(getter OAuthTokenGetter) {
 	globalOAuthTokenGetter = getter
 }
 
+// SetOAuthProviderGetter sets the global OAuth provider config getter.
+// This is called by the server on startup when OAuth is configured.
+func SetOAuthProviderGetter(getter func(provider string) (config.OAuthProvider, bool)) {
+	oauthMu.Lock()
+	defer oauthMu.Unlock()
+	globalOAuthProviderGetter = getter
+}
+
 // getOAuthTokenGetter returns the current global OAuth token getter.
 func getOAuthTokenGetter() OAuthTokenGetter {
 	oauthMu.RLock()
 	defer oauthMu.RUnlock()
 	return globalOAuthTokenGetter
+}
+
+// getOAuthProviderGetter returns the current global OAuth provider config getter.
+func getOAuthProviderGetter() func(provider string) (config.OAuthProvider, bool) {
+	oauthMu.RLock()
+	defer oauthMu.RUnlock()
+	return globalOAuthProviderGetter
 }
 
 // CaseInsensitiveRepository wraps a skill.Repository to provide case-insensitive lookups.
@@ -224,6 +240,29 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				}
 			}
 
+			// If skill declares "email" in tools and has oauth_providers, create email tool
+			if len(fm.OAuthProviders) > 0 && containsString(fm.Tools, "email") {
+				providerGetter := getOAuthProviderGetter()
+				if providerGetter == nil && cfg != nil {
+					// Fallback: create a provider getter from config
+					providerGetter = cfg.GetOAuthProvider
+				}
+				// Wrap the OAuth token getter to match EmailTokenGetter signature
+				oauthGetter := getOAuthTokenGetter()
+				var emailTokenGetter EmailTokenGetter
+				if oauthGetter != nil {
+					emailTokenGetter = EmailTokenGetter(oauthGetter)
+				}
+				emailTool := NewEmailTool(
+					"default", // TODO: get user ID from context at runtime
+					fm.OAuthProviders,
+					emailTokenGetter,
+					providerGetter,
+				)
+				agentTools = append(agentTools, emailTool)
+				logger.Info("skill email tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
+			}
+
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
 			// which implements proper graph-based pause/resume for approvals.
 			if len(fm.GuardedTools) > 0 && guardedRunner != nil {
@@ -387,4 +426,14 @@ func filterTools(all []tool.Tool, allowed []string) []tool.Tool {
 		}
 	}
 	return filtered
+}
+
+// containsString checks if a slice contains a string.
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
