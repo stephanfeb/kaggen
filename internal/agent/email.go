@@ -162,7 +162,7 @@ func sendEmailAction(ctx context.Context, args EmailToolArgs, token *oauth.Token
 	recipients = append(recipients, args.CC...)
 	recipients = append(recipients, args.BCC...)
 
-	// Build email message
+	// Build email message with required headers
 	var msg strings.Builder
 	msg.WriteString(fmt.Sprintf("From: %s\r\n", args.Email))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", strings.Join(args.To, ", ")))
@@ -170,10 +170,13 @@ func sendEmailAction(ctx context.Context, args EmailToolArgs, token *oauth.Token
 		msg.WriteString(fmt.Sprintf("Cc: %s\r\n", strings.Join(args.CC, ", ")))
 	}
 	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", args.Subject))
+	msg.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
+	msg.WriteString(fmt.Sprintf("Message-ID: <%d.%s@kaggen>\r\n", time.Now().UnixNano(), args.Email))
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	msg.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	msg.WriteString("\r\n")
 	msg.WriteString(args.Body)
+	msg.WriteString("\r\n")
 
 	// Connect and send
 	addr := fmt.Sprintf("%s:%d", provider.SMTP.Host, provider.SMTP.Port)
