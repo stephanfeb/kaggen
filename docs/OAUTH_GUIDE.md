@@ -587,6 +587,33 @@ Google's Advanced Protection Program blocks all unverified third-party apps. Thi
 2. **Get your app verified by Google** - requires publishing the app, security review, and potentially a third-party audit. Only worth it for production apps with many users.
 3. **Disable Advanced Protection** on the account (not recommended - it's there for good security reasons)
 
+### "Kaggen has not completed the Google verification process" (Error 403: access_denied)
+
+This happens when your OAuth app is in **Testing** mode and the Google account trying to authorize isn't added as a test user.
+
+**Solution:**
+
+1. Go to **Google Cloud Console** → **APIs & Services** → **OAuth consent screen** (or Google Auth Platform → Audience)
+2. Under **Test users**, click **Add users**
+3. Add the email address of the account you're trying to authorize
+4. Save
+
+> **Note**: In testing mode, only explicitly added test users can access the app. To allow any Google account, you'd need to "Publish" the app (which may trigger Google's verification process for sensitive scopes).
+
+### "access_denied" in OAuth callback logs
+
+If Google's consent screen completes but you see `oauth callback error error=access_denied` in kaggen logs, the scopes requested aren't registered in Google Cloud Console.
+
+**Solution:**
+
+1. Go to **Google Cloud Console** → **APIs & Services** → **OAuth consent screen** (or Google Auth Platform → Data Access)
+2. Click **Add or remove scopes**
+3. Add all scopes listed in your `config.json` (e.g., `gmail.readonly`, `gmail.send`)
+4. Save
+5. Try the authorization flow again
+
+The scopes in your config.json must be registered in the OAuth consent screen's Data Access section.
+
 ### "Provider not available to this skill"
 
 - Skill's `oauth_providers` doesn't include this provider
