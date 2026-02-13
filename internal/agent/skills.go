@@ -17,6 +17,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
 	"github.com/yourusername/kaggen/internal/config"
+	kaggenModel "github.com/yourusername/kaggen/internal/model"
 	"github.com/yourusername/kaggen/internal/secrets"
 )
 
@@ -122,6 +123,10 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	var agents []agent.Agent
 	guardedTools := make(map[string]string) // tool name -> skill name
 	notifyTools := make(map[string]string)  // tool name -> skill name
+
+	// Wrap model with usage tracking so sub-agent LLM calls accumulate tokens
+	// when a UsageAccumulator is present in the context.
+	trackedModel := kaggenModel.NewUsageTrackingModel(m)
 
 	// Log callback status at entry
 	logger.Info("SKILLS BuildSubAgents called", "hasCallbacks", callbacks != nil, "callbacks_ptr", fmt.Sprintf("%p", callbacks))
@@ -281,7 +286,7 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 
 			// For skills without guarded tools, use standard llmagent
 			opts := []llmagent.Option{
-				llmagent.WithModel(m),
+				llmagent.WithModel(trackedModel),
 				llmagent.WithInstruction(instruction),
 				llmagent.WithDescription(summary.Description),
 				llmagent.WithTools(agentTools),
@@ -302,7 +307,7 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 
 	// Create a general-purpose sub-agent with the standard tools (read, write, exec, etc.).
 	gpOpts := []llmagent.Option{
-		llmagent.WithModel(m),
+		llmagent.WithModel(trackedModel),
 		llmagent.WithTools(generalTools),
 		llmagent.WithInstruction("You are a general-purpose assistant. Use the available tools to complete tasks. Report your results clearly."),
 		llmagent.WithDescription("General-purpose agent with file read/write, exec, and other standard tools. Use for tasks that don't match a specific skill."),

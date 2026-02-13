@@ -27,6 +27,7 @@ import (
 	"github.com/yourusername/kaggen/internal/channel"
 	"github.com/yourusername/kaggen/internal/config"
 	"github.com/yourusername/kaggen/internal/memory"
+	kaggenModel "github.com/yourusername/kaggen/internal/model"
 	"github.com/yourusername/kaggen/internal/pipeline"
 )
 
@@ -366,6 +367,13 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				store.Register(taskID, args.ToolName, taskDesc, TriggerAuto, sessionID, userID)
 				logger.Info("sync member task registered",
 					"task_id", taskID, "agent", args.ToolName, "invocation_id", invID)
+
+				// Register usage tracking by task ID so sub-agent LLM calls accumulate tokens.
+				// Uses global registry since context may not propagate to llmagent's internal calls.
+				kaggenModel.RegisterTracking(taskID)
+				trackingCtx := kaggenModel.WithUsageTracking(ctx)
+				trackingCtx = kaggenModel.WithTrackingID(trackingCtx, taskID)
+				return &tool.BeforeToolResult{Context: trackingCtx}, nil
 			} else {
 				// Coordinator direct tool call — group by invocation ID.
 				coordTaskID := "coord-" + invID
@@ -489,6 +497,32 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 
 			if isMember {
 				taskID := args.ToolCallID
+
+				// Retrieve accumulated token usage - try both context-based and ID-based tracking.
+				var input, output, total int
+
+				// First try context-based accumulator
+				if acc := kaggenModel.GetUsageAccumulator(ctx); acc != nil {
+					input, output, total = acc.Get()
+				}
+
+				// Also check ID-based global registry (fallback for when context doesn't propagate)
+				regInput, regOutput, regTotal := kaggenModel.GetTrackedUsage(taskID)
+				if regTotal > total {
+					// Use registry values if they're higher (context didn't propagate)
+					input, output, total = regInput, regOutput, regTotal
+				}
+
+				if total > 0 {
+					store.AddTokenUsage(taskID, input, output, total)
+					logger.Info("sync member task tokens tracked",
+						"task_id", taskID, "agent", args.ToolName,
+						"input", input, "output", output, "total", total)
+				} else {
+					logger.Debug("sync member task no tokens tracked",
+						"task_id", taskID, "agent", args.ToolName)
+				}
+
 				if args.Error != nil {
 					store.Fail(taskID, args.Error.Error())
 					logger.Info("sync member task failed", "task_id", taskID, "agent", args.ToolName)

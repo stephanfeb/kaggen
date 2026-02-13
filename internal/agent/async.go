@@ -255,6 +255,21 @@ func (s *InFlightStore) Fail(id, errMsg string) {
 	}
 }
 
+// AddTokenUsage adds token usage to a task's total without creating an event.
+// Used for sync member calls where usage is tracked via context accumulator.
+func (s *InFlightStore) AddTokenUsage(id string, input, output, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.tasks[id]; ok {
+		if t.TotalTokens == nil {
+			t.TotalTokens = &TokenUsage{}
+		}
+		t.TotalTokens.Input += input
+		t.TotalTokens.Output += output
+		t.TotalTokens.Total += total
+	}
+}
+
 // Get returns a task by ID.
 func (s *InFlightStore) Get(id string) (*TaskState, bool) {
 	s.mu.RLock()
