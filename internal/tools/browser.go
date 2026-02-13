@@ -3,6 +3,10 @@ package tools
 import (
 	"context"
 	"fmt"
+	"math"
+	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -10,6 +14,128 @@ import (
 
 	"github.com/yourusername/kaggen/internal/browser"
 )
+
+// Bot detection patterns - URLs or content indicating automated access is blocked
+var botDetectionPatterns = []string{
+	"/sorry/index",      // Google CAPTCHA
+	"/challenge/",       // Cloudflare challenge
+	"captcha",           // Generic CAPTCHA
+	"unusual traffic",   // Google bot detection
+	"verify you're human",
+	"access denied",
+	"blocked",
+	"rate limit",
+}
+
+// browserSessionState tracks failure/timeout state per browser profile
+type browserSessionState struct {
+	consecutiveTimeouts int
+	consecutiveFailures int
+	visitedDomains      map[string]int
+	mu                  sync.Mutex
+}
+
+var (
+	sessionStates   = make(map[string]*browserSessionState)
+	sessionStatesMu sync.Mutex
+)
+
+const (
+	maxConsecutiveBrowserFailures = 5
+	maxTimeoutMultiplier          = 4.0 // Max 4x the base timeout (120s at 30s base)
+	domainHoppingThreshold        = 5
+)
+
+func getSessionState(profile string) *browserSessionState {
+	sessionStatesMu.Lock()
+	defer sessionStatesMu.Unlock()
+	if sessionStates[profile] == nil {
+		sessionStates[profile] = &browserSessionState{
+			visitedDomains: make(map[string]int),
+		}
+	}
+	return sessionStates[profile]
+}
+
+func clearSessionState(profile string) {
+	sessionStatesMu.Lock()
+	defer sessionStatesMu.Unlock()
+	delete(sessionStates, profile)
+}
+
+func (s *browserSessionState) getTimeoutWithBackoff(baseTimeout time.Duration) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.consecutiveTimeouts == 0 {
+		return baseTimeout
+	}
+	// Exponential backoff: 30s → 45s → 67s → 100s → 120s (capped)
+	multiplier := math.Pow(1.5, float64(s.consecutiveTimeouts))
+	if multiplier > maxTimeoutMultiplier {
+		multiplier = maxTimeoutMultiplier
+	}
+	return time.Duration(float64(baseTimeout) * multiplier)
+}
+
+func (s *browserSessionState) recordTimeout() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.consecutiveTimeouts++
+	s.consecutiveFailures++
+}
+
+func (s *browserSessionState) recordFailure() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.consecutiveFailures++
+	if s.consecutiveFailures >= maxConsecutiveBrowserFailures {
+		return fmt.Errorf("browser circuit breaker triggered: %d consecutive failures. Consider a different approach or site", s.consecutiveFailures)
+	}
+	return nil
+}
+
+func (s *browserSessionState) recordSuccess() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.consecutiveTimeouts = 0
+	s.consecutiveFailures = 0
+}
+
+func (s *browserSessionState) trackDomain(rawURL string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	domain := parsed.Host
+	s.visitedDomains[domain]++
+
+	if len(s.visitedDomains) > domainHoppingThreshold {
+		domains := make([]string, 0, len(s.visitedDomains))
+		for d := range s.visitedDomains {
+			domains = append(domains, d)
+		}
+		return fmt.Sprintf("Warning: visited %d different sites (%s) without completing task. Consider focusing on one reliable source.", len(s.visitedDomains), strings.Join(domains, ", "))
+	}
+	return ""
+}
+
+// checkBotDetection examines URL and content for bot-blocking signals
+func checkBotDetection(currentURL, content string) error {
+	lowerURL := strings.ToLower(currentURL)
+	lowerContent := strings.ToLower(content)
+
+	for _, pattern := range botDetectionPatterns {
+		if strings.Contains(lowerURL, pattern) {
+			return fmt.Errorf("bot detected: site is blocking automated access (URL contains %q). Try a different site or approach", pattern)
+		}
+		if strings.Contains(lowerContent, pattern) {
+			return fmt.Errorf("bot detected: page indicates automated access is blocked (contains %q). Try a different site or approach", pattern)
+		}
+	}
+	return nil
+}
 
 // BrowserArgs defines the input arguments for the browser tool.
 type BrowserArgs struct {
@@ -60,15 +186,28 @@ func newBrowserTool(mgr *browser.Manager) tool.CallableTool {
 
 func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs) (*BrowserResult, error) {
 	result := &BrowserResult{}
+	state := getSessionState(args.Profile)
 
-	timeout := defaultBrowserTimeout
-	if args.Timeout > 0 {
-		timeout = time.Duration(args.Timeout) * time.Second
+	// Check circuit breaker before doing anything
+	state.mu.Lock()
+	if state.consecutiveFailures >= maxConsecutiveBrowserFailures {
+		state.mu.Unlock()
+		result.Message = fmt.Sprintf("Browser circuit breaker active: %d consecutive failures. Close the browser and try a different approach.", state.consecutiveFailures)
+		return result, fmt.Errorf("browser circuit breaker: too many consecutive failures")
 	}
+	state.mu.Unlock()
+
+	// Calculate timeout with backoff for repeated failures
+	baseTimeout := defaultBrowserTimeout
+	if args.Timeout > 0 {
+		baseTimeout = time.Duration(args.Timeout) * time.Second
+	}
+	timeout := state.getTimeoutWithBackoff(baseTimeout)
 
 	// Handle close before acquiring a session (avoids creating one just to close it).
 	if args.Action == "close" {
 		mgr.CloseSession(args.Profile)
+		clearSessionState(args.Profile) // Reset all state on close
 		result.Success = true
 		result.Message = "Browser session closed"
 		return result, nil
@@ -93,7 +232,8 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 		case err := <-done:
 			return err
 		case <-time.After(timeout):
-			return fmt.Errorf("action timed out after %s", timeout)
+			state.recordTimeout()
+			return fmt.Errorf("action timed out after %s (timeout #%d)", timeout, state.consecutiveTimeouts)
 		}
 	}
 
@@ -110,13 +250,33 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Navigate failed: %v", err)
 			return result, nil
 		}
+
+		// Check for bot detection after navigation
+		if botErr := checkBotDetection(currentURL, title); botErr != nil {
+			state.recordFailure()
+			result.Message = botErr.Error()
+			result.URL = currentURL
+			return result, nil
+		}
+
+		// Track domain for site-hopping detection
+		if warning := state.trackDomain(currentURL); warning != "" {
+			result.Message = fmt.Sprintf("Navigated to %s. %s", currentURL, warning)
+		} else {
+			result.Message = fmt.Sprintf("Navigated to %s", currentURL)
+		}
+
+		state.recordSuccess()
 		result.Success = true
 		result.Title = title
 		result.URL = currentURL
-		result.Message = fmt.Sprintf("Navigated to %s", currentURL)
 
 	case "click":
 		if args.Selector == "" {
@@ -127,9 +287,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.Click(bctx, args.Selector)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Click failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = fmt.Sprintf("Clicked %s", args.Selector)
 
@@ -142,9 +307,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.Type(bctx, args.Selector, args.Text)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Type failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = fmt.Sprintf("Typed into %s", args.Selector)
 
@@ -156,9 +326,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Screenshot failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.FilePath = filePath
 		result.Message = fmt.Sprintf("Screenshot saved to %s", filePath)
@@ -171,9 +346,23 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Content extraction failed: %v", err)
 			return result, nil
 		}
+
+		// Check content for bot detection signals
+		if botErr := checkBotDetection("", text); botErr != nil {
+			state.recordFailure()
+			result.Message = botErr.Error()
+			result.Content = text // Still return content for debugging
+			return result, nil
+		}
+
+		state.recordSuccess()
 		result.Success = true
 		result.Content = text
 		result.Message = "Page content extracted"
@@ -190,9 +379,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Evaluate failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Content = val
 		result.Message = "JavaScript evaluated"
@@ -206,9 +400,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.Scroll(bctx, dir, args.Amount)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Scroll failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = fmt.Sprintf("Scrolled %s", dir)
 
@@ -221,9 +420,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.Wait(bctx, args.Selector, timeout)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Wait failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = fmt.Sprintf("Element %s appeared", args.Selector)
 
@@ -236,9 +440,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.SetViewport(bctx, args.Width, args.Height)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("SetViewport failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = fmt.Sprintf("Viewport set to %dx%d", args.Width, args.Height)
 
@@ -250,9 +459,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("GetTitle failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Title = title
 		result.Message = "Page title retrieved"
@@ -265,9 +479,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("GetCurrentUrl failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.URL = currentURL
 		result.Message = "Current URL retrieved"
@@ -277,9 +496,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.GoBack(bctx)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("GoBack failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = "Navigated back"
 
@@ -288,9 +512,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.GoForward(bctx)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("GoForward failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = "Navigated forward"
 
@@ -299,9 +528,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return browser.Reload(bctx)
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("Reload failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Message = "Page reloaded"
 
@@ -317,9 +551,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("GetText failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Content = text
 		result.Message = fmt.Sprintf("Text extracted from %s", args.Selector)
@@ -336,9 +575,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("GetHTML failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Content = html
 		result.Message = fmt.Sprintf("HTML extracted from %s", args.Selector)
@@ -355,9 +599,14 @@ func executeBrowser(ctx context.Context, mgr *browser.Manager, args BrowserArgs)
 			return e
 		})
 		if err != nil {
+			if cbErr := state.recordFailure(); cbErr != nil {
+				result.Message = cbErr.Error()
+				return result, cbErr
+			}
 			result.Message = fmt.Sprintf("GetAttribute failed: %v", err)
 			return result, nil
 		}
+		state.recordSuccess()
 		result.Success = true
 		result.Content = val
 		result.Message = fmt.Sprintf("Attribute %q from %s", args.Attribute, args.Selector)
