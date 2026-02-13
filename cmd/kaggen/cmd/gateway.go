@@ -13,6 +13,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 
 	"github.com/google/uuid"
+	logging "github.com/ipfs/go-log/v2"
 	"github.com/spf13/cobra"
 
 	tmemory "trpc.group/trpc-go/trpc-agent-go/memory"
@@ -38,6 +39,8 @@ import (
 	"github.com/yourusername/kaggen/internal/tools"
 )
 
+var logLevel string
+
 var gatewayCmd = &cobra.Command{
 	Use:   "gateway",
 	Short: "Start the Kaggen gateway server",
@@ -45,7 +48,22 @@ var gatewayCmd = &cobra.Command{
 	RunE:  runGateway,
 }
 
+func init() {
+	gatewayCmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+}
+
 func runGateway(cmd *cobra.Command, args []string) error {
+	// Configure libp2p logging early (before any libp2p code runs)
+	// This must happen before config load since imports may initialize loggers
+	logging.SetupLogging(logging.Config{
+		Format: logging.ColorizedOutput,
+		Stderr: true,
+		Level:  logging.LevelInfo,
+	})
+	if strings.ToLower(logLevel) == "debug" {
+		logging.SetDebugLogging()
+	}
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -62,10 +80,31 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("none of ZAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY environment variables are set")
 	}
 
-	// Setup logger
+	// Setup logger with configurable level
+	var slogLevel slog.Level
+	switch strings.ToLower(logLevel) {
+	case "debug":
+		slogLevel = slog.LevelDebug
+	case "info":
+		slogLevel = slog.LevelInfo
+	case "warn", "warning":
+		slogLevel = slog.LevelWarn
+	case "error":
+		slogLevel = slog.LevelError
+	default:
+		return fmt.Errorf("invalid log level: %s (valid: debug, info, warn, error)", logLevel)
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: slogLevel,
 	}))
+	logger.Debug("debug logging enabled", "level", logLevel)
+	if slogLevel == slog.LevelDebug {
+		logger.Debug("libp2p debug logging enabled", "subsystems", logging.GetSubsystems())
+	} else if slogLevel == slog.LevelWarn {
+		logging.SetAllLoggers(logging.LevelWarn)
+	} else if slogLevel == slog.LevelError {
+		logging.SetAllLoggers(logging.LevelError)
+	}
 
 	// Initialize telemetry/tracing if enabled
 	if cfg.Telemetry.Enabled {
