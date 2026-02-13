@@ -65,9 +65,8 @@
       "db_path": "~/.kaggen/memory.db"
     },
     "embedding": {
-      "provider": "ollama",
-      "model": "nomic-embed-text",
-      "base_url": "http://localhost:11434"
+      "provider": "gemini",
+      "model": "text-embedding-004"
     },
     "indexing": {
       "chunk_size": 400,

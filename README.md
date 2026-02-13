@@ -13,14 +13,13 @@ Named after the mantis deity of the San people, associated with creativity and t
 - **Tool execution** -- read/write files, run shell commands
 - **File-backed sessions** for conversation history across restarts
 - **Bootstrap memory** -- customizable personality, identity, and instructions via Markdown files
-- **Semantic memory search** -- vector similarity search over stored memories using sqlite-vec and Ollama embeddings
+- **Semantic memory search** -- vector similarity search over stored memories using sqlite-vec with pluggable embedding providers (Gemini, Voyage AI, Ollama)
 - **External task orchestration** -- launch external work (GCP instances, CI pipelines) and receive async results via Cloudflare Tunnel or GCP Pub/Sub
 
 ## Prerequisites
 
 - Go 1.23+
 - At least one LLM API key (see [Supported Models](#supported-models))
-- [Ollama](https://ollama.com/) (optional, for memory search)
 
 ## Installation
 
@@ -465,8 +464,9 @@ When enabled, the agent gains access to tools for creative problem-solving.
 | Variable | Description |
 |----------|-------------|
 | `ZAI_API_KEY` | ZAI (GLM) API key. Highest priority when multiple keys are set. |
-| `GEMINI_API_KEY` | Google Gemini API key. |
+| `GEMINI_API_KEY` | Google Gemini API key (also used for Gemini embeddings). |
 | `ANTHROPIC_API_KEY` | Anthropic API key. |
+| `VOYAGE_API_KEY` | Voyage AI API key (for Voyage embeddings). |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (alternative to config file). |
 | `KAGGEN_MASTER_KEY` | Master key for encrypted secrets storage (required on headless servers). |
 
@@ -1074,9 +1074,61 @@ In this example:
 
 ## Memory Search
 
-Kaggen supports semantic memory search backed by [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector storage and [Ollama](https://ollama.com/) for local embeddings. When enabled, the agent can recall past conversations and stored knowledge using the `memory_search` tool, and persist new memories with the `memory_write` tool.
+Kaggen supports semantic memory search backed by [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector storage. When enabled, the agent can recall past conversations and stored knowledge using the `memory_search` tool, and persist new memories with the `memory_write` tool.
 
-### Setup
+### Embedding Providers
+
+Kaggen supports three embedding providers. Choose based on your deployment needs:
+
+| Provider | Best For | Requirements |
+|----------|----------|--------------|
+| **Gemini** | Simplest setup (cloud) | `GEMINI_API_KEY` (same as LLM) |
+| **Voyage AI** | Highest quality embeddings | `VOYAGE_API_KEY` |
+| **Ollama** | Privacy, local/offline use | Local Ollama installation |
+
+### Quick Setup (Gemini - Recommended)
+
+If you're using Gemini as your LLM, embeddings work with the same API key:
+
+```json
+{
+  "memory": {
+    "search": {
+      "enabled": true
+    },
+    "embedding": {
+      "provider": "gemini",
+      "model": "text-embedding-004"
+    }
+  }
+}
+```
+
+No additional setup required - just enable memory search and set the provider.
+
+### Voyage AI Setup
+
+For highest quality embeddings, use [Voyage AI](https://www.voyageai.com/):
+
+```json
+{
+  "memory": {
+    "search": {
+      "enabled": true
+    },
+    "embedding": {
+      "provider": "voyage",
+      "model": "voyage-3"
+    }
+  }
+}
+```
+
+Set `VOYAGE_API_KEY` in your environment. Available models: `voyage-3` (1024 dims), `voyage-3-lite` (512 dims), `voyage-code-3` (1024 dims).
+
+### Ollama Setup (Local/Private)
+
+For fully local embeddings with no external API calls:
 
 1. Install and start Ollama:
 
@@ -1092,7 +1144,24 @@ ollama serve
 ollama pull nomic-embed-text
 ```
 
-3. Enable memory search in `~/.kaggen/config.json`:
+3. Configure:
+
+```json
+{
+  "memory": {
+    "search": {
+      "enabled": true
+    },
+    "embedding": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "base_url": "http://localhost:11434"
+    }
+  }
+}
+```
+
+### Full Configuration Reference
 
 ```json
 {
@@ -1102,9 +1171,8 @@ ollama pull nomic-embed-text
       "db_path": "~/.kaggen/memory.db"
     },
     "embedding": {
-      "provider": "ollama",
-      "model": "nomic-embed-text",
-      "base_url": "http://localhost:11434"
+      "provider": "gemini",
+      "model": "text-embedding-004"
     },
     "indexing": {
       "chunk_size": 400,
@@ -1114,7 +1182,7 @@ ollama pull nomic-embed-text
 }
 ```
 
-All fields except `search.enabled` have sensible defaults and can be omitted.
+All fields except `search.enabled` and `embedding.provider` have sensible defaults.
 
 ### How it works
 
@@ -2399,7 +2467,7 @@ internal/
   eval/              Agent evaluation framework (assertions, replay, runner)
   config/            Configuration loading
   gateway/           HTTP/WS gateway server, message handler, callback handler
-  embedding/         Embedding interface + Ollama client
+  embedding/         Embedding interface + providers (Gemini, Voyage AI, Ollama)
   memory/            File-based bootstrap memory, vector index, indexer
   model/anthropic/   Anthropic Claude adapter
   model/gemini/      Google Gemini adapter

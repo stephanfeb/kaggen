@@ -247,13 +247,10 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	// Initialize memory service if enabled
 	if cfg.Memory.Search.Enabled {
-		embedder := embedding.NewOllamaEmbedder(
-			cfg.Memory.Embedding.BaseURL,
-			cfg.Memory.Embedding.Model,
-		)
-
-		dim := embedder.Dimension()
-		if dim == 0 {
+		embedder, err := embedding.NewEmbedder(&cfg.Memory.Embedding)
+		if err != nil {
+			logger.Warn("memory search: failed to create embedder", "error", err)
+		} else if dim := embedder.Dimension(); dim == 0 {
 			logger.Warn("memory search: failed to probe embedding dimension, disabling")
 		} else {
 			dbPath := cfg.MemoryDBPath()

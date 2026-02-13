@@ -818,6 +818,10 @@ func ZaiAPIKey() string {
 	return os.Getenv("ZAI_API_KEY")
 }
 
+func VoyageAPIKey() string {
+	return os.Getenv("VOYAGE_API_KEY")
+}
+
 // PubSubProjectID returns the GCP project ID from config, falling back to
 // the GOOGLE_CLOUD_PROJECT environment variable.
 func (c *Config) PubSubProjectID() string {
