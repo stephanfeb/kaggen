@@ -300,6 +300,8 @@ type OAuthProvider struct {
 	AuthParams   map[string]string `json:"auth_params,omitempty"`   // extra params for auth URL (e.g., access_type=offline)
 	SMTP         *EmailServer      `json:"smtp,omitempty"`          // SMTP server for sending emails
 	IMAP         *EmailServer      `json:"imap,omitempty"`          // IMAP server for reading emails
+	CalDAV       *DAVServer        `json:"caldav,omitempty"`        // CalDAV server for calendar access
+	CardDAV      *DAVServer        `json:"carddav,omitempty"`       // CardDAV server for contacts access
 }
 
 // EmailServer configures SMTP or IMAP server connection details.
@@ -310,6 +312,12 @@ type EmailServer struct {
 	StartTLS bool   `json:"starttls,omitempty"` // Use STARTTLS (typically port 587)
 }
 
+// DAVServer configures CalDAV or CardDAV server connection details.
+type DAVServer struct {
+	URL          string `json:"url,omitempty"`           // Server URL (auto-discovered via .well-known if empty)
+	PrincipalURL string `json:"principal_url,omitempty"` // Principal URL override (rare)
+}
+
 // KnownOAuthProvider contains the pre-configured settings for known providers.
 type KnownOAuthProvider struct {
 	AuthURL    string
@@ -318,6 +326,8 @@ type KnownOAuthProvider struct {
 	AuthParams map[string]string // Default auth params (e.g., access_type=offline)
 	SMTP       *EmailServer      // Default SMTP server (if provider supports email)
 	IMAP       *EmailServer      // Default IMAP server (if provider supports email)
+	CalDAV     *DAVServer        // Default CalDAV server (if provider supports calendar)
+	CardDAV    *DAVServer        // Default CardDAV server (if provider supports contacts)
 }
 
 // knownOAuthProviders contains default configurations for well-known OAuth providers.
@@ -330,14 +340,16 @@ var knownOAuthProviders = map[string]KnownOAuthProvider{
 			"access_type": "offline", // Required to get a refresh token
 			"prompt":      "consent", // Force consent to ensure refresh token is returned
 		},
-		SMTP: &EmailServer{Host: "smtp.gmail.com", Port: 587, StartTLS: true},
-		IMAP: &EmailServer{Host: "imap.gmail.com", Port: 993, TLS: true},
+		SMTP:    &EmailServer{Host: "smtp.gmail.com", Port: 587, StartTLS: true},
+		IMAP:    &EmailServer{Host: "imap.gmail.com", Port: 993, TLS: true},
+		CalDAV:  &DAVServer{URL: "https://apidata.googleusercontent.com/caldav/v2"},
+		CardDAV: &DAVServer{URL: "https://www.googleapis.com/.well-known/carddav"},
 	},
 	"github": {
 		AuthURL:  "https://github.com/login/oauth/authorize",
 		TokenURL: "https://github.com/login/oauth/access_token",
 		PKCE:     false,
-		// GitHub doesn't provide email servers
+		// GitHub doesn't provide email/calendar/contacts servers
 	},
 	"microsoft": {
 		AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
@@ -345,6 +357,22 @@ var knownOAuthProviders = map[string]KnownOAuthProvider{
 		PKCE:     true,
 		SMTP:     &EmailServer{Host: "smtp.office365.com", Port: 587, StartTLS: true},
 		IMAP:     &EmailServer{Host: "outlook.office365.com", Port: 993, TLS: true},
+		// Microsoft uses Graph API, not CalDAV/CardDAV - these are placeholder for EWS fallback
+		CalDAV:  &DAVServer{URL: "https://outlook.office365.com/caldav"},
+		CardDAV: &DAVServer{URL: "https://outlook.office365.com/carddav"},
+	},
+	"icloud": {
+		AuthURL:  "https://appleid.apple.com/auth/authorize",
+		TokenURL: "https://appleid.apple.com/auth/token",
+		PKCE:     true,
+		CalDAV:   &DAVServer{URL: "https://caldav.icloud.com"},
+		CardDAV:  &DAVServer{URL: "https://contacts.icloud.com"},
+	},
+	"fastmail": {
+		// Fastmail uses Basic auth, not OAuth - but we define the server URLs here
+		// for use with the DAV tools when basic auth is configured via secrets
+		CalDAV:  &DAVServer{URL: "https://caldav.fastmail.com/dav/calendars"},
+		CardDAV: &DAVServer{URL: "https://carddav.fastmail.com/dav/addressbooks"},
 	},
 }
 
@@ -375,6 +403,13 @@ func (c *Config) GetOAuthProvider(name string) (OAuthProvider, bool) {
 		}
 		if provider.IMAP == nil && known.IMAP != nil {
 			provider.IMAP = known.IMAP
+		}
+		// Fill in CalDAV/CardDAV server defaults if not explicitly configured
+		if provider.CalDAV == nil && known.CalDAV != nil {
+			provider.CalDAV = known.CalDAV
+		}
+		if provider.CardDAV == nil && known.CardDAV != nil {
+			provider.CardDAV = known.CardDAV
 		}
 		// Merge auth params (known defaults + user overrides)
 		if len(known.AuthParams) > 0 {

@@ -203,32 +203,31 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill tool filter", "skill", summary.Name, "allowed", fm.Tools)
 			}
 
+			// Prepare skill secrets (used by http_request, caldav, carddav tools)
+			skillSecrets := make(map[string]string)
+			if len(fm.Secrets) > 0 {
+				store := secrets.DefaultStore()
+				for _, secretName := range fm.Secrets {
+					val, err := store.Get(secretName)
+					if err != nil {
+						logger.Warn("skill secret not found", "skill", summary.Name, "secret", secretName, "error", err)
+						continue
+					}
+					skillSecrets[secretName] = val
+				}
+			}
+
+			// Validate OAuth providers are configured
+			if len(fm.OAuthProviders) > 0 && cfg != nil {
+				for _, provider := range fm.OAuthProviders {
+					if _, ok := cfg.GetOAuthProvider(provider); !ok {
+						logger.Warn("skill oauth provider not configured", "skill", summary.Name, "provider", provider)
+					}
+				}
+			}
+
 			// If skill declares secrets or oauth_providers, inject http_request tool with appropriate auth
 			if len(fm.Secrets) > 0 || len(fm.OAuthProviders) > 0 {
-				skillSecrets := make(map[string]string)
-
-				// Fetch secrets
-				if len(fm.Secrets) > 0 {
-					store := secrets.DefaultStore()
-					for _, secretName := range fm.Secrets {
-						val, err := store.Get(secretName)
-						if err != nil {
-							logger.Warn("skill secret not found", "skill", summary.Name, "secret", secretName, "error", err)
-							continue
-						}
-						skillSecrets[secretName] = val
-					}
-				}
-
-				// Validate OAuth providers are configured
-				if len(fm.OAuthProviders) > 0 && cfg != nil {
-					for _, provider := range fm.OAuthProviders {
-						if _, ok := cfg.GetOAuthProvider(provider); !ok {
-							logger.Warn("skill oauth provider not configured", "skill", summary.Name, "provider", provider)
-						}
-					}
-				}
-
 				// Create http_request tool with OAuth support
 				// Note: userID is "default" for now - skills don't have user context at build time
 				// The actual user ID should be passed through the request context at runtime
@@ -266,6 +265,50 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				)
 				agentTools = append(agentTools, emailTool)
 				logger.Info("skill email tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
+			}
+
+			// If skill declares "caldav" in tools and has oauth_providers or secrets, create caldav tool
+			if (len(fm.OAuthProviders) > 0 || len(fm.Secrets) > 0) && containsString(fm.Tools, "caldav") {
+				providerGetter := getOAuthProviderGetter()
+				if providerGetter == nil && cfg != nil {
+					providerGetter = cfg.GetOAuthProvider
+				}
+				oauthGetter := getOAuthTokenGetter()
+				var davTokenGetter DAVTokenGetter
+				if oauthGetter != nil {
+					davTokenGetter = DAVTokenGetter(oauthGetter)
+				}
+				caldavTool := NewCalDAVTool(
+					"default", // TODO: get user ID from context at runtime
+					fm.OAuthProviders,
+					skillSecrets,
+					davTokenGetter,
+					providerGetter,
+				)
+				agentTools = append(agentTools, caldavTool)
+				logger.Info("skill caldav tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
+			}
+
+			// If skill declares "carddav" in tools and has oauth_providers or secrets, create carddav tool
+			if (len(fm.OAuthProviders) > 0 || len(fm.Secrets) > 0) && containsString(fm.Tools, "carddav") {
+				providerGetter := getOAuthProviderGetter()
+				if providerGetter == nil && cfg != nil {
+					providerGetter = cfg.GetOAuthProvider
+				}
+				oauthGetter := getOAuthTokenGetter()
+				var davTokenGetter DAVTokenGetter
+				if oauthGetter != nil {
+					davTokenGetter = DAVTokenGetter(oauthGetter)
+				}
+				carddavTool := NewCardDAVTool(
+					"default", // TODO: get user ID from context at runtime
+					fm.OAuthProviders,
+					skillSecrets,
+					davTokenGetter,
+					providerGetter,
+				)
+				agentTools = append(agentTools, carddavTool)
+				logger.Info("skill carddav tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
 			}
 
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
