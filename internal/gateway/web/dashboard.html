@@ -348,6 +348,15 @@ tr:hover { background: var(--bg-secondary); }
 .oauth-tls-options { display: flex; gap: 16px; }
 .oauth-tls-option { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
 .oauth-tls-option input { accent-color: var(--accent); }
+/* Database connection UI */
+.db-driver-selector { display: flex; gap: 16px; margin-bottom: 12px; }
+.db-driver-option { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.db-driver-option input[type="radio"] { accent-color: var(--accent); }
+.db-driver-option label { font-size: 12px; color: var(--text); cursor: pointer; }
+.db-driver-badge { padding: 2px 8px; border-radius: 10px; font-size: 10px; text-transform: uppercase; }
+.db-driver-badge.postgres { background: rgba(51,103,145,0.2); color: #336791; }
+.db-driver-badge.mysql { background: rgba(0,117,143,0.2); color: #00758f; }
+.db-driver-badge.sqlite { background: rgba(0,150,136,0.2); color: #009688; }
 /* Pipeline progress */
 .pipeline-section { margin-bottom: 20px; }
 .pipeline-card {
@@ -1595,9 +1604,15 @@ function hasConfigChanges() {
     return true;
   }
 
+  // Check database connection changes
+  const currentDb = collectDbConnectionsData();
+  if (JSON.stringify(currentDb) !== JSON.stringify(originalDbConnectionsState)) {
+    return true;
+  }
+
   const elements = document.querySelectorAll('#panel-config [data-path]');
   for (const el of elements) {
-    if (el.dataset.type === 'automation' || el.dataset.type === 'oauth') continue; // Skip form-based hidden fields
+    if (el.dataset.type === 'automation' || el.dataset.type === 'oauth' || el.dataset.type === 'database') continue; // Skip form-based hidden fields
     const original = el.dataset.originalValue;
     if (original === undefined) continue;
 
@@ -1636,6 +1651,7 @@ function renderConfigSections(cfg) {
   renderAutomationLists();
   document.getElementById('config-integrations').innerHTML = renderIntegrationsSection(cfg);
   renderOAuthProvidersList();
+  renderDbConnectionsList();
   document.getElementById('config-network').innerHTML = renderNetworkSection(cfg);
   document.getElementById('config-security').innerHTML = renderSecuritySection(cfg);
 }
@@ -2215,13 +2231,19 @@ function collectAutomationData() {
 let oauthProvidersState = {};
 let originalOauthState = {};
 
+// Database connections state
+let dbConnectionsState = {};
+let originalDbConnectionsState = {};
+
 function renderIntegrationsSection(cfg) {
   // Initialize OAuth state
   oauthProvidersState = JSON.parse(JSON.stringify(cfg.oauth?.providers || {}));
-  // Store original state in cleaned format for change detection
   originalOauthState = collectOAuthProvidersData();
 
-  const dbs = JSON.stringify(cfg.databases?.connections || {}, null, 2);
+  // Initialize database connections state
+  dbConnectionsState = JSON.parse(JSON.stringify(cfg.databases?.connections || {}));
+  originalDbConnectionsState = collectDbConnectionsData();
+
   const mqtt = JSON.stringify(cfg.mqtt?.brokers || {}, null, 2);
   const ssh = JSON.stringify(cfg.ssh?.hosts || {}, null, 2);
   return `
@@ -2233,11 +2255,9 @@ function renderIntegrationsSection(cfg) {
     </div>
     <div class="config-field-group">
       <div class="config-field-group-title">Database Connections</div>
-      <div class="config-field config-json-editor">
-        <label>Connections (JSON object)</label>
-        <textarea data-path="databases.connections" data-type="json">${esc(dbs)}</textarea>
-        <div class="config-field-hint">Each: {driver, host, port, user, password, database, ssl_mode, read_only}</div>
-      </div>
+      <div class="automation-list" id="db-connections-list"></div>
+      <button type="button" class="automation-add-btn" onclick="showAddDbConnection()">+ Add Connection</button>
+      <input type="hidden" id="db-connections-data" data-path="databases.connections" data-type="database">
     </div>
     <div class="config-field-group">
       <div class="config-field-group-title">MQTT Brokers</div>
@@ -2685,6 +2705,208 @@ function collectOAuthProvidersData() {
   return result;
 }
 
+// Database connections functions
+function renderDbConnectionsList() {
+  const list = document.getElementById('db-connections-list');
+  if (!list) return;
+  const names = Object.keys(dbConnectionsState);
+  if (names.length === 0) {
+    list.innerHTML = '<div class="config-field-hint" style="padding:12px;text-align:center">No database connections configured. Click "Add Connection" to get started.</div>';
+    return;
+  }
+  list.innerHTML = names.map((name, idx) => renderDbConnectionItem(name, dbConnectionsState[name], idx)).join('');
+}
+
+function renderDbConnectionItem(name, conn, idx) {
+  const expanded = conn._expanded ? 'expanded' : '';
+  const driver = conn.driver || 'postgres';
+  const summary = driver === 'sqlite' ? (conn.database || 'No path') : (conn.host || 'No host');
+  return `<div class="automation-item ${expanded}" data-db-name="${esc(name)}">
+    <div class="automation-item-header" onclick="toggleDbConnection(this)">
+      <span class="automation-item-toggle">&#9654;</span>
+      <span class="automation-item-name">${esc(name)}</span>
+      <span class="db-driver-badge ${driver}">${driver}</span>
+      <span class="automation-item-summary">${esc(summary)}</span>
+    </div>
+    <div class="automation-item-body">
+      ${renderDbConnectionForm(name, conn)}
+      <button type="button" class="automation-delete-btn" onclick="deleteDbConnection('${esc(name)}')">Delete Connection</button>
+    </div>
+  </div>`;
+}
+
+function renderDbConnectionForm(name, conn) {
+  const driver = conn.driver || 'postgres';
+  const isSqlite = driver === 'sqlite';
+  const defaultPort = driver === 'mysql' ? 3306 : 5432;
+  const port = conn.port || defaultPort;
+
+  return `
+    <div class="config-field">
+      <label>Connection Name</label>
+      <input type="text" value="${esc(name)}" disabled style="opacity:0.7">
+    </div>
+    <div class="config-field">
+      <label>Driver</label>
+      <div class="db-driver-selector">
+        <div class="db-driver-option">
+          <input type="radio" name="db-driver-${esc(name)}" id="db-driver-postgres-${esc(name)}" value="postgres" ${driver === 'postgres' ? 'checked' : ''} onchange="onDbDriverChange('${esc(name)}', 'postgres')">
+          <label for="db-driver-postgres-${esc(name)}">PostgreSQL</label>
+        </div>
+        <div class="db-driver-option">
+          <input type="radio" name="db-driver-${esc(name)}" id="db-driver-mysql-${esc(name)}" value="mysql" ${driver === 'mysql' ? 'checked' : ''} onchange="onDbDriverChange('${esc(name)}', 'mysql')">
+          <label for="db-driver-mysql-${esc(name)}">MySQL</label>
+        </div>
+        <div class="db-driver-option">
+          <input type="radio" name="db-driver-${esc(name)}" id="db-driver-sqlite-${esc(name)}" value="sqlite" ${driver === 'sqlite' ? 'checked' : ''} onchange="onDbDriverChange('${esc(name)}', 'sqlite')">
+          <label for="db-driver-sqlite-${esc(name)}">SQLite</label>
+        </div>
+      </div>
+    </div>
+
+    <div id="db-server-fields-${esc(name)}" style="${isSqlite ? 'display:none' : ''}">
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Host</label>
+          <input type="text" value="${esc(conn.host || '')}" onchange="updateDbField('${esc(name)}', 'host', this.value)" placeholder="localhost">
+        </div>
+        <div class="config-field">
+          <label>Port</label>
+          <input type="number" value="${port}" min="1" max="65535" onchange="updateDbField('${esc(name)}', 'port', parseInt(this.value)||${defaultPort})">
+          <div class="config-field-hint">Default: ${defaultPort}</div>
+        </div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>User</label>
+          <input type="text" value="${esc(conn.user || '')}" onchange="updateDbField('${esc(name)}', 'user', this.value)" placeholder="postgres">
+        </div>
+        <div class="config-field sensitive">
+          <label>Password</label>
+          <input type="password" value="${esc(conn.password || '')}" onchange="updateDbField('${esc(name)}', 'password', this.value)" placeholder="secret:db-password">
+          <div class="config-field-hint">Supports secret:key references</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="config-field">
+      <label>${isSqlite ? 'Database Path' : 'Database Name'}</label>
+      <input type="text" value="${esc(conn.database || '')}" onchange="updateDbField('${esc(name)}', 'database', this.value)" placeholder="${isSqlite ? '~/.kaggen/data.db' : 'mydb'}">
+      ${isSqlite ? '<div class="config-field-hint">Supports ~ for home directory</div>' : ''}
+    </div>
+
+    <div id="db-ssl-field-${esc(name)}" style="${isSqlite ? 'display:none' : ''}">
+      <div class="config-field">
+        <label>SSL Mode</label>
+        <select onchange="updateDbField('${esc(name)}', 'ssl_mode', this.value)">
+          <option value="" ${!conn.ssl_mode ? 'selected' : ''}>(default)</option>
+          <option value="disable" ${conn.ssl_mode === 'disable' ? 'selected' : ''}>disable</option>
+          <option value="require" ${conn.ssl_mode === 'require' ? 'selected' : ''}>require</option>
+          <option value="verify-ca" ${conn.ssl_mode === 'verify-ca' ? 'selected' : ''}>verify-ca</option>
+          <option value="verify-full" ${conn.ssl_mode === 'verify-full' ? 'selected' : ''}>verify-full</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="automation-form-row">
+      <div class="config-field">
+        <div class="config-toggle">
+          <input type="checkbox" ${conn.read_only ? 'checked' : ''} onchange="updateDbField('${esc(name)}', 'read_only', this.checked)">
+          <label>Read-Only Mode (only SELECT queries)</label>
+        </div>
+      </div>
+      <div class="config-field">
+        <label>Max Connections</label>
+        <input type="number" value="${conn.max_conns || 5}" min="1" max="100" onchange="updateDbField('${esc(name)}', 'max_conns', parseInt(this.value)||5)">
+      </div>
+    </div>`;
+}
+
+function toggleDbConnection(header) {
+  const item = header.closest('.automation-item');
+  item.classList.toggle('expanded');
+  const name = item.dataset.dbName;
+  dbConnectionsState[name]._expanded = item.classList.contains('expanded');
+}
+
+function showAddDbConnection() {
+  const name = prompt('Enter connection name (e.g., production_db, analytics):');
+  if (!name) return;
+  if (dbConnectionsState[name]) {
+    alert('Connection already exists');
+    return;
+  }
+  dbConnectionsState[name] = {
+    _expanded: true,
+    driver: 'postgres',
+    port: 5432,
+    max_conns: 5
+  };
+  renderDbConnectionsList();
+  updateSaveButtonState();
+}
+
+function deleteDbConnection(name) {
+  if (!confirm(`Delete database connection "${name}"?`)) return;
+  delete dbConnectionsState[name];
+  renderDbConnectionsList();
+  updateSaveButtonState();
+}
+
+function onDbDriverChange(name, driver) {
+  dbConnectionsState[name].driver = driver;
+  // Update default port
+  if (driver === 'mysql') {
+    dbConnectionsState[name].port = 3306;
+  } else if (driver === 'postgres') {
+    dbConnectionsState[name].port = 5432;
+  }
+  // Clear server fields for sqlite
+  if (driver === 'sqlite') {
+    delete dbConnectionsState[name].host;
+    delete dbConnectionsState[name].port;
+    delete dbConnectionsState[name].user;
+    delete dbConnectionsState[name].password;
+    delete dbConnectionsState[name].ssl_mode;
+  }
+  // Re-render the form to show/hide fields
+  renderDbConnectionsList();
+  updateSaveButtonState();
+}
+
+function updateDbField(name, field, value) {
+  dbConnectionsState[name][field] = value;
+  // Update header summary if needed
+  const item = document.querySelector(`.automation-item[data-db-name="${name}"]`);
+  if (item) {
+    if (field === 'host' || field === 'database') {
+      const driver = dbConnectionsState[name].driver;
+      const summary = driver === 'sqlite' ? (dbConnectionsState[name].database || 'No path') : (dbConnectionsState[name].host || 'No host');
+      item.querySelector('.automation-item-summary').textContent = summary;
+    }
+  }
+  updateSaveButtonState();
+}
+
+function collectDbConnectionsData() {
+  const result = {};
+  for (const [name, conn] of Object.entries(dbConnectionsState)) {
+    const clean = { ...conn };
+    // Remove UI state
+    delete clean._expanded;
+    // Remove empty optional fields
+    if (!clean.host) delete clean.host;
+    if (!clean.port) delete clean.port;
+    if (!clean.user) delete clean.user;
+    if (!clean.password) delete clean.password;
+    if (!clean.ssl_mode) delete clean.ssl_mode;
+    if (!clean.read_only) delete clean.read_only;
+    if (!clean.max_conns || clean.max_conns === 5) delete clean.max_conns;
+    result[name] = clean;
+  }
+  return result;
+}
+
 function renderNetworkSection(cfg) {
   return `
     <div class="config-field-group">
@@ -3038,6 +3260,11 @@ function collectConfigData() {
       // Handle OAuth providers data from form UI
       const oauthData = collectOAuthProvidersData();
       setNested(data, ['oauth', 'providers'], oauthData);
+      continue;
+    } else if (el.dataset.type === 'database') {
+      // Handle database connections data from form UI
+      const dbData = collectDbConnectionsData();
+      setNested(data, ['databases', 'connections'], dbData);
       continue;
     } else if (el.dataset.type === 'json') {
       const fullPath = el.dataset.path;
