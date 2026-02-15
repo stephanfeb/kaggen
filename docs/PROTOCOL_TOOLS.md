@@ -153,12 +153,19 @@ secrets: [api-token]
 
 ---
 
-## Priority 4: GraphQL
+## Priority 4: GraphQL (Implemented)
+
+**Status:** Implemented in `internal/agent/graphql_tool.go`
 
 **Use Cases:**
 - GitHub API operations
 - Shopify, Contentful, Hasura integrations
 - Any service exposing GraphQL endpoint
+
+**Actions:**
+- `query` - Execute GraphQL queries
+- `mutation` - Execute GraphQL mutations
+- `introspect` - Get schema information
 
 **Operations:**
 ```yaml
@@ -166,6 +173,7 @@ tool: graphql
 action: query
 params:
   endpoint: "https://api.github.com/graphql"
+  oauth_provider: "github"
   query: |
     query {
       viewer {
@@ -177,11 +185,22 @@ params:
   variables: {}
 ```
 
-**Features:**
-- Schema introspection (optional, for validation)
-- Automatic pagination helpers
-- Mutation support
-- Subscription support (via WebSocket)
+**Skill Declaration:**
+```yaml
+---
+tools: [graphql, read]
+oauth_providers: [github]
+secrets: [api-token]
+---
+```
+
+**Implementation Details:**
+- OAuth and secret-based auth injection (same as http_request)
+- Variables and operation name support
+- Schema introspection with built-in type filtering
+- GraphQL error parsing with locations and paths
+- Response size limit (500KB)
+- Timeout handling (default 30s, max 5m)
 
 ---
 

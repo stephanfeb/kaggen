@@ -1438,6 +1438,7 @@ Kaggen provides protocol-level tools that enable skills to interact with externa
 | `caldav` | Calendar operations (Google, iCloud, Fastmail) | OAuth, Basic auth |
 | `carddav` | Contact operations (Google, iCloud, Fastmail) | OAuth, Basic auth |
 | `websocket` | Real-time bidirectional communication | OAuth, secrets |
+| `graphql` | GraphQL queries and mutations | OAuth, secrets |
 
 ### CalDAV (Calendar)
 
@@ -1579,6 +1580,71 @@ secrets: [api-token]
 | Ping/pong keepalive | 30 seconds |
 | Auto-cleanup | Idle connections closed after 10 minutes |
 | TLS | WSS supported; insecure only for localhost |
+
+### GraphQL
+
+Execute GraphQL queries and mutations against any GraphQL endpoint. Works with GitHub API, Shopify, Contentful, Hasura, and any GraphQL service.
+
+#### Skill Declaration
+
+```yaml
+---
+tools: [graphql, read]
+oauth_providers: [github]
+secrets: [api-token]
+---
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `query` | Execute a GraphQL query |
+| `mutation` | Execute a GraphQL mutation |
+| `introspect` | Get schema information (types, fields) |
+
+#### Example Usage
+
+**Query with OAuth:**
+```json
+{
+  "action": "query",
+  "endpoint": "https://api.github.com/graphql",
+  "oauth_provider": "github",
+  "query": "query { viewer { login repositories(first: 5) { nodes { name } } } }"
+}
+```
+
+**Query with variables:**
+```json
+{
+  "action": "query",
+  "endpoint": "https://api.example.com/graphql",
+  "auth_secret": "api-token",
+  "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+  "variables": {"id": "123"}
+}
+```
+
+**Mutation:**
+```json
+{
+  "action": "mutation",
+  "endpoint": "https://api.example.com/graphql",
+  "auth_secret": "api-token",
+  "query": "mutation CreatePost($input: PostInput!) { createPost(input: $input) { id title } }",
+  "variables": {"input": {"title": "Hello World", "body": "Content here"}}
+}
+```
+
+**Schema introspection:**
+```json
+{
+  "action": "introspect",
+  "endpoint": "https://api.example.com/graphql",
+  "auth_secret": "api-token"
+}
+```
 
 ### Authentication
 

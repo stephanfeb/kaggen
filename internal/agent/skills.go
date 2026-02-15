@@ -326,6 +326,18 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill websocket tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
 			}
 
+			// If skill declares "graphql" in tools and has oauth_providers or secrets, create graphql tool
+			if (len(fm.OAuthProviders) > 0 || len(fm.Secrets) > 0) && containsString(fm.Tools, "graphql") {
+				graphqlTool := NewGraphQLTool(
+					"default", // TODO: get user ID from context at runtime
+					fm.OAuthProviders,
+					skillSecrets,
+					getOAuthTokenGetter(),
+				)
+				agentTools = append(agentTools, graphqlTool)
+				logger.Info("skill graphql tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
+			}
+
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
 			// which implements proper graph-based pause/resume for approvals.
 			if len(fm.GuardedTools) > 0 && guardedRunner != nil {
