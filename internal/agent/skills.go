@@ -107,6 +107,7 @@ type skillFrontmatter struct {
 	Secrets        []string // secret names this skill needs (injected into http_request tool)
 	OAuthProviders []string // OAuth provider names this skill can use (e.g. ["google", "github"])
 	Databases      []string // database connection names this skill can use (e.g. ["personal-postgres", "analytics"])
+	Brokers        []string // MQTT broker names this skill can use (e.g. ["home-assistant", "sensors"])
 	Delegate       string   // "claude" for subprocess dispatch, empty for LLM agent
 	ClaudeModel    string   // --model flag override
 	ClaudeTools    string   // --allowed-tools override
@@ -358,6 +359,25 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				}
 			}
 
+			// If skill declares "mqtt" in tools and has brokers configured, create mqtt tool
+			if len(fm.Brokers) > 0 && containsString(fm.Tools, "mqtt") {
+				mqttManager := NewMQTTConnectionManager(logger)
+				// Register allowed broker configurations
+				for _, brokerName := range fm.Brokers {
+					brokerCfg, ok := cfg.GetMQTTBroker(brokerName)
+					if !ok {
+						logger.Warn("skill mqtt broker not configured", "skill", summary.Name, "broker", brokerName)
+						continue
+					}
+					mqttManager.RegisterBroker(brokerName, brokerCfg)
+				}
+				if len(mqttManager.BrokerNames()) > 0 {
+					mqttTool := NewMQTTTool(mqttManager)
+					agentTools = append(agentTools, mqttTool)
+					logger.Info("skill mqtt tool injected", "skill", summary.Name, "brokers", mqttManager.BrokerNames())
+				}
+			}
+
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
 			// which implements proper graph-based pause/resume for approvals.
 			if len(fm.GuardedTools) > 0 && guardedRunner != nil {
@@ -509,6 +529,14 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 				d = strings.TrimSpace(d)
 				if d != "" {
 					fm.Databases = append(fm.Databases, d)
+				}
+			}
+		case "brokers":
+			val = strings.Trim(val, "[]")
+			for _, b := range strings.Split(val, ",") {
+				b = strings.TrimSpace(b)
+				if b != "" {
+					fm.Brokers = append(fm.Brokers, b)
 				}
 			}
 		}

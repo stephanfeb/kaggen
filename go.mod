@@ -14,6 +14,7 @@ require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
 	github.com/chromedp/chromedp v0.14.2
+	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608
 	github.com/emersion/go-imap v1.2.1
 	github.com/emersion/go-vcard v0.0.0-20241024213814-c9703dde27ff

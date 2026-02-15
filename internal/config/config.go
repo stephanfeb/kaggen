@@ -30,6 +30,7 @@ type Config struct {
 	OAuth       OAuthConfig       `json:"oauth,omitempty"`
 	EmailPoller EmailPollerConfig `json:"email_poller,omitempty"`
 	Databases   DatabasesConfig   `json:"databases,omitempty"`
+	MQTT        MQTTConfig        `json:"mqtt,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -307,6 +308,25 @@ type DatabaseConnection struct {
 	MaxConns int    `json:"max_conns,omitempty"` // Max open connections (default: 5)
 }
 
+// MQTTConfig configures named MQTT broker connections.
+type MQTTConfig struct {
+	Brokers map[string]MQTTBroker `json:"brokers,omitempty"`
+}
+
+// MQTTBroker defines an MQTT broker connection configuration.
+type MQTTBroker struct {
+	Host       string `json:"host"`                  // Broker hostname (e.g., localhost, mqtt.example.com)
+	Port       int    `json:"port,omitempty"`        // Broker port (default: 1883, or 8883 for TLS)
+	Username   string `json:"username,omitempty"`    // MQTT username
+	Password   string `json:"password,omitempty"`    // MQTT password or secret:key reference
+	ClientID   string `json:"client_id,omitempty"`   // Client ID (auto-generated if empty)
+	TLS        bool   `json:"tls,omitempty"`         // Enable TLS/SSL
+	SkipVerify bool   `json:"skip_verify,omitempty"` // Skip TLS certificate verification (insecure)
+	CACert     string `json:"ca_cert,omitempty"`     // Path to CA certificate file
+	ClientCert string `json:"client_cert,omitempty"` // Path to client certificate file
+	ClientKey  string `json:"client_key,omitempty"`  // Path to client key file
+}
+
 // OAuthProvider defines an OAuth 2.0 provider configuration.
 type OAuthProvider struct {
 	ClientID     string            `json:"client_id"`               // secret:key reference supported
@@ -499,6 +519,27 @@ func (c *Config) DatabaseConnectionNames() []string {
 	}
 	names := make([]string, 0, len(c.Databases.Connections))
 	for name := range c.Databases.Connections {
+		names = append(names, name)
+	}
+	return names
+}
+
+// GetMQTTBroker returns an MQTT broker configuration by name.
+func (c *Config) GetMQTTBroker(name string) (MQTTBroker, bool) {
+	if c.MQTT.Brokers == nil {
+		return MQTTBroker{}, false
+	}
+	broker, ok := c.MQTT.Brokers[name]
+	return broker, ok
+}
+
+// MQTTBrokerNames returns a list of configured MQTT broker names.
+func (c *Config) MQTTBrokerNames() []string {
+	if c.MQTT.Brokers == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.MQTT.Brokers))
+	for name := range c.MQTT.Brokers {
 		names = append(names, name)
 	}
 	return names

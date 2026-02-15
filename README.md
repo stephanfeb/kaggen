@@ -1440,6 +1440,7 @@ Kaggen provides protocol-level tools that enable skills to interact with externa
 | `websocket` | Real-time bidirectional communication | OAuth, secrets |
 | `graphql` | GraphQL queries and mutations | OAuth, secrets |
 | `sql` | Database queries (PostgreSQL, MySQL, SQLite) | Config-based |
+| `mqtt` | IoT/home automation messaging (pub/sub) | Config-based |
 
 ### CalDAV (Calendar)
 
@@ -1746,6 +1747,120 @@ Add database connections to `~/.kaggen/config.json`:
 | Query timeout | Default 30s, max 5 minutes |
 | Row limit | Max 1000 rows per query |
 | Secret passwords | Use `secret:key-name` for secure credential storage |
+
+### MQTT
+
+Publish and subscribe to MQTT brokers for IoT, home automation (Home Assistant, smart devices), and pub/sub messaging patterns. Supports QoS levels 0/1/2, topic wildcards, and retained messages.
+
+#### Skill Declaration
+
+```yaml
+---
+tools: [mqtt, read]
+brokers: [home-assistant, sensors]
+---
+```
+
+#### Broker Configuration
+
+Add MQTT brokers to `~/.kaggen/config.json`:
+
+```json
+{
+  "mqtt": {
+    "brokers": {
+      "home-assistant": {
+        "host": "homeassistant.local",
+        "port": 1883,
+        "username": "mqtt_user",
+        "password": "secret:mqtt-password",
+        "client_id": "kaggen-agent"
+      },
+      "sensors": {
+        "host": "mqtt.example.com",
+        "port": 8883,
+        "tls": true,
+        "username": "sensor_reader",
+        "password": "secret:sensor-password"
+      }
+    }
+  }
+}
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `connect` | Connect to a broker, return connection_id |
+| `publish` | Publish message to a topic |
+| `subscribe` | Subscribe to topics (supports wildcards) |
+| `receive` | Wait for messages (with timeout or count) |
+| `unsubscribe` | Unsubscribe from topics |
+| `disconnect` | Disconnect from broker |
+| `list_connections` | Show all active connections |
+
+#### Example Usage
+
+**Connect to broker:**
+```json
+{
+  "action": "connect",
+  "broker": "home-assistant"
+}
+```
+
+**Publish a message:**
+```json
+{
+  "action": "publish",
+  "connection_id": "abc123",
+  "topic": "home/living-room/lights/set",
+  "payload": "{\"state\": \"on\", \"brightness\": 80}",
+  "qos": 1,
+  "retain": false
+}
+```
+
+**Subscribe with wildcards:**
+```json
+{
+  "action": "subscribe",
+  "connection_id": "abc123",
+  "topics": ["home/+/temperature", "home/#"],
+  "qos": 1
+}
+```
+
+**Receive messages:**
+```json
+{
+  "action": "receive",
+  "connection_id": "abc123",
+  "timeout_seconds": 30,
+  "wait_count": 5
+}
+```
+
+**Drain message buffer:**
+```json
+{
+  "action": "receive",
+  "connection_id": "abc123",
+  "drain_buffer": true
+}
+```
+
+#### Connection Management
+
+| Feature | Value |
+|---------|-------|
+| Max connections | 10 per skill |
+| Message buffer | 100 messages per connection |
+| Auto-cleanup | Idle connections closed after 10 minutes |
+| QoS levels | 0 (at most once), 1 (at least once), 2 (exactly once) |
+| Topic wildcards | `+` (single level), `#` (multi-level) |
+| TLS | Supported with optional client certificates |
 
 ### Authentication
 

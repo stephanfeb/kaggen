@@ -284,35 +284,97 @@ databases: [personal-postgres, analytics]
 
 ---
 
-## Priority 6: MQTT
+## Priority 6: MQTT (Implemented)
+
+**Status:** Implemented in `internal/agent/mqtt_tool.go`
 
 **Use Cases:**
 - Home automation (Home Assistant, smart devices)
 - IoT sensor data
 - Pub/sub messaging patterns
 
+**Actions:**
+- `connect` - Connect to an MQTT broker, return connection_id
+- `publish` - Publish message to a topic
+- `subscribe` - Subscribe to topics (supports wildcards +/#)
+- `receive` - Wait for messages (with timeout or count)
+- `unsubscribe` - Unsubscribe from topics
+- `disconnect` - Disconnect from broker
+- `list_connections` - Show all active connections
+
 **Operations:**
 ```yaml
 tool: mqtt
-action: publish
+action: connect
 params:
   broker: "home-assistant"
+
+tool: mqtt
+action: publish
+params:
+  connection_id: "abc123"
   topic: "home/living-room/lights/set"
-  payload: {"state": "off"}
+  payload: '{"state": "off"}'
+  qos: 1
+  retain: false
 
 tool: mqtt
 action: subscribe
 params:
-  broker: "home-assistant"
-  topic: "home/+/temperature"
-  handler: "temperature_monitor"  # Skill callback
+  connection_id: "abc123"
+  topics: ["home/+/temperature", "home/+/humidity"]
+  qos: 1
+
+tool: mqtt
+action: receive
+params:
+  connection_id: "abc123"
+  timeout_seconds: 30
+  wait_count: 5
 ```
 
-**Design Considerations:**
-- QoS levels (0, 1, 2)
-- Retained messages
-- Last Will and Testament
-- Topic wildcards
+**Skill Declaration:**
+```yaml
+---
+tools: [mqtt, read]
+brokers: [home-assistant, sensors]
+---
+```
+
+**Config (in ~/.kaggen/config.json):**
+```json
+{
+  "mqtt": {
+    "brokers": {
+      "home-assistant": {
+        "host": "homeassistant.local",
+        "port": 1883,
+        "username": "mqtt_user",
+        "password": "secret:mqtt-password",
+        "client_id": "kaggen-agent"
+      },
+      "sensors": {
+        "host": "mqtt.example.com",
+        "port": 8883,
+        "tls": true,
+        "username": "sensor_reader",
+        "password": "secret:sensor-password"
+      }
+    }
+  }
+}
+```
+
+**Implementation Details:**
+- Stateful connection manager with ID-based tracking
+- QoS levels 0, 1, 2 supported
+- Topic wildcards: `+` (single level), `#` (multi-level)
+- Retained message support
+- Per-connection message buffering (100 messages max)
+- TLS support with optional client certificates
+- Auto-cleanup of idle connections (10 minutes)
+- Max 10 concurrent connections per skill
+- Password can use `secret:` prefix for secure storage
 
 ---
 
