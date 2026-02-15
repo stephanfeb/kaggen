@@ -358,11 +358,9 @@ tr:hover { background: var(--bg-secondary); }
 .db-driver-badge.mysql { background: rgba(0,117,143,0.2); color: #00758f; }
 .db-driver-badge.sqlite { background: rgba(0,150,136,0.2); color: #009688; }
 /* Secret selector */
-.secret-selector { display: flex; gap: 8px; align-items: stretch; }
-.secret-selector select { flex: 1; padding: 8px 12px; font-size: 12px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; cursor: pointer; }
+.secret-selector { margin-bottom: 4px; }
+.secret-selector select { width: 100%; padding: 8px 12px; font-size: 12px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; cursor: pointer; }
 .secret-selector select:focus { outline: none; border-color: var(--accent); }
-.secret-selector .secret-or { color: var(--text-muted); font-size: 11px; display: flex; align-items: center; padding: 0 4px; }
-.secret-selector input { flex: 1; }
 .secret-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(188,140,255,0.15); color: var(--purple); border-radius: 4px; font-size: 11px; }
 .secret-badge::before { content: '🔑'; font-size: 10px; }
 /* Pipeline progress */
@@ -1585,59 +1583,46 @@ async function loadConfig() {
 }
 
 // Render a secret selector with dropdown + text input option
-function renderSecretSelector(currentValue, onChangeFn, placeholder = 'secret:key-name or literal value') {
+function renderSecretSelector(currentValue, onChangeFn, fieldLabel = 'secret') {
   const isSecretRef = currentValue && currentValue.startsWith('secret:');
   const secretKey = isSecretRef ? currentValue.slice(7) : '';
-  const literalValue = isSecretRef ? '' : (currentValue || '');
+
+  // Check if current value exists but isn't a secret reference (legacy plaintext)
+  const hasLegacyValue = currentValue && !isSecretRef;
 
   const options = availableSecretKeys.map(key =>
     `<option value="secret:${esc(key)}" ${secretKey === key ? 'selected' : ''}>${esc(key)}</option>`
   ).join('');
 
+  const noSecretsMsg = availableSecretKeys.length === 0
+    ? '<div class="config-field-hint" style="color:var(--yellow)">No secrets stored. Add secrets in Settings → Secrets first.</div>'
+    : '';
+
+  const legacyWarning = hasLegacyValue
+    ? `<div class="config-field-hint" style="color:var(--yellow)">⚠ Legacy plaintext value detected. Select a secret to replace it.</div>`
+    : '';
+
   return `<div class="secret-selector">
-    <select onchange="onSecretSelectorChange(this, '${esc(onChangeFn)}')">
-      <option value="">-- Use secret from store --</option>
+    <select onchange="onSecretSelectorChange(this, '${esc(onChangeFn)}')" style="width:100%">
+      <option value="">-- Select ${fieldLabel} from secret store --</option>
       ${options}
-      <option value="__literal__" ${!isSecretRef && currentValue ? 'selected' : ''}>Enter value directly...</option>
     </select>
-    <input type="password"
-           value="${esc(literalValue)}"
-           placeholder="${esc(placeholder)}"
-           style="${isSecretRef ? 'display:none' : ''}"
-           onchange="onSecretInputChange(this, '${esc(onChangeFn)}')">
   </div>
-  <div class="config-field-hint">${isSecretRef ? `<span class="secret-badge">${esc(secretKey)}</span>` : 'Select a stored secret or enter value directly'}</div>`;
+  ${legacyWarning}
+  ${noSecretsMsg}
+  <div class="config-field-hint">${isSecretRef ? `<span class="secret-badge">${esc(secretKey)}</span>` : 'Store secrets via Settings → Secrets'}</div>`;
 }
 
 function onSecretSelectorChange(select, onChangeFn) {
-  const input = select.nextElementSibling;
-  if (select.value === '__literal__' || select.value === '') {
-    input.style.display = '';
-    if (select.value === '') {
-      input.value = '';
-      eval(onChangeFn.replace('VALUE', "''"));
-    } else {
-      // Focus the input for literal entry
-      input.focus();
-    }
-  } else {
-    input.style.display = 'none';
-    input.value = '';
-    eval(onChangeFn.replace('VALUE', `'${select.value}'`));
-  }
+  eval(onChangeFn.replace('VALUE', select.value ? `'${select.value}'` : "''"));
   // Update hint
-  const hint = select.closest('.config-field').querySelector('.config-field-hint');
-  if (hint && select.value && select.value !== '__literal__') {
+  const hint = select.closest('.config-field').querySelector('.config-field-hint:last-child');
+  if (hint && select.value) {
     const key = select.value.slice(7);
     hint.innerHTML = `<span class="secret-badge">${esc(key)}</span>`;
-  } else {
-    hint.textContent = 'Select a stored secret or enter value directly';
+  } else if (hint) {
+    hint.textContent = 'Store secrets via Settings → Secrets';
   }
-  updateSaveButtonState();
-}
-
-function onSecretInputChange(input, onChangeFn) {
-  eval(onChangeFn.replace('VALUE', `'${input.value}'`));
   updateSaveButtonState();
 }
 
