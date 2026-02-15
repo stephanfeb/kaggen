@@ -308,6 +308,46 @@ tr:hover { background: var(--bg-secondary); }
 .automation-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
 .automation-form-row.full { grid-template-columns: 1fr; }
 @media (max-width: 600px) { .automation-form-row { grid-template-columns: 1fr; } }
+/* OAuth provider UI */
+.oauth-scope-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.oauth-scope-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; background: rgba(88,166,255,0.15); color: var(--accent); border-radius: 4px; font-size: 11px; }
+.oauth-scope-tag .remove { cursor: pointer; opacity: 0.7; font-size: 14px; line-height: 1; }
+.oauth-scope-tag .remove:hover { opacity: 1; }
+.oauth-scope-add { display: flex; gap: 8px; margin-bottom: 8px; }
+.oauth-scope-add input { flex: 1; }
+.oauth-scope-add button { padding: 6px 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); cursor: pointer; font-size: 11px; font-family: inherit; }
+.oauth-scope-add button:hover { color: var(--accent); border-color: var(--accent); }
+.oauth-quick-scopes { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.oauth-quick-scope { padding: 2px 8px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; color: var(--text-muted); cursor: pointer; font-size: 10px; font-family: inherit; }
+.oauth-quick-scope:hover { background: rgba(88,166,255,0.1); border-color: var(--accent); color: var(--accent); }
+.oauth-connection-status { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.oauth-connection-status.connected { color: var(--green); }
+.oauth-connection-status.disconnected { color: var(--text-muted); }
+.oauth-template-row { display: flex; gap: 12px; margin-bottom: 12px; }
+.oauth-template-row .config-field { flex: 1; margin-bottom: 0; }
+.oauth-template-select { min-width: 150px; }
+.oauth-section-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 0; color: var(--text-muted); font-size: 12px; user-select: none; border-top: 1px solid var(--border); margin-top: 12px; }
+.oauth-section-toggle:hover { color: var(--text); }
+.oauth-section-toggle .toggle-icon { font-size: 10px; transition: transform 0.2s; }
+.oauth-section-toggle.expanded .toggle-icon { transform: rotate(90deg); }
+.oauth-section-content { display: none; padding-top: 12px; }
+.oauth-section-toggle.expanded + .oauth-section-content { display: block; }
+.oauth-auth-params { margin-top: 8px; }
+.oauth-auth-param-row { display: flex; gap: 8px; margin-bottom: 6px; align-items: center; }
+.oauth-auth-param-row input { flex: 1; padding: 6px 8px; font-size: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; }
+.oauth-auth-param-row input:focus { outline: none; border-color: var(--accent); }
+.oauth-auth-param-row .remove { color: var(--red); cursor: pointer; font-size: 14px; padding: 4px; }
+.oauth-auth-param-row .remove:hover { opacity: 0.8; }
+.oauth-add-param-btn { padding: 4px 8px; background: none; border: 1px dashed var(--border); border-radius: 4px; color: var(--text-muted); cursor: pointer; font-size: 11px; font-family: inherit; }
+.oauth-add-param-btn:hover { border-color: var(--accent); color: var(--accent); }
+.oauth-email-server { padding: 12px; background: var(--bg-tertiary); border-radius: 4px; margin-bottom: 8px; }
+.oauth-email-server-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; }
+.oauth-email-server-row { display: flex; gap: 12px; margin-bottom: 8px; align-items: center; }
+.oauth-email-server-row .config-field { flex: 1; margin-bottom: 0; }
+.oauth-email-server-row .port-field { max-width: 80px; }
+.oauth-tls-options { display: flex; gap: 16px; }
+.oauth-tls-option { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.oauth-tls-option input { accent-color: var(--accent); }
 /* Pipeline progress */
 .pipeline-section { margin-bottom: 20px; }
 .pipeline-card {
@@ -1549,9 +1589,15 @@ function hasConfigChanges() {
     return true;
   }
 
+  // Check OAuth changes
+  const currentOAuth = collectOAuthProvidersData();
+  if (JSON.stringify(currentOAuth) !== JSON.stringify(originalOauthState)) {
+    return true;
+  }
+
   const elements = document.querySelectorAll('#panel-config [data-path]');
   for (const el of elements) {
-    if (el.dataset.type === 'automation') continue; // Skip automation hidden field
+    if (el.dataset.type === 'automation' || el.dataset.type === 'oauth') continue; // Skip form-based hidden fields
     const original = el.dataset.originalValue;
     if (original === undefined) continue;
 
@@ -1589,6 +1635,7 @@ function renderConfigSections(cfg) {
   document.getElementById('config-automation').innerHTML = renderAutomationSection(cfg);
   renderAutomationLists();
   document.getElementById('config-integrations').innerHTML = renderIntegrationsSection(cfg);
+  renderOAuthProvidersList();
   document.getElementById('config-network').innerHTML = renderNetworkSection(cfg);
   document.getElementById('config-security').innerHTML = renderSecuritySection(cfg);
 }
@@ -2164,19 +2211,25 @@ function collectAutomationData() {
   };
 }
 
+// OAuth providers state
+let oauthProvidersState = {};
+let originalOauthState = {};
+
 function renderIntegrationsSection(cfg) {
-  const oauth = JSON.stringify(cfg.oauth?.providers || {}, null, 2);
+  // Initialize OAuth state
+  oauthProvidersState = JSON.parse(JSON.stringify(cfg.oauth?.providers || {}));
+  // Store original state in cleaned format for change detection
+  originalOauthState = collectOAuthProvidersData();
+
   const dbs = JSON.stringify(cfg.databases?.connections || {}, null, 2);
   const mqtt = JSON.stringify(cfg.mqtt?.brokers || {}, null, 2);
   const ssh = JSON.stringify(cfg.ssh?.hosts || {}, null, 2);
   return `
     <div class="config-field-group">
       <div class="config-field-group-title">OAuth Providers</div>
-      <div class="config-field config-json-editor">
-        <label>Providers (JSON object)</label>
-        <textarea data-path="oauth.providers" data-type="json">${esc(oauth)}</textarea>
-        <div class="config-field-hint">Keys: google, github, microsoft, etc. Values: {client_id, client_secret, scopes}</div>
-      </div>
+      <div class="automation-list" id="oauth-providers-list"></div>
+      <button type="button" class="automation-add-btn" onclick="showAddOAuthProvider()">+ Add Provider</button>
+      <input type="hidden" id="oauth-providers-data" data-path="oauth.providers" data-type="oauth">
     </div>
     <div class="config-field-group">
       <div class="config-field-group-title">Database Connections</div>
@@ -2209,6 +2262,427 @@ function renderIntegrationsSection(cfg) {
       ${textField('email_poller.email', 'Email Address', cfg.email_poller?.email)}
       ${textField('email_poller.interval', 'Poll Interval', cfg.email_poller?.interval, 'e.g., 5m')}
     </div>`;
+}
+
+// OAuth provider templates
+const oauthTemplates = {
+  google: {
+    auth_url: 'https://accounts.google.com/o/oauth2/v2/auth',
+    token_url: 'https://oauth2.googleapis.com/token',
+    pkce: true,
+    auth_params: { access_type: 'offline', prompt: 'consent' },
+    smtp: { host: 'smtp.gmail.com', port: 587, starttls: true },
+    imap: { host: 'imap.gmail.com', port: 993, tls: true },
+    caldav: { url: 'https://www.googleapis.com/caldav/v2/calendars' },
+    carddav: { url: 'https://www.googleapis.com/.well-known/carddav' },
+    commonScopes: ['https://mail.google.com/', 'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/contacts']
+  },
+  github: {
+    auth_url: 'https://github.com/login/oauth/authorize',
+    token_url: 'https://github.com/login/oauth/access_token',
+    pkce: false,
+    commonScopes: ['repo', 'read:user', 'user:email']
+  },
+  microsoft: {
+    auth_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+    token_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+    pkce: true,
+    smtp: { host: 'smtp.office365.com', port: 587, starttls: true },
+    imap: { host: 'outlook.office365.com', port: 993, tls: true },
+    caldav: { url: 'https://outlook.office365.com/caldav/' },
+    carddav: { url: 'https://outlook.office365.com/carddav/' },
+    commonScopes: ['https://outlook.office.com/IMAP.AccessAsUser.All', 'https://outlook.office.com/SMTP.Send', 'Calendars.ReadWrite', 'Contacts.ReadWrite']
+  },
+  icloud: {
+    auth_url: 'https://appleid.apple.com/auth/authorize',
+    token_url: 'https://appleid.apple.com/auth/token',
+    pkce: true,
+    caldav: { url: 'https://caldav.icloud.com/' },
+    carddav: { url: 'https://contacts.icloud.com/' },
+    commonScopes: []
+  },
+  fastmail: {
+    caldav: { url: 'https://caldav.fastmail.com/dav/' },
+    carddav: { url: 'https://carddav.fastmail.com/dav/' },
+    commonScopes: []
+  }
+};
+
+function renderOAuthProvidersList() {
+  const list = document.getElementById('oauth-providers-list');
+  if (!list) return;
+  const names = Object.keys(oauthProvidersState);
+  if (names.length === 0) {
+    list.innerHTML = '<div class="config-field-hint" style="padding:12px;text-align:center">No OAuth providers configured. Click "Add Provider" to get started.</div>';
+    return;
+  }
+  list.innerHTML = names.map((name, idx) => renderOAuthProviderItem(name, oauthProvidersState[name], idx)).join('');
+}
+
+function renderOAuthProviderItem(name, provider, idx) {
+  const expanded = provider._expanded ? 'expanded' : '';
+  const scopeCount = (provider.scopes || []).length;
+  return `<div class="automation-item ${expanded}" data-oauth-name="${esc(name)}">
+    <div class="automation-item-header" onclick="toggleOAuthProvider(this)">
+      <span class="automation-item-toggle">&#9654;</span>
+      <span class="automation-item-name">${esc(name)}</span>
+      <span class="oauth-connection-status disconnected" id="oauth-status-${esc(name)}">&#9675; checking...</span>
+      <span class="automation-item-badge">${scopeCount} scope${scopeCount !== 1 ? 's' : ''}</span>
+    </div>
+    <div class="automation-item-body">
+      ${renderOAuthProviderForm(name, provider)}
+      <button type="button" class="automation-delete-btn" onclick="deleteOAuthProvider('${esc(name)}')">Delete Provider</button>
+    </div>
+  </div>`;
+}
+
+function renderOAuthProviderForm(name, provider) {
+  const template = detectTemplate(provider);
+  const scopes = provider.scopes || [];
+  const authParams = provider.auth_params || {};
+
+  return `
+    <div class="oauth-template-row">
+      <div class="config-field">
+        <label>Provider Name</label>
+        <input type="text" value="${esc(name)}" disabled style="opacity:0.7">
+      </div>
+      <div class="config-field">
+        <label>Apply Template</label>
+        <select class="oauth-template-select" onchange="applyOAuthTemplate('${esc(name)}', this.value)">
+          <option value="">-- Select Template --</option>
+          <option value="google" ${template === 'google' ? 'selected' : ''}>Google</option>
+          <option value="github" ${template === 'github' ? 'selected' : ''}>GitHub</option>
+          <option value="microsoft" ${template === 'microsoft' ? 'selected' : ''}>Microsoft</option>
+          <option value="icloud" ${template === 'icloud' ? 'selected' : ''}>iCloud</option>
+          <option value="fastmail" ${template === 'fastmail' ? 'selected' : ''}>Fastmail</option>
+        </select>
+      </div>
+    </div>
+    <div class="automation-form-row">
+      <div class="config-field">
+        <label>Client ID</label>
+        <input type="text" value="${esc(provider.client_id || '')}" onchange="updateOAuthField('${esc(name)}', 'client_id', this.value)" placeholder="secret:my-client-id">
+        <div class="config-field-hint">Supports secret:key references</div>
+      </div>
+      <div class="config-field sensitive">
+        <label>Client Secret</label>
+        <input type="password" value="${esc(provider.client_secret || '')}" onchange="updateOAuthField('${esc(name)}', 'client_secret', this.value)" placeholder="secret:my-client-secret">
+        <div class="config-field-hint">Supports secret:key references</div>
+      </div>
+    </div>
+    <div class="config-field">
+      <label>Scopes</label>
+      <div class="oauth-scope-tags" id="oauth-scopes-${esc(name)}">
+        ${scopes.map((s, i) => `<span class="oauth-scope-tag">${esc(s)}<span class="remove" onclick="removeOAuthScope('${esc(name)}', ${i})">×</span></span>`).join('')}
+      </div>
+      <div class="oauth-scope-add">
+        <input type="text" id="oauth-scope-input-${esc(name)}" placeholder="Add scope..." onkeypress="if(event.key==='Enter'){addOAuthScope('${esc(name)}');event.preventDefault()}">
+        <button type="button" onclick="addOAuthScope('${esc(name)}')">Add</button>
+      </div>
+      ${renderQuickScopes(name, template)}
+    </div>
+
+    <!-- Advanced Settings -->
+    <div class="oauth-section-toggle ${provider._advancedExpanded ? 'expanded' : ''}" onclick="toggleOAuthSection('${esc(name)}', 'advanced', this)">
+      <span class="toggle-icon">&#9654;</span> Advanced Settings
+    </div>
+    <div class="oauth-section-content">
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Auth URL</label>
+          <input type="text" value="${esc(provider.auth_url || '')}" onchange="updateOAuthField('${esc(name)}', 'auth_url', this.value)" placeholder="https://...">
+        </div>
+        <div class="config-field">
+          <label>Token URL</label>
+          <input type="text" value="${esc(provider.token_url || '')}" onchange="updateOAuthField('${esc(name)}', 'token_url', this.value)" placeholder="https://...">
+        </div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <div class="config-toggle">
+            <input type="checkbox" ${provider.pkce ? 'checked' : ''} onchange="updateOAuthField('${esc(name)}', 'pkce', this.checked)">
+            <label>Enable PKCE</label>
+          </div>
+        </div>
+        <div class="config-field">
+          <label>Redirect URI (optional)</label>
+          <input type="text" value="${esc(provider.redirect_uri || '')}" onchange="updateOAuthField('${esc(name)}', 'redirect_uri', this.value)" placeholder="Usually auto-detected">
+        </div>
+      </div>
+      <div class="config-field">
+        <label>Auth Parameters</label>
+        <div class="oauth-auth-params" id="oauth-params-${esc(name)}">
+          ${Object.entries(authParams).map(([k, v]) => `
+            <div class="oauth-auth-param-row">
+              <input type="text" value="${esc(k)}" placeholder="key" onchange="updateOAuthParamKey('${esc(name)}', '${esc(k)}', this.value)">
+              <input type="text" value="${esc(v)}" placeholder="value" onchange="updateOAuthParamValue('${esc(name)}', '${esc(k)}', this.value)">
+              <span class="remove" onclick="removeOAuthParam('${esc(name)}', '${esc(k)}')">×</span>
+            </div>
+          `).join('')}
+        </div>
+        <button type="button" class="oauth-add-param-btn" onclick="addOAuthParam('${esc(name)}')">+ Add Parameter</button>
+      </div>
+    </div>
+
+    <!-- Email Servers -->
+    <div class="oauth-section-toggle ${provider._emailExpanded ? 'expanded' : ''}" onclick="toggleOAuthSection('${esc(name)}', 'email', this)">
+      <span class="toggle-icon">&#9654;</span> Email Servers (SMTP/IMAP)
+    </div>
+    <div class="oauth-section-content">
+      ${renderEmailServer(name, 'smtp', provider.smtp)}
+      ${renderEmailServer(name, 'imap', provider.imap)}
+    </div>
+
+    <!-- Calendar/Contacts -->
+    <div class="oauth-section-toggle ${provider._calendarExpanded ? 'expanded' : ''}" onclick="toggleOAuthSection('${esc(name)}', 'calendar', this)">
+      <span class="toggle-icon">&#9654;</span> Calendar & Contacts (CalDAV/CardDAV)
+    </div>
+    <div class="oauth-section-content">
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>CalDAV URL</label>
+          <input type="text" value="${esc(provider.caldav?.url || '')}" onchange="updateOAuthField('${esc(name)}', 'caldav.url', this.value)" placeholder="https://...">
+        </div>
+        <div class="config-field">
+          <label>CalDAV Principal (optional)</label>
+          <input type="text" value="${esc(provider.caldav?.principal_url || '')}" onchange="updateOAuthField('${esc(name)}', 'caldav.principal_url', this.value)">
+        </div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>CardDAV URL</label>
+          <input type="text" value="${esc(provider.carddav?.url || '')}" onchange="updateOAuthField('${esc(name)}', 'carddav.url', this.value)" placeholder="https://...">
+        </div>
+        <div class="config-field">
+          <label>CardDAV Principal (optional)</label>
+          <input type="text" value="${esc(provider.carddav?.principal_url || '')}" onchange="updateOAuthField('${esc(name)}', 'carddav.principal_url', this.value)">
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderEmailServer(name, type, server) {
+  const s = server || {};
+  const title = type.toUpperCase();
+  const defaultPort = type === 'smtp' ? 587 : 993;
+  return `<div class="oauth-email-server">
+    <div class="oauth-email-server-title">${title} Server</div>
+    <div class="oauth-email-server-row">
+      <div class="config-field">
+        <label>Host</label>
+        <input type="text" value="${esc(s.host || '')}" onchange="updateOAuthField('${esc(name)}', '${type}.host', this.value)" placeholder="${type}.example.com">
+      </div>
+      <div class="config-field port-field">
+        <label>Port</label>
+        <input type="number" value="${s.port || defaultPort}" onchange="updateOAuthField('${esc(name)}', '${type}.port', parseInt(this.value)||${defaultPort})">
+      </div>
+    </div>
+    <div class="oauth-tls-options">
+      <label class="oauth-tls-option">
+        <input type="checkbox" ${s.starttls ? 'checked' : ''} onchange="updateOAuthField('${esc(name)}', '${type}.starttls', this.checked)"> STARTTLS
+      </label>
+      <label class="oauth-tls-option">
+        <input type="checkbox" ${s.tls ? 'checked' : ''} onchange="updateOAuthField('${esc(name)}', '${type}.tls', this.checked)"> Implicit TLS
+      </label>
+    </div>
+  </div>`;
+}
+
+function renderQuickScopes(name, template) {
+  const tpl = oauthTemplates[template];
+  if (!tpl || !tpl.commonScopes || tpl.commonScopes.length === 0) return '';
+  const btns = tpl.commonScopes.map(s => {
+    const label = s.split('/').pop().split('.').shift() || s;
+    return `<button type="button" class="oauth-quick-scope" onclick="addOAuthScopeValue('${esc(name)}', '${esc(s)}')" title="${esc(s)}">${esc(label)}</button>`;
+  }).join('');
+  return `<div class="oauth-quick-scopes">Quick add: ${btns}</div>`;
+}
+
+function detectTemplate(provider) {
+  if (!provider.auth_url) return '';
+  if (provider.auth_url.includes('google')) return 'google';
+  if (provider.auth_url.includes('github')) return 'github';
+  if (provider.auth_url.includes('microsoftonline')) return 'microsoft';
+  if (provider.auth_url.includes('apple')) return 'icloud';
+  return '';
+}
+
+function toggleOAuthProvider(header) {
+  const item = header.closest('.automation-item');
+  item.classList.toggle('expanded');
+  const name = item.dataset.oauthName;
+  oauthProvidersState[name]._expanded = item.classList.contains('expanded');
+  // Fetch connection status when expanding
+  if (item.classList.contains('expanded')) {
+    fetchOAuthStatus(name);
+  }
+}
+
+function toggleOAuthSection(name, section, el) {
+  el.classList.toggle('expanded');
+  oauthProvidersState[name][`_${section}Expanded`] = el.classList.contains('expanded');
+}
+
+function showAddOAuthProvider() {
+  const name = prompt('Enter provider name (e.g., google, github, slack):');
+  if (!name) return;
+  if (oauthProvidersState[name]) {
+    alert('Provider already exists');
+    return;
+  }
+  oauthProvidersState[name] = { _expanded: true, scopes: [] };
+  renderOAuthProvidersList();
+  updateSaveButtonState();
+}
+
+function deleteOAuthProvider(name) {
+  if (!confirm(`Delete OAuth provider "${name}"?`)) return;
+  delete oauthProvidersState[name];
+  renderOAuthProvidersList();
+  updateSaveButtonState();
+}
+
+function applyOAuthTemplate(name, template) {
+  const tpl = oauthTemplates[template];
+  if (!tpl) return;
+  const provider = oauthProvidersState[name];
+  if (tpl.auth_url) provider.auth_url = tpl.auth_url;
+  if (tpl.token_url) provider.token_url = tpl.token_url;
+  if (tpl.pkce !== undefined) provider.pkce = tpl.pkce;
+  if (tpl.auth_params) provider.auth_params = { ...tpl.auth_params };
+  if (tpl.smtp) provider.smtp = { ...tpl.smtp };
+  if (tpl.imap) provider.imap = { ...tpl.imap };
+  if (tpl.caldav) provider.caldav = { ...tpl.caldav };
+  if (tpl.carddav) provider.carddav = { ...tpl.carddav };
+  provider._expanded = true;
+  renderOAuthProvidersList();
+  updateSaveButtonState();
+}
+
+function updateOAuthField(name, path, value) {
+  const parts = path.split('.');
+  let obj = oauthProvidersState[name];
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!obj[parts[i]]) obj[parts[i]] = {};
+    obj = obj[parts[i]];
+  }
+  obj[parts[parts.length - 1]] = value;
+  updateSaveButtonState();
+}
+
+function addOAuthScope(name) {
+  const input = document.getElementById(`oauth-scope-input-${name}`);
+  const scope = input.value.trim();
+  if (!scope) return;
+  addOAuthScopeValue(name, scope);
+  input.value = '';
+}
+
+function addOAuthScopeValue(name, scope) {
+  if (!oauthProvidersState[name].scopes) oauthProvidersState[name].scopes = [];
+  if (oauthProvidersState[name].scopes.includes(scope)) return;
+  oauthProvidersState[name].scopes.push(scope);
+  const container = document.getElementById(`oauth-scopes-${name}`);
+  const idx = oauthProvidersState[name].scopes.length - 1;
+  container.innerHTML += `<span class="oauth-scope-tag">${esc(scope)}<span class="remove" onclick="removeOAuthScope('${esc(name)}', ${idx})">×</span></span>`;
+  updateSaveButtonState();
+}
+
+function removeOAuthScope(name, idx) {
+  oauthProvidersState[name].scopes.splice(idx, 1);
+  // Re-render scopes
+  const scopes = oauthProvidersState[name].scopes;
+  const container = document.getElementById(`oauth-scopes-${name}`);
+  container.innerHTML = scopes.map((s, i) => `<span class="oauth-scope-tag">${esc(s)}<span class="remove" onclick="removeOAuthScope('${esc(name)}', ${i})">×</span></span>`).join('');
+  updateSaveButtonState();
+}
+
+function addOAuthParam(name) {
+  if (!oauthProvidersState[name].auth_params) oauthProvidersState[name].auth_params = {};
+  const key = `param_${Date.now()}`;
+  oauthProvidersState[name].auth_params[key] = '';
+  const container = document.getElementById(`oauth-params-${name}`);
+  container.innerHTML += `
+    <div class="oauth-auth-param-row">
+      <input type="text" value="" placeholder="key" onchange="updateOAuthParamKey('${esc(name)}', '${key}', this.value)">
+      <input type="text" value="" placeholder="value" onchange="updateOAuthParamValue('${esc(name)}', '${key}', this.value)">
+      <span class="remove" onclick="removeOAuthParam('${esc(name)}', '${key}')">×</span>
+    </div>`;
+  updateSaveButtonState();
+}
+
+function updateOAuthParamKey(name, oldKey, newKey) {
+  const params = oauthProvidersState[name].auth_params;
+  const value = params[oldKey];
+  delete params[oldKey];
+  params[newKey] = value;
+  updateSaveButtonState();
+}
+
+function updateOAuthParamValue(name, key, value) {
+  oauthProvidersState[name].auth_params[key] = value;
+  updateSaveButtonState();
+}
+
+function removeOAuthParam(name, key) {
+  delete oauthProvidersState[name].auth_params[key];
+  // Re-render params
+  const params = oauthProvidersState[name].auth_params;
+  const container = document.getElementById(`oauth-params-${name}`);
+  container.innerHTML = Object.entries(params).map(([k, v]) => `
+    <div class="oauth-auth-param-row">
+      <input type="text" value="${esc(k)}" placeholder="key" onchange="updateOAuthParamKey('${esc(name)}', '${esc(k)}', this.value)">
+      <input type="text" value="${esc(v)}" placeholder="value" onchange="updateOAuthParamValue('${esc(name)}', '${esc(k)}', this.value)">
+      <span class="remove" onclick="removeOAuthParam('${esc(name)}', '${esc(k)}')">×</span>
+    </div>
+  `).join('');
+  updateSaveButtonState();
+}
+
+async function fetchOAuthStatus(name) {
+  const statusEl = document.getElementById(`oauth-status-${name}`);
+  if (!statusEl) return;
+  try {
+    const resp = await fetch(`/api/oauth/providers?user_id=default`);
+    const data = await resp.json();
+    const provider = (data.providers || []).find(p => p.name === name);
+    if (provider?.connected) {
+      statusEl.className = 'oauth-connection-status connected';
+      statusEl.innerHTML = '&#10003; Connected';
+    } else {
+      statusEl.className = 'oauth-connection-status disconnected';
+      statusEl.innerHTML = '&#9675; Not connected';
+    }
+  } catch (e) {
+    statusEl.className = 'oauth-connection-status disconnected';
+    statusEl.innerHTML = '&#9675; Unknown';
+  }
+}
+
+function collectOAuthProvidersData() {
+  const result = {};
+  for (const [name, provider] of Object.entries(oauthProvidersState)) {
+    const clean = { ...provider };
+    // Remove UI state
+    delete clean._expanded;
+    delete clean._advancedExpanded;
+    delete clean._emailExpanded;
+    delete clean._calendarExpanded;
+    // Remove empty objects
+    if (clean.smtp && !clean.smtp.host) delete clean.smtp;
+    if (clean.imap && !clean.imap.host) delete clean.imap;
+    if (clean.caldav && !clean.caldav.url) delete clean.caldav;
+    if (clean.carddav && !clean.carddav.url) delete clean.carddav;
+    if (clean.auth_params && Object.keys(clean.auth_params).length === 0) delete clean.auth_params;
+    if (clean.scopes && clean.scopes.length === 0) delete clean.scopes;
+    // Remove empty strings
+    if (!clean.auth_url) delete clean.auth_url;
+    if (!clean.token_url) delete clean.token_url;
+    if (!clean.redirect_uri) delete clean.redirect_uri;
+    result[name] = clean;
+  }
+  return result;
 }
 
 function renderNetworkSection(cfg) {
@@ -2559,6 +3033,11 @@ function collectConfigData() {
       // Handle automation data from form UI
       const automationData = collectAutomationData();
       setNested(data, ['proactive'], automationData);
+      continue;
+    } else if (el.dataset.type === 'oauth') {
+      // Handle OAuth providers data from form UI
+      const oauthData = collectOAuthProvidersData();
+      setNested(data, ['oauth', 'providers'], oauthData);
       continue;
     } else if (el.dataset.type === 'json') {
       const fullPath = el.dataset.path;
