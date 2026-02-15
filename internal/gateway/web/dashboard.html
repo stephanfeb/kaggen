@@ -204,9 +204,110 @@ tr:hover { background: var(--bg-secondary); }
 .approve-btn:hover { opacity: 0.9; }
 .reject-btn { background: var(--bg-tertiary); color: var(--text-muted); border: 1px solid var(--border); }
 .reject-btn:hover { color: var(--text); border-color: var(--text-muted); }
-/* Config viewer */
-.config-viewer { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; overflow-x: auto; }
-.config-viewer pre { color: var(--text); font-family: inherit; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+/* Config UI */
+.config-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; }
+.config-tab { padding: 10px 16px; cursor: pointer; color: var(--text-muted); font-size: 11px; border: none; border-bottom: 2px solid transparent; background: none; font-family: inherit; }
+.config-tab:hover { color: var(--text); background: var(--bg-tertiary); }
+.config-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.config-section { display: none; }
+.config-section.active { display: block; }
+.config-field-group { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+.config-field-group-title { font-size: 12px; color: var(--text-bright); font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.config-field { margin-bottom: 12px; }
+.config-field:last-child { margin-bottom: 0; }
+.config-field label { display: block; font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.config-field input, .config-field select, .config-field textarea { width: 100%; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 8px 12px; font-size: 12px; font-family: inherit; }
+.config-field input:focus, .config-field select:focus, .config-field textarea:focus { outline: none; border-color: var(--accent); }
+.config-field-hint { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+.config-field.sensitive label::after { content: ' (sensitive)'; color: var(--yellow); font-size: 9px; }
+.config-field.sensitive input { border-color: rgba(210,153,34,0.3); }
+.config-toggle { display: flex; align-items: center; gap: 8px; }
+.config-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.config-toggle label { text-transform: none; margin-bottom: 0; font-size: 12px; }
+.config-actions { display: flex; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.config-save-btn { background: var(--green); color: var(--bg); padding: 10px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; font-family: inherit; }
+.config-save-btn:hover { opacity: 0.9; }
+.config-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.config-reset-btn { background: var(--bg-tertiary); color: var(--text-muted); padding: 10px 24px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 12px; font-family: inherit; }
+.config-reset-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
+.config-reset-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.config-feedback { padding: 10px 16px; border-radius: 4px; font-size: 12px; margin-bottom: 16px; display: none; }
+.config-feedback.success { display: block; background: rgba(63,185,80,0.15); color: var(--green); }
+.config-feedback.error { display: block; background: rgba(248,81,73,0.15); color: var(--red); }
+.config-json-editor { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-top: 8px; }
+.config-json-editor textarea { min-height: 150px; resize: vertical; }
+.config-json-editor textarea.validation-error { border-color: var(--red); background: rgba(248,81,73,0.05); }
+.config-validation-errors { color: var(--red); font-size: 11px; margin-top: 6px; padding: 8px; background: rgba(248,81,73,0.1); border-radius: 4px; display: none; }
+.config-validation-errors.show { display: block; }
+/* Toast notifications */
+.toast-container { position: fixed; top: 20px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.toast { padding: 12px 20px; border-radius: 6px; font-size: 13px; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.3); pointer-events: auto; display: flex; align-items: center; gap: 10px; animation: toast-in 0.3s ease; max-width: 400px; }
+.toast.success { background: var(--green); color: var(--bg); }
+.toast.error { background: var(--red); color: white; }
+.toast.hiding { animation: toast-out 0.3s ease forwards; }
+.toast-icon { font-size: 16px; }
+.toast-close { margin-left: auto; cursor: pointer; opacity: 0.7; font-size: 18px; line-height: 1; }
+.toast-close:hover { opacity: 1; }
+@keyframes toast-in { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes toast-out { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+/* Automation item cards */
+.automation-list { display: flex; flex-direction: column; gap: 8px; }
+.automation-item { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.automation-item-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; user-select: none; }
+.automation-item-header:hover { background: rgba(255,255,255,0.02); }
+.automation-item-toggle { color: var(--text-muted); font-size: 10px; transition: transform 0.2s; }
+.automation-item.expanded .automation-item-toggle { transform: rotate(90deg); }
+.automation-item-name { flex: 1; color: var(--text-bright); font-weight: 500; font-size: 13px; }
+.automation-item-summary { color: var(--text-muted); font-size: 11px; }
+.automation-item-badge { padding: 2px 8px; border-radius: 10px; font-size: 10px; background: rgba(88,166,255,0.15); color: var(--accent); }
+.automation-item-body { display: none; padding: 0 16px 16px; border-top: 1px solid var(--border); }
+.automation-item.expanded .automation-item-body { display: block; padding-top: 16px; }
+.automation-add-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; background: var(--bg-tertiary); border: 1px dashed var(--border); border-radius: 6px; color: var(--text-muted); cursor: pointer; font-size: 12px; font-family: inherit; width: 100%; transition: all 0.2s; }
+.automation-add-btn:hover { background: rgba(88,166,255,0.1); border-color: var(--accent); color: var(--accent); }
+.automation-delete-btn { background: transparent; border: 1px solid var(--red); color: var(--red); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: inherit; margin-top: 12px; }
+.automation-delete-btn:hover { background: rgba(248,81,73,0.15); }
+/* Cron builder */
+.cron-builder { margin-top: 8px; }
+.cron-mode-row { display: flex; gap: 16px; margin-bottom: 12px; }
+.cron-mode-option { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.cron-mode-option input[type="radio"] { accent-color: var(--accent); }
+.cron-mode-option label { font-size: 12px; color: var(--text); cursor: pointer; }
+.cron-preset-select { flex: 1; max-width: 200px; }
+.cron-custom-fields { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cron-field-group { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.cron-field { width: 50px; text-align: center; padding: 6px 4px; font-size: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; }
+.cron-field:focus { outline: none; border-color: var(--accent); }
+.cron-field-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; }
+.cron-preview { margin-top: 8px; font-size: 11px; color: var(--text-muted); font-style: italic; }
+.cron-preview.valid { color: var(--green); }
+.cron-preview.invalid { color: var(--red); }
+/* Duration picker */
+.duration-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.duration-input { width: 60px; padding: 6px 8px; font-size: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; }
+.duration-input:focus { outline: none; border-color: var(--accent); }
+.duration-unit-select { padding: 6px 8px; font-size: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; cursor: pointer; }
+.duration-result { font-size: 11px; color: var(--text-muted); margin-left: 8px; }
+.duration-quick-btns { display: flex; gap: 4px; margin-left: auto; }
+.duration-quick-btn { padding: 4px 8px; font-size: 10px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); cursor: pointer; font-family: inherit; }
+.duration-quick-btn:hover { background: rgba(88,166,255,0.1); border-color: var(--accent); color: var(--accent); }
+/* Channel selector */
+.channel-selector { margin-top: 8px; }
+.channel-options { display: flex; gap: 16px; margin-bottom: 8px; }
+.channel-option { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.channel-option input[type="radio"] { accent-color: var(--accent); }
+.channel-option label { font-size: 12px; color: var(--text); cursor: pointer; }
+.channel-metadata { margin-top: 8px; padding-left: 20px; }
+.channel-metadata-field { display: flex; align-items: center; gap: 8px; }
+.channel-metadata-label { font-size: 11px; color: var(--text-muted); min-width: 60px; }
+.channel-metadata-input { flex: 1; max-width: 200px; padding: 6px 8px; font-size: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; }
+.channel-metadata-input:focus { outline: none; border-color: var(--accent); }
+/* Prompt editor */
+.prompt-editor textarea { min-height: 80px; resize: vertical; }
+.prompt-hint { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+/* Form row */
+.automation-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
+.automation-form-row.full { grid-template-columns: 1fr; }
+@media (max-width: 600px) { .automation-form-row { grid-template-columns: 1fr; } }
 /* Pipeline progress */
 .pipeline-section { margin-bottom: 20px; }
 .pipeline-card {
@@ -226,6 +327,32 @@ tr:hover { background: var(--bg-secondary); }
 .pipeline-stage.stage-completed .stage-name { color: var(--green); }
 .pipeline-stage.stage-running .stage-name { color: var(--accent); }
 .pipeline-arrow { color: var(--text-muted); font-size: 14px; padding: 0 4px; flex-shrink: 0; }
+/* Task Groups (pipeline + tasks grouped together) */
+.task-group {
+  margin-bottom: 24px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.task-group .pipeline-card {
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  margin: 0;
+}
+.task-group table { margin: 0; }
+.task-group table th:first-child,
+.task-group table td:first-child { padding-left: 16px; }
+.group-header {
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--bg-tertiary);
+}
 .empty { text-align: center; padding: 48px; color: var(--text-muted); }
 /* Settings panel */
 .settings-grid { display: grid; gap: 20px; }
@@ -348,6 +475,8 @@ tr:hover { background: var(--bg-secondary); }
 </style>
 </head>
 <body>
+<!-- Toast container -->
+<div id="toast-container" class="toast-container"></div>
 <!-- Login overlay -->
 <div id="login-overlay" class="login-overlay">
   <div class="login-container">
@@ -404,7 +533,6 @@ tr:hover { background: var(--bg-secondary); }
     </div>
     <div class="panel" id="panel-tasks">
       <div class="panel-title">Async Tasks</div>
-      <div class="pipeline-section" id="pipeline-progress"></div>
       <div class="filters" id="task-filters">
         <button class="filter-btn active" data-status="">All</button>
         <button class="filter-btn" data-status="running">Running</button>
@@ -454,7 +582,29 @@ tr:hover { background: var(--bg-secondary); }
     </div>
     <div class="panel" id="panel-config">
       <div class="panel-title">Configuration</div>
-      <div class="config-viewer"><pre id="config-content">Loading...</pre></div>
+      <div id="config-feedback" class="config-feedback"></div>
+      <div class="config-tabs">
+        <button class="config-tab active" data-section="core">Core</button>
+        <button class="config-tab" data-section="channels">Channels</button>
+        <button class="config-tab" data-section="ai">AI Features</button>
+        <button class="config-tab" data-section="automation">Automation</button>
+        <button class="config-tab" data-section="integrations">Integrations</button>
+        <button class="config-tab" data-section="network">Network</button>
+        <button class="config-tab" data-section="security">Security</button>
+      </div>
+      <div class="config-content">
+        <div class="config-section active" id="config-core"></div>
+        <div class="config-section" id="config-channels"></div>
+        <div class="config-section" id="config-ai"></div>
+        <div class="config-section" id="config-automation"></div>
+        <div class="config-section" id="config-integrations"></div>
+        <div class="config-section" id="config-network"></div>
+        <div class="config-section" id="config-security"></div>
+      </div>
+      <div class="config-actions">
+        <button class="config-save-btn" onclick="saveConfig()">Save Changes</button>
+        <button class="config-reset-btn" onclick="resetConfig()">Reset</button>
+      </div>
     </div>
     <div class="panel" id="panel-settings">
       <div class="panel-title">Security Settings</div>
@@ -831,11 +981,23 @@ document.getElementById('task-filters').addEventListener('click', e => {
 });
 
 async function loadTasks() {
-  loadPipelines(); // refresh pipeline progress alongside tasks
-  const url = taskStatusFilter ? `/api/tasks?status=${taskStatusFilter}` : '/api/tasks';
-  const tasks = await fetchJSON(url);
-  taskDataCache = tasks || [];
-  if (!tasks || tasks.length === 0) {
+  const url = taskStatusFilter
+    ? `/api/tasks/grouped?status=${taskStatusFilter}`
+    : '/api/tasks/grouped';
+  const data = await fetchJSON(url);
+
+  // Build combined task cache from grouped response
+  taskDataCache = [];
+  if (data && data.pipelines) {
+    data.pipelines.forEach(p => {
+      if (p.tasks) taskDataCache.push(...p.tasks);
+    });
+  }
+  if (data && data.standalone_tasks) {
+    taskDataCache.push(...data.standalone_tasks);
+  }
+
+  if (!data || ((!data.pipelines || data.pipelines.length === 0) && (!data.standalone_tasks || data.standalone_tasks.length === 0))) {
     document.getElementById('task-table').innerHTML = '<div class="empty">No tasks</div>';
     return;
   }
@@ -846,10 +1008,25 @@ async function loadTasks() {
     if (id) openDetails.add(id);
   });
 
-  document.getElementById('task-table').innerHTML = `<table>
-    <tr><th>Agent</th><th>Task</th><th>Status</th><th>Turns</th><th>Tokens</th><th>Started</th><th>Duration</th><th></th></tr>
-    ${tasks.map(t => taskRow(t)).join('')}
-  </table>`;
+  let html = '';
+
+  // Render pipeline groups
+  if (data.pipelines && data.pipelines.length > 0) {
+    html += data.pipelines.map(p => renderPipelineGroup(p)).join('');
+  }
+
+  // Render standalone tasks
+  if (data.standalone_tasks && data.standalone_tasks.length > 0) {
+    html += `<div class="task-group">
+      <div class="group-header">Standalone Tasks</div>
+      <table>
+        <tr><th>Agent</th><th>Task</th><th>Status</th><th>Turns</th><th>Tokens</th><th>Started</th><th>Duration</th><th></th></tr>
+        ${data.standalone_tasks.map(t => taskRow(t)).join('')}
+      </table>
+    </div>`;
+  }
+
+  document.getElementById('task-table').innerHTML = html;
 
   // Restore open <details> after re-render
   openDetails.forEach(id => {
@@ -871,24 +1048,42 @@ async function loadTasks() {
   });
 }
 
-async function loadPipelines() {
-  const pipelines = await fetchJSON('/api/pipelines');
-  const el = document.getElementById('pipeline-progress');
-  if (!pipelines || pipelines.length === 0) {
-    el.innerHTML = '';
-    return;
-  }
-  el.innerHTML = pipelines.map(p => {
-    const stagesHtml = p.stages.map((s, i) => {
-      const dotClass = 'stage-dot stage-dot-' + s.status;
-      const stageClass = 'pipeline-stage stage-' + s.status;
-      const arrow = i < p.stages.length - 1 ? '<span class="pipeline-arrow">\u2192</span>' : '';
-      return `<div class="${stageClass}"><span class="${dotClass}"></span><span class="stage-name">${esc(s.agent)}</span><span class="stage-status">${esc(s.status)}</span></div>${arrow}`;
-    }).join('');
-    const sessionLabel = p.session_id ? ` <span style="font-size:10px;color:var(--text-muted)">(${esc(p.session_id.substring(0,8))}...)</span>` : '';
-    const taskLabel = p.task_description ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px;font-style:italic">${esc(p.task_description)}</div>` : '';
-    return `<div class="pipeline-card"><div class="pipeline-header"><span class="pipeline-label">Pipeline</span>${esc(p.name)}${sessionLabel}</div>${taskLabel}<div class="pipeline-stages">${stagesHtml}</div></div>`;
+function renderPipelineGroup(pipeline) {
+  const stagesHtml = pipeline.stages.map((s, i) => {
+    const dotClass = 'stage-dot stage-dot-' + s.status;
+    const stageClass = 'pipeline-stage stage-' + s.status;
+    const arrow = i < pipeline.stages.length - 1 ? '<span class="pipeline-arrow">\u2192</span>' : '';
+    return `<div class="${stageClass}">
+      <span class="${dotClass}"></span>
+      <span class="stage-name">${esc(s.agent)}</span>
+      <span class="stage-status">${esc(s.status)}</span>
+    </div>${arrow}`;
   }).join('');
+
+  const sessionLabel = pipeline.session_id
+    ? `<span style="font-size:10px;color:var(--text-muted)">(${esc(pipeline.session_id.substring(0,8))}...)</span>`
+    : '';
+  const taskLabel = pipeline.task_description
+    ? `<div style="font-size:11px;color:var(--text);margin-bottom:8px;font-style:italic">${esc(pipeline.task_description)}</div>`
+    : '';
+
+  const taskRows = pipeline.tasks && pipeline.tasks.length > 0
+    ? pipeline.tasks.map(t => taskRow(t)).join('')
+    : '<tr><td colspan="8" class="empty" style="text-align:center;padding:16px;color:var(--text-muted)">Waiting for tasks...</td></tr>';
+
+  return `<div class="task-group">
+    <div class="pipeline-card">
+      <div class="pipeline-header">
+        <span class="pipeline-label">Pipeline</span> ${esc(pipeline.name)} ${sessionLabel}
+      </div>
+      ${taskLabel}
+      <div class="pipeline-stages">${stagesHtml}</div>
+    </div>
+    <table>
+      <tr><th>Agent</th><th>Task</th><th>Status</th><th>Turns</th><th>Tokens</th><th>Started</th><th>Duration</th><th></th></tr>
+      ${taskRows}
+    </table>
+  </div>`;
 }
 
 function taskRow(t) {
@@ -1308,9 +1503,1212 @@ async function loadSessions() {
 }
 
 // --- Config ---
+let configData = null;
+
 async function loadConfig() {
-  const config = await fetchJSON('/api/config');
-  document.getElementById('config-content').textContent = JSON.stringify(config, null, 2);
+  configData = await fetchJSON('/api/config');
+  renderConfigSections(configData);
+  setupConfigTabs();
+  setupConfigChangeDetection();
+  updateSaveButtonState();
+}
+
+function setupConfigTabs() {
+  document.querySelectorAll('.config-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.config-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.config-section').forEach(s => s.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('config-' + tab.dataset.section).classList.add('active');
+    };
+  });
+}
+
+function setupConfigChangeDetection() {
+  // Store original values for comparison
+  document.querySelectorAll('#panel-config [data-path]').forEach(el => {
+    if (el.type === 'checkbox') {
+      el.dataset.originalValue = el.checked;
+    } else {
+      el.dataset.originalValue = el.value;
+    }
+    // Add change listeners
+    el.addEventListener('input', updateSaveButtonState);
+    el.addEventListener('change', updateSaveButtonState);
+  });
+}
+
+// Original automation state for change detection
+let originalAutomationState = { jobs: [], webhooks: [], heartbeats: [] };
+
+function hasConfigChanges() {
+  // Check automation changes
+  const currentAuto = collectAutomationData();
+  const originalAuto = originalAutomationState;
+  if (JSON.stringify(currentAuto) !== JSON.stringify(originalAuto)) {
+    return true;
+  }
+
+  const elements = document.querySelectorAll('#panel-config [data-path]');
+  for (const el of elements) {
+    if (el.dataset.type === 'automation') continue; // Skip automation hidden field
+    const original = el.dataset.originalValue;
+    if (original === undefined) continue;
+
+    let current;
+    if (el.type === 'checkbox') {
+      current = String(el.checked);
+    } else {
+      current = el.value;
+    }
+
+    if (current !== original) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function updateSaveButtonState() {
+  const btn = document.querySelector('.config-save-btn');
+  const resetBtn = document.querySelector('.config-reset-btn');
+  if (!btn) return;
+
+  const hasChanges = hasConfigChanges();
+  btn.disabled = !hasChanges;
+  btn.textContent = hasChanges ? 'Save Changes' : 'No Changes';
+  if (resetBtn) {
+    resetBtn.disabled = !hasChanges;
+  }
+}
+
+function renderConfigSections(cfg) {
+  document.getElementById('config-core').innerHTML = renderCoreSection(cfg);
+  document.getElementById('config-channels').innerHTML = renderChannelsSection(cfg);
+  document.getElementById('config-ai').innerHTML = renderAISection(cfg);
+  document.getElementById('config-automation').innerHTML = renderAutomationSection(cfg);
+  renderAutomationLists();
+  document.getElementById('config-integrations').innerHTML = renderIntegrationsSection(cfg);
+  document.getElementById('config-network').innerHTML = renderNetworkSection(cfg);
+  document.getElementById('config-security').innerHTML = renderSecuritySection(cfg);
+}
+
+function renderCoreSection(cfg) {
+  return `
+    <div class="config-field-group">
+      <div class="config-field-group-title">Agent</div>
+      ${textField('agent.model', 'Model', cfg.agent?.model, 'e.g., anthropic/claude-sonnet-4')}
+      ${textField('agent.workspace', 'Workspace', cfg.agent?.workspace)}
+      ${numberField('agent.max_history_runs', 'Max History Runs', cfg.agent?.max_history_runs, 0, 500)}
+      ${numberField('agent.max_turns_per_task', 'Max Turns Per Task', cfg.agent?.max_turns_per_task, 0, 500)}
+      ${numberField('agent.max_concurrent_llm', 'Max Concurrent LLM', cfg.agent?.max_concurrent_llm, 0, 50)}
+      ${numberField('agent.preload_memory', 'Preload Memory', cfg.agent?.preload_memory, -1, 100, '0=disabled, -1=all')}
+      ${textField('agent.claude_model', 'Claude Sub-Agent Model', cfg.agent?.claude_model)}
+      ${textField('agent.claude_tools', 'Claude Sub-Agent Tools', cfg.agent?.claude_tools)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Gateway</div>
+      ${textField('gateway.bind', 'Bind Address', cfg.gateway?.bind)}
+      ${numberField('gateway.port', 'Port', cfg.gateway?.port, 1, 65535)}
+      ${checkboxField('gateway.tls.enabled', 'Enable TLS', cfg.gateway?.tls?.enabled)}
+      ${textField('gateway.tls.cert_file', 'TLS Cert File', cfg.gateway?.tls?.cert_file)}
+      ${textField('gateway.tls.key_file', 'TLS Key File', cfg.gateway?.tls?.key_file)}
+      ${checkboxField('gateway.tunnel.enabled', 'Enable Tunnel', cfg.gateway?.tunnel?.enabled)}
+      ${textField('gateway.tunnel.named_tunnel', 'Named Tunnel', cfg.gateway?.tunnel?.named_tunnel)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Session</div>
+      ${selectField('session.backend', 'Backend', cfg.session?.backend, ['file', 'redis', 'postgres', 'memory'])}
+      ${textField('session.app_name', 'App Name', cfg.session?.app_name)}
+      ${textField('session.user_id', 'User ID', cfg.session?.user_id)}
+      ${textField('session.redis.addr', 'Redis Address', cfg.session?.redis?.addr)}
+      ${sensitiveField('session.redis.password', 'Redis Password', cfg.session?.redis?.password)}
+      ${textField('session.postgres.host', 'Postgres Host', cfg.session?.postgres?.host)}
+      ${numberField('session.postgres.port', 'Postgres Port', cfg.session?.postgres?.port, 1, 65535)}
+      ${textField('session.postgres.user', 'Postgres User', cfg.session?.postgres?.user)}
+      ${sensitiveField('session.postgres.password', 'Postgres Password', cfg.session?.postgres?.password)}
+      ${textField('session.postgres.database', 'Postgres Database', cfg.session?.postgres?.database)}
+    </div>`;
+}
+
+function renderChannelsSection(cfg) {
+  return `
+    <div class="config-field-group">
+      <div class="config-field-group-title">Telegram</div>
+      ${checkboxField('channels.telegram.enabled', 'Enabled', cfg.channels?.telegram?.enabled)}
+      ${sensitiveField('channels.telegram.bot_token', 'Bot Token', cfg.channels?.telegram?.bot_token)}
+      ${textField('channels.telegram.allowed_users', 'Allowed Users', (cfg.channels?.telegram?.allowed_users || []).join(', '), 'Comma-separated user IDs')}
+      ${textField('channels.telegram.allowed_chats', 'Allowed Chats', (cfg.channels?.telegram?.allowed_chats || []).join(', '), 'Comma-separated chat IDs')}
+      ${textField('channels.telegram.reject_message', 'Reject Message', cfg.channels?.telegram?.reject_message)}
+      ${numberField('channels.telegram.user_rate_limit', 'Rate Limit (msgs)', cfg.channels?.telegram?.user_rate_limit, 0, 1000)}
+      ${numberField('channels.telegram.user_rate_window', 'Rate Window (secs)', cfg.channels?.telegram?.user_rate_window, 0, 3600)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">WhatsApp</div>
+      ${checkboxField('channels.whatsapp.enabled', 'Enabled', cfg.channels?.whatsapp?.enabled)}
+      ${textField('channels.whatsapp.device_name', 'Device Name', cfg.channels?.whatsapp?.device_name)}
+      ${textField('channels.whatsapp.session_db_path', 'Session DB Path', cfg.channels?.whatsapp?.session_db_path)}
+      ${textField('channels.whatsapp.allowed_phones', 'Allowed Phones', (cfg.channels?.whatsapp?.allowed_phones || []).join(', '), 'Comma-separated phone numbers')}
+      ${textField('channels.whatsapp.allowed_groups', 'Allowed Groups', (cfg.channels?.whatsapp?.allowed_groups || []).join(', '), 'Comma-separated group IDs')}
+    </div>`;
+}
+
+function renderAISection(cfg) {
+  return `
+    <div class="config-field-group">
+      <div class="config-field-group-title">Memory</div>
+      ${checkboxField('memory.search.enabled', 'Enable Memory Search', cfg.memory?.search?.enabled)}
+      ${textField('memory.search.db_path', 'Memory DB Path', cfg.memory?.search?.db_path)}
+      ${selectField('memory.embedding.provider', 'Embedding Provider', cfg.memory?.embedding?.provider, ['ollama', 'gemini', 'voyage'])}
+      ${textField('memory.embedding.model', 'Embedding Model', cfg.memory?.embedding?.model)}
+      ${textField('memory.embedding.base_url', 'Embedding Base URL', cfg.memory?.embedding?.base_url)}
+      ${numberField('memory.indexing.chunk_size', 'Chunk Size', cfg.memory?.indexing?.chunk_size, 50, 2000)}
+      ${numberField('memory.indexing.chunk_overlap', 'Chunk Overlap', cfg.memory?.indexing?.chunk_overlap, 0, 500)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Reasoning</div>
+      ${checkboxField('reasoning.enabled', 'Enable Tiered Reasoning', cfg.reasoning?.enabled)}
+      ${textField('reasoning.tier2_model', 'Tier 2 Model', cfg.reasoning?.tier2_model, 'Leave empty for auto-selection')}
+      ${numberField('reasoning.escalation_threshold', 'Escalation Threshold', cfg.reasoning?.escalation_threshold, 0, 1, '0.0-1.0')}
+      ${numberField('reasoning.max_subtasks_trigger', 'Max Subtasks Trigger', cfg.reasoning?.max_subtasks_trigger, 1, 20)}
+      ${numberField('reasoning.max_tokens', 'Max Tokens', cfg.reasoning?.max_tokens, 1000, 32000)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Creativity</div>
+      ${checkboxField('creativity.enabled', 'Enable Creativity Tools', cfg.creativity?.enabled)}
+      ${numberField('creativity.exploration_temp', 'Exploration Temperature', cfg.creativity?.exploration_temp, 0, 2)}
+      ${numberField('creativity.max_analogies', 'Max Analogies', cfg.creativity?.max_analogies, 1, 20)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Web Search</div>
+      ${selectField('web_search.provider', 'Provider', cfg.web_search?.provider, ['', 'searxng', 'brave', 'google'])}
+      ${textField('web_search.base_url', 'Base URL (SearXNG)', cfg.web_search?.base_url)}
+      ${sensitiveField('web_search.api_key', 'API Key', cfg.web_search?.api_key)}
+      ${numberField('web_search.num_results', 'Number of Results', cfg.web_search?.num_results, 1, 20)}
+    </div>`;
+}
+
+// Automation state
+let automationState = { jobs: [], webhooks: [], heartbeats: [] };
+
+function renderAutomationSection(cfg) {
+  automationState.jobs = JSON.parse(JSON.stringify(cfg.proactive?.jobs || []));
+  automationState.webhooks = JSON.parse(JSON.stringify(cfg.proactive?.webhooks || []));
+  automationState.heartbeats = JSON.parse(JSON.stringify(cfg.proactive?.heartbeats || []));
+  // Store original state for change detection
+  originalAutomationState = collectAutomationData();
+
+  return `
+    <div class="config-field-group">
+      <div class="config-field-group-title">Cron Jobs</div>
+      <div class="automation-list" id="jobs-list"></div>
+      <button type="button" class="automation-add-btn" onclick="addAutomationItem('job')">+ Add Cron Job</button>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Webhooks</div>
+      <div class="automation-list" id="webhooks-list"></div>
+      <button type="button" class="automation-add-btn" onclick="addAutomationItem('webhook')">+ Add Webhook</button>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Heartbeats</div>
+      <div class="automation-list" id="heartbeats-list"></div>
+      <button type="button" class="automation-add-btn" onclick="addAutomationItem('heartbeat')">+ Add Heartbeat</button>
+    </div>
+    <input type="hidden" id="automation-data" data-path="proactive" data-type="automation">`;
+}
+
+function renderAutomationLists() {
+  document.getElementById('jobs-list').innerHTML = automationState.jobs.map((j, i) => renderJobItem(j, i)).join('');
+  document.getElementById('webhooks-list').innerHTML = automationState.webhooks.map((w, i) => renderWebhookItem(w, i)).join('');
+  document.getElementById('heartbeats-list').innerHTML = automationState.heartbeats.map((h, i) => renderHeartbeatItem(h, i)).join('');
+}
+
+function renderJobItem(job, idx) {
+  const expanded = job._expanded ? 'expanded' : '';
+  return `<div class="automation-item ${expanded}" data-type="job" data-index="${idx}">
+    <div class="automation-item-header" onclick="toggleAutomationItem(this)">
+      <span class="automation-item-toggle">&#9654;</span>
+      <span class="automation-item-name">${esc(job.name || 'Unnamed Job')}</span>
+      <span class="automation-item-summary">${esc(job.schedule || '@daily')}</span>
+      <span class="automation-item-badge">${esc(job.channel || 'websocket')}</span>
+    </div>
+    <div class="automation-item-body">
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Name</label>
+          <input type="text" value="${esc(job.name || '')}" onchange="updateAutomationField('job', ${idx}, 'name', this.value)" placeholder="daily-report">
+        </div>
+        <div class="config-field">
+          <label>User ID</label>
+          <input type="text" value="${esc(job.user_id || '')}" onchange="updateAutomationField('job', ${idx}, 'user_id', this.value)" placeholder="user-123">
+        </div>
+      </div>
+      <div class="config-field">
+        <label>Schedule</label>
+        ${renderCronBuilder(job.schedule || '', 'job', idx)}
+      </div>
+      <div class="config-field prompt-editor">
+        <label>Prompt</label>
+        <textarea onchange="updateAutomationField('job', ${idx}, 'prompt', this.value)" placeholder="Generate a daily summary...">${esc(job.prompt || '')}</textarea>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Session ID (optional)</label>
+          <input type="text" value="${esc(job.session_id || '')}" onchange="updateAutomationField('job', ${idx}, 'session_id', this.value)" placeholder="proactive-daily-report">
+        </div>
+        <div class="config-field">
+          <label>Timeout</label>
+          ${renderDurationPicker(job.timeout || '5m', 'job', idx, 'timeout')}
+        </div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Max Retries</label>
+          <input type="number" min="0" max="10" value="${job.max_retries || 0}" onchange="updateAutomationField('job', ${idx}, 'max_retries', parseInt(this.value)||0)">
+        </div>
+        <div></div>
+      </div>
+      <div class="config-field">
+        <label>Channel</label>
+        ${renderChannelSelector(job.channel || 'websocket', job.metadata || {}, 'job', idx)}
+      </div>
+      <button type="button" class="automation-delete-btn" onclick="deleteAutomationItem('job', ${idx})">Delete Job</button>
+    </div>
+  </div>`;
+}
+
+function renderWebhookItem(webhook, idx) {
+  const expanded = webhook._expanded ? 'expanded' : '';
+  return `<div class="automation-item ${expanded}" data-type="webhook" data-index="${idx}">
+    <div class="automation-item-header" onclick="toggleAutomationItem(this)">
+      <span class="automation-item-toggle">&#9654;</span>
+      <span class="automation-item-name">${esc(webhook.name || 'Unnamed Webhook')}</span>
+      <span class="automation-item-summary">${esc(webhook.path || '/webhook')}</span>
+      <span class="automation-item-badge">${esc(webhook.channel || 'websocket')}</span>
+    </div>
+    <div class="automation-item-body">
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Name</label>
+          <input type="text" value="${esc(webhook.name || '')}" onchange="updateAutomationField('webhook', ${idx}, 'name', this.value)" placeholder="github-push">
+        </div>
+        <div class="config-field">
+          <label>Path</label>
+          <input type="text" value="${esc(webhook.path || '')}" onchange="updateAutomationField('webhook', ${idx}, 'path', this.value)" placeholder="/webhook/github">
+        </div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>User ID</label>
+          <input type="text" value="${esc(webhook.user_id || '')}" onchange="updateAutomationField('webhook', ${idx}, 'user_id', this.value)" placeholder="user-123">
+        </div>
+        <div class="config-field">
+          <label>Secret (HMAC)</label>
+          <input type="password" value="${esc(webhook.secret || '')}" onchange="updateAutomationField('webhook', ${idx}, 'secret', this.value)" placeholder="Leave empty for no HMAC">
+        </div>
+      </div>
+      <div class="config-field prompt-editor">
+        <label>Prompt</label>
+        <textarea onchange="updateAutomationField('webhook', ${idx}, 'prompt', this.value)" placeholder="Process the webhook payload...">${esc(webhook.prompt || '')}</textarea>
+        <div class="prompt-hint">Use {{.Payload}} to include the POST body in the prompt</div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Session ID (optional)</label>
+          <input type="text" value="${esc(webhook.session_id || '')}" onchange="updateAutomationField('webhook', ${idx}, 'session_id', this.value)">
+        </div>
+        <div class="config-field">
+          <label>Timeout</label>
+          ${renderDurationPicker(webhook.timeout || '5m', 'webhook', idx, 'timeout')}
+        </div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Max Retries</label>
+          <input type="number" min="0" max="10" value="${webhook.max_retries || 0}" onchange="updateAutomationField('webhook', ${idx}, 'max_retries', parseInt(this.value)||0)">
+        </div>
+        <div></div>
+      </div>
+      <div class="config-field">
+        <label>Channel</label>
+        ${renderChannelSelector(webhook.channel || 'websocket', webhook.metadata || {}, 'webhook', idx)}
+      </div>
+      <button type="button" class="automation-delete-btn" onclick="deleteAutomationItem('webhook', ${idx})">Delete Webhook</button>
+    </div>
+  </div>`;
+}
+
+function renderHeartbeatItem(heartbeat, idx) {
+  const expanded = heartbeat._expanded ? 'expanded' : '';
+  return `<div class="automation-item ${expanded}" data-type="heartbeat" data-index="${idx}">
+    <div class="automation-item-header" onclick="toggleAutomationItem(this)">
+      <span class="automation-item-toggle">&#9654;</span>
+      <span class="automation-item-name">${esc(heartbeat.name || 'Unnamed Heartbeat')}</span>
+      <span class="automation-item-summary">${esc(heartbeat.interval || '5m')}</span>
+      <span class="automation-item-badge">${esc(heartbeat.channel || 'websocket')}</span>
+    </div>
+    <div class="automation-item-body">
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Name</label>
+          <input type="text" value="${esc(heartbeat.name || '')}" onchange="updateAutomationField('heartbeat', ${idx}, 'name', this.value)" placeholder="system-check">
+        </div>
+        <div class="config-field">
+          <label>User ID</label>
+          <input type="text" value="${esc(heartbeat.user_id || '')}" onchange="updateAutomationField('heartbeat', ${idx}, 'user_id', this.value)" placeholder="user-123">
+        </div>
+      </div>
+      <div class="config-field">
+        <label>Interval</label>
+        ${renderDurationPicker(heartbeat.interval || '5m', 'heartbeat', idx, 'interval')}
+      </div>
+      <div class="config-field prompt-editor">
+        <label>Prompt</label>
+        <textarea onchange="updateAutomationField('heartbeat', ${idx}, 'prompt', this.value)" placeholder="Check system health...">${esc(heartbeat.prompt || '')}</textarea>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Session ID (optional)</label>
+          <input type="text" value="${esc(heartbeat.session_id || '')}" onchange="updateAutomationField('heartbeat', ${idx}, 'session_id', this.value)">
+        </div>
+        <div class="config-field">
+          <label>Timeout</label>
+          ${renderDurationPicker(heartbeat.timeout || '2m', 'heartbeat', idx, 'timeout')}
+        </div>
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Max Retries</label>
+          <input type="number" min="0" max="10" value="${heartbeat.max_retries || 0}" onchange="updateAutomationField('heartbeat', ${idx}, 'max_retries', parseInt(this.value)||0)">
+        </div>
+        <div></div>
+      </div>
+      <div class="config-field">
+        <label>Channel</label>
+        ${renderChannelSelector(heartbeat.channel || 'websocket', heartbeat.metadata || {}, 'heartbeat', idx)}
+      </div>
+      <button type="button" class="automation-delete-btn" onclick="deleteAutomationItem('heartbeat', ${idx})">Delete Heartbeat</button>
+    </div>
+  </div>`;
+}
+
+// Cron builder
+const cronPresets = [
+  { label: 'Every hour', value: '@hourly' },
+  { label: 'Every day at midnight', value: '@daily' },
+  { label: 'Every day at 9am', value: '0 9 * * *' },
+  { label: 'Every Monday at 9am', value: '0 9 * * 1' },
+  { label: 'Weekdays at 9am', value: '0 9 * * 1-5' },
+  { label: 'Every week (Sunday)', value: '@weekly' },
+  { label: 'Every month', value: '@monthly' },
+];
+
+function renderCronBuilder(schedule, type, idx) {
+  const isPreset = cronPresets.some(p => p.value === schedule) || schedule.startsWith('@');
+  const parts = (!isPreset && schedule) ? schedule.split(/\s+/) : ['*', '*', '*', '*', '*'];
+  const presetOpts = cronPresets.map(p =>
+    `<option value="${esc(p.value)}" ${schedule === p.value ? 'selected' : ''}>${esc(p.label)}</option>`
+  ).join('');
+
+  return `<div class="cron-builder">
+    <div class="cron-mode-row">
+      <div class="cron-mode-option">
+        <input type="radio" name="cron-mode-${type}-${idx}" id="cron-preset-${type}-${idx}" ${isPreset ? 'checked' : ''} onchange="setCronMode('${type}', ${idx}, 'preset')">
+        <label for="cron-preset-${type}-${idx}">Preset:</label>
+        <select class="cron-preset-select config-field" id="cron-preset-select-${type}-${idx}" onchange="onCronPresetChange('${type}', ${idx}, this.value)" ${!isPreset ? 'disabled' : ''}>
+          ${presetOpts}
+          <option value="" ${!cronPresets.some(p => p.value === schedule) && !schedule.startsWith('@') && schedule ? 'selected' : ''}>Custom...</option>
+        </select>
+      </div>
+    </div>
+    <div class="cron-mode-row">
+      <div class="cron-mode-option">
+        <input type="radio" name="cron-mode-${type}-${idx}" id="cron-custom-${type}-${idx}" ${!isPreset ? 'checked' : ''} onchange="setCronMode('${type}', ${idx}, 'custom')">
+        <label for="cron-custom-${type}-${idx}">Custom:</label>
+      </div>
+      <div class="cron-custom-fields" id="cron-custom-fields-${type}-${idx}" style="${isPreset ? 'opacity:0.5;pointer-events:none' : ''}">
+        <div class="cron-field-group"><input type="text" class="cron-field" value="${esc(parts[0] || '*')}" maxlength="10" onchange="onCronFieldChange('${type}', ${idx})"><span class="cron-field-label">min</span></div>
+        <div class="cron-field-group"><input type="text" class="cron-field" value="${esc(parts[1] || '*')}" maxlength="10" onchange="onCronFieldChange('${type}', ${idx})"><span class="cron-field-label">hour</span></div>
+        <div class="cron-field-group"><input type="text" class="cron-field" value="${esc(parts[2] || '*')}" maxlength="10" onchange="onCronFieldChange('${type}', ${idx})"><span class="cron-field-label">dom</span></div>
+        <div class="cron-field-group"><input type="text" class="cron-field" value="${esc(parts[3] || '*')}" maxlength="10" onchange="onCronFieldChange('${type}', ${idx})"><span class="cron-field-label">mon</span></div>
+        <div class="cron-field-group"><input type="text" class="cron-field" value="${esc(parts[4] || '*')}" maxlength="10" onchange="onCronFieldChange('${type}', ${idx})"><span class="cron-field-label">dow</span></div>
+      </div>
+    </div>
+    <div class="cron-preview" id="cron-preview-${type}-${idx}">${getCronPreview(schedule)}</div>
+  </div>`;
+}
+
+function setCronMode(type, idx, mode) {
+  const presetSelect = document.getElementById(`cron-preset-select-${type}-${idx}`);
+  const customFields = document.getElementById(`cron-custom-fields-${type}-${idx}`);
+  if (mode === 'preset') {
+    presetSelect.disabled = false;
+    customFields.style.opacity = '0.5';
+    customFields.style.pointerEvents = 'none';
+    onCronPresetChange(type, idx, presetSelect.value);
+  } else {
+    presetSelect.disabled = true;
+    customFields.style.opacity = '1';
+    customFields.style.pointerEvents = 'auto';
+    onCronFieldChange(type, idx);
+  }
+}
+
+function onCronPresetChange(type, idx, value) {
+  updateAutomationField(type, idx, 'schedule', value);
+  document.getElementById(`cron-preview-${type}-${idx}`).textContent = getCronPreview(value);
+}
+
+function onCronFieldChange(type, idx) {
+  const fields = document.querySelectorAll(`#cron-custom-fields-${type}-${idx} .cron-field`);
+  const schedule = Array.from(fields).map(f => f.value || '*').join(' ');
+  updateAutomationField(type, idx, 'schedule', schedule);
+  document.getElementById(`cron-preview-${type}-${idx}`).textContent = getCronPreview(schedule);
+}
+
+function getCronPreview(schedule) {
+  if (!schedule) return 'No schedule set';
+  if (schedule === '@hourly') return 'Runs every hour';
+  if (schedule === '@daily') return 'Runs every day at midnight';
+  if (schedule === '@weekly') return 'Runs every Sunday at midnight';
+  if (schedule === '@monthly') return 'Runs first day of month at midnight';
+  if (schedule.startsWith('@every ')) return `Runs ${schedule.slice(7)}`;
+  const parts = schedule.split(/\s+/);
+  if (parts.length !== 5) return 'Invalid schedule format';
+  const [min, hr, dom, mon, dow] = parts;
+  let desc = 'Runs ';
+  if (min === '*' && hr === '*') desc += 'every minute';
+  else if (min === '0' && hr === '*') desc += 'every hour';
+  else if (hr !== '*' && min !== '*') desc += `at ${hr.padStart(2,'0')}:${min.padStart(2,'0')}`;
+  else if (min !== '*') desc += `at minute ${min}`;
+  else desc += `at hour ${hr}`;
+  if (dow !== '*') {
+    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    if (dow.includes('-')) {
+      const [start, end] = dow.split('-').map(Number);
+      desc += ` on ${days[start]}-${days[end]}`;
+    } else if (dow.includes(',')) {
+      desc += ` on ${dow.split(',').map(d => days[Number(d)]).join(', ')}`;
+    } else {
+      desc += ` on ${days[Number(dow)] || dow}`;
+    }
+  }
+  if (dom !== '*') desc += ` on day ${dom}`;
+  if (mon !== '*') desc += ` in month ${mon}`;
+  return desc;
+}
+
+// Duration picker
+function renderDurationPicker(value, type, idx, field) {
+  const parsed = parseDuration(value);
+  const id = `duration-${type}-${idx}-${field}`;
+  return `<div class="duration-picker" id="${id}">
+    <input type="number" class="duration-input" value="${parsed.value}" min="1" onchange="onDurationChange('${type}', ${idx}, '${field}', this)">
+    <select class="duration-unit-select" onchange="onDurationChange('${type}', ${idx}, '${field}', this)">
+      <option value="s" ${parsed.unit === 's' ? 'selected' : ''}>seconds</option>
+      <option value="m" ${parsed.unit === 'm' ? 'selected' : ''}>minutes</option>
+      <option value="h" ${parsed.unit === 'h' ? 'selected' : ''}>hours</option>
+    </select>
+    <span class="duration-result">= ${value || '5m'}</span>
+    <div class="duration-quick-btns">
+      <button type="button" class="duration-quick-btn" onclick="setDuration('${type}', ${idx}, '${field}', '1m')">1m</button>
+      <button type="button" class="duration-quick-btn" onclick="setDuration('${type}', ${idx}, '${field}', '5m')">5m</button>
+      <button type="button" class="duration-quick-btn" onclick="setDuration('${type}', ${idx}, '${field}', '15m')">15m</button>
+      <button type="button" class="duration-quick-btn" onclick="setDuration('${type}', ${idx}, '${field}', '1h')">1h</button>
+    </div>
+  </div>`;
+}
+
+function parseDuration(str) {
+  if (!str) return { value: 5, unit: 'm' };
+  const match = str.match(/^(\d+)(s|m|h)$/);
+  if (match) return { value: parseInt(match[1], 10), unit: match[2] };
+  return { value: 5, unit: 'm' };
+}
+
+function onDurationChange(type, idx, field, el) {
+  const picker = el.closest('.duration-picker');
+  const value = picker.querySelector('.duration-input').value;
+  const unit = picker.querySelector('.duration-unit-select').value;
+  const duration = `${value}${unit}`;
+  picker.querySelector('.duration-result').textContent = `= ${duration}`;
+  updateAutomationField(type, idx, field, duration);
+}
+
+function setDuration(type, idx, field, duration) {
+  updateAutomationField(type, idx, field, duration);
+  const parsed = parseDuration(duration);
+  const picker = document.getElementById(`duration-${type}-${idx}-${field}`);
+  if (picker) {
+    picker.querySelector('.duration-input').value = parsed.value;
+    picker.querySelector('.duration-unit-select').value = parsed.unit;
+    picker.querySelector('.duration-result').textContent = `= ${duration}`;
+  }
+}
+
+// Channel selector
+function renderChannelSelector(channel, metadata, type, idx) {
+  const chatId = metadata?.chat_id || '';
+  return `<div class="channel-selector">
+    <div class="channel-options">
+      <div class="channel-option">
+        <input type="radio" name="channel-${type}-${idx}" id="channel-ws-${type}-${idx}" value="websocket" ${channel === 'websocket' || !channel ? 'checked' : ''} onchange="onChannelChange('${type}', ${idx}, 'websocket')">
+        <label for="channel-ws-${type}-${idx}">WebSocket (Dashboard/API)</label>
+      </div>
+      <div class="channel-option">
+        <input type="radio" name="channel-${type}-${idx}" id="channel-tg-${type}-${idx}" value="telegram" ${channel === 'telegram' ? 'checked' : ''} onchange="onChannelChange('${type}', ${idx}, 'telegram')">
+        <label for="channel-tg-${type}-${idx}">Telegram</label>
+      </div>
+    </div>
+    <div class="channel-metadata" id="channel-meta-${type}-${idx}" style="${channel !== 'telegram' ? 'display:none' : ''}">
+      <div class="channel-metadata-field">
+        <span class="channel-metadata-label">Chat ID:</span>
+        <input type="text" class="channel-metadata-input" value="${esc(chatId)}" placeholder="123456789" onchange="onChannelMetaChange('${type}', ${idx}, 'chat_id', this.value)">
+      </div>
+    </div>
+  </div>`;
+}
+
+function onChannelChange(type, idx, channel) {
+  updateAutomationField(type, idx, 'channel', channel);
+  const metaDiv = document.getElementById(`channel-meta-${type}-${idx}`);
+  metaDiv.style.display = channel === 'telegram' ? 'block' : 'none';
+}
+
+function onChannelMetaChange(type, idx, key, value) {
+  const listKey = type === 'job' ? 'jobs' : type === 'webhook' ? 'webhooks' : 'heartbeats';
+  if (!automationState[listKey][idx].metadata) {
+    automationState[listKey][idx].metadata = {};
+  }
+  automationState[listKey][idx].metadata[key] = value;
+  updateSaveButtonState();
+}
+
+// Item management
+function toggleAutomationItem(header) {
+  const item = header.closest('.automation-item');
+  item.classList.toggle('expanded');
+  const type = item.dataset.type;
+  const idx = parseInt(item.dataset.index, 10);
+  const listKey = type === 'job' ? 'jobs' : type === 'webhook' ? 'webhooks' : 'heartbeats';
+  automationState[listKey][idx]._expanded = item.classList.contains('expanded');
+}
+
+function addAutomationItem(type) {
+  const newItem = { name: '', _expanded: true };
+  if (type === 'job') {
+    newItem.schedule = '@daily';
+    newItem.prompt = '';
+    newItem.user_id = '';
+    newItem.channel = 'websocket';
+    newItem.timeout = '5m';
+    automationState.jobs.push(newItem);
+  } else if (type === 'webhook') {
+    newItem.path = '/webhook/';
+    newItem.prompt = '';
+    newItem.user_id = '';
+    newItem.channel = 'websocket';
+    newItem.timeout = '5m';
+    automationState.webhooks.push(newItem);
+  } else if (type === 'heartbeat') {
+    newItem.interval = '5m';
+    newItem.prompt = '';
+    newItem.user_id = '';
+    newItem.channel = 'websocket';
+    newItem.timeout = '2m';
+    automationState.heartbeats.push(newItem);
+  }
+  renderAutomationLists();
+  updateSaveButtonState();
+}
+
+function deleteAutomationItem(type, idx) {
+  if (!confirm('Delete this item?')) return;
+  const listKey = type === 'job' ? 'jobs' : type === 'webhook' ? 'webhooks' : 'heartbeats';
+  automationState[listKey].splice(idx, 1);
+  renderAutomationLists();
+  updateSaveButtonState();
+}
+
+function updateAutomationField(type, idx, field, value) {
+  const listKey = type === 'job' ? 'jobs' : type === 'webhook' ? 'webhooks' : 'heartbeats';
+  automationState[listKey][idx][field] = value;
+  // Update header summary
+  const item = document.querySelector(`.automation-item[data-type="${type}"][data-index="${idx}"]`);
+  if (item) {
+    if (field === 'name') item.querySelector('.automation-item-name').textContent = value || 'Unnamed';
+    if (field === 'schedule' || field === 'path' || field === 'interval') {
+      item.querySelector('.automation-item-summary').textContent = value;
+    }
+    if (field === 'channel') item.querySelector('.automation-item-badge').textContent = value || 'websocket';
+  }
+  updateSaveButtonState();
+}
+
+// Collect automation data for saving
+function collectAutomationData() {
+  const cleanItem = (item) => {
+    const clean = { ...item };
+    delete clean._expanded;
+    // Remove empty optional fields
+    if (!clean.session_id) delete clean.session_id;
+    if (!clean.secret) delete clean.secret;
+    if (!clean.max_retries) delete clean.max_retries;
+    if (clean.metadata && Object.keys(clean.metadata).length === 0) delete clean.metadata;
+    return clean;
+  };
+  return {
+    jobs: automationState.jobs.map(cleanItem),
+    webhooks: automationState.webhooks.map(cleanItem),
+    heartbeats: automationState.heartbeats.map(cleanItem)
+  };
+}
+
+function renderIntegrationsSection(cfg) {
+  const oauth = JSON.stringify(cfg.oauth?.providers || {}, null, 2);
+  const dbs = JSON.stringify(cfg.databases?.connections || {}, null, 2);
+  const mqtt = JSON.stringify(cfg.mqtt?.brokers || {}, null, 2);
+  const ssh = JSON.stringify(cfg.ssh?.hosts || {}, null, 2);
+  return `
+    <div class="config-field-group">
+      <div class="config-field-group-title">OAuth Providers</div>
+      <div class="config-field config-json-editor">
+        <label>Providers (JSON object)</label>
+        <textarea data-path="oauth.providers" data-type="json">${esc(oauth)}</textarea>
+        <div class="config-field-hint">Keys: google, github, microsoft, etc. Values: {client_id, client_secret, scopes}</div>
+      </div>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Database Connections</div>
+      <div class="config-field config-json-editor">
+        <label>Connections (JSON object)</label>
+        <textarea data-path="databases.connections" data-type="json">${esc(dbs)}</textarea>
+        <div class="config-field-hint">Each: {driver, host, port, user, password, database, ssl_mode, read_only}</div>
+      </div>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">MQTT Brokers</div>
+      <div class="config-field config-json-editor">
+        <label>Brokers (JSON object)</label>
+        <textarea data-path="mqtt.brokers" data-type="json">${esc(mqtt)}</textarea>
+        <div class="config-field-hint">Each: {host, port, username, password, client_id, tls}</div>
+      </div>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">SSH Hosts</div>
+      <div class="config-field config-json-editor">
+        <label>Hosts (JSON object)</label>
+        <textarea data-path="ssh.hosts" data-type="json">${esc(ssh)}</textarea>
+        <div class="config-field-hint">Each: {host, port, user, use_agent, private_key, password}</div>
+      </div>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Email Poller</div>
+      ${checkboxField('email_poller.enabled', 'Enabled', cfg.email_poller?.enabled)}
+      ${textField('email_poller.provider', 'OAuth Provider', cfg.email_poller?.provider)}
+      ${textField('email_poller.email', 'Email Address', cfg.email_poller?.email)}
+      ${textField('email_poller.interval', 'Poll Interval', cfg.email_poller?.interval, 'e.g., 5m')}
+    </div>`;
+}
+
+function renderNetworkSection(cfg) {
+  return `
+    <div class="config-field-group">
+      <div class="config-field-group-title">P2P (libp2p)</div>
+      ${checkboxField('p2p.enabled', 'Enabled', cfg.p2p?.enabled)}
+      ${numberField('p2p.port', 'Port', cfg.p2p?.port, 1, 65535)}
+      ${textField('p2p.identity_path', 'Identity Path', cfg.p2p?.identity_path)}
+      ${textField('p2p.transports', 'Transports', (cfg.p2p?.transports || []).join(', '), 'udx, tcp')}
+      ${selectField('p2p.dht_mode', 'DHT Mode', cfg.p2p?.dht_mode, ['server', 'client'])}
+      ${checkboxField('p2p.relay_enabled', 'Relay Enabled', cfg.p2p?.relay_enabled)}
+      ${checkboxField('p2p.auth_required', 'Auth Required', cfg.p2p?.auth_required)}
+      ${numberField('p2p.max_connections', 'Max Connections', cfg.p2p?.max_connections, 1, 1000)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Browser (CDP)</div>
+      ${checkboxField('browser.enabled', 'Enabled', cfg.browser?.enabled)}
+      <div class="config-field-hint">Browser profiles can be configured in the JSON config file directly.</div>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Telemetry</div>
+      ${checkboxField('telemetry.enabled', 'Enabled', cfg.telemetry?.enabled)}
+      ${textField('telemetry.jaeger_endpoint', 'Jaeger Endpoint', cfg.telemetry?.jaeger_endpoint)}
+      ${selectField('telemetry.protocol', 'Protocol', cfg.telemetry?.protocol, ['grpc', 'http'])}
+      ${textField('telemetry.service_name', 'Service Name', cfg.telemetry?.service_name)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Speech-to-Text</div>
+      ${checkboxField('stt.enabled', 'Enabled', cfg.stt?.enabled)}
+      ${textField('stt.base_url', 'STT Service URL', cfg.stt?.base_url)}
+    </div>`;
+}
+
+function renderSecuritySection(cfg) {
+  const autoApprove = JSON.stringify(cfg.approval?.auto_approve || [], null, 2);
+  return `
+    <div class="config-field-group">
+      <div class="config-field-group-title">Authentication</div>
+      ${checkboxField('security.auth.enabled', 'Enable Token Auth', cfg.security?.auth?.enabled)}
+      ${textField('security.auth.token_file', 'Token File', cfg.security?.auth?.token_file)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Command Sandbox</div>
+      ${checkboxField('security.command_sandbox.enabled', 'Enabled', cfg.security?.command_sandbox?.enabled)}
+      <div class="config-field-hint">Blocked patterns are defined in the server code.</div>
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Trust Tiers</div>
+      ${textField('trust.owner_phones', 'Owner Phones', (cfg.trust?.owner_phones || []).join(', '), 'Comma-separated phone numbers with country code')}
+      ${textField('trust.owner_telegram', 'Owner Telegram IDs', (cfg.trust?.owner_telegram || []).join(', '), 'Comma-separated Telegram user IDs')}
+      ${checkboxField('trust.third_party.enabled', 'Allow Third-Party Messages', cfg.trust?.third_party?.enabled)}
+      ${checkboxField('trust.third_party.use_local_llm', 'Use Local LLM for Third-Party', cfg.trust?.third_party?.use_local_llm)}
+      ${textField('trust.third_party.local_llm_model', 'Local LLM Model', cfg.trust?.third_party?.local_llm_model)}
+    </div>
+    <div class="config-field-group">
+      <div class="config-field-group-title">Approval / Maker-Checker</div>
+      ${textField('approval.audit_db_path', 'Audit DB Path', cfg.approval?.audit_db_path)}
+      <div class="config-field config-json-editor">
+        <label>Auto-Approve Rules (JSON array)</label>
+        <textarea data-path="approval.auto_approve" data-type="json">${esc(autoApprove)}</textarea>
+        <div class="config-field-hint">Each rule: {tool, pattern}</div>
+      </div>
+    </div>`;
+}
+
+// Field helper functions
+function textField(path, label, value, hint = '') {
+  return `<div class="config-field">
+    <label>${esc(label)}</label>
+    <input type="text" data-path="${path}" value="${esc(value || '')}">
+    ${hint ? `<div class="config-field-hint">${esc(hint)}</div>` : ''}
+  </div>`;
+}
+
+function numberField(path, label, value, min = 0, max = 99999, hint = '') {
+  const val = value !== undefined && value !== null ? value : '';
+  return `<div class="config-field">
+    <label>${esc(label)}</label>
+    <input type="number" data-path="${path}" value="${val}" min="${min}" max="${max}" step="any">
+    ${hint ? `<div class="config-field-hint">${esc(hint)}</div>` : ''}
+  </div>`;
+}
+
+function selectField(path, label, value, options) {
+  const opts = options.map(o => `<option value="${esc(o)}" ${o === value ? 'selected' : ''}>${esc(o || '(none)')}</option>`).join('');
+  return `<div class="config-field">
+    <label>${esc(label)}</label>
+    <select data-path="${path}">${opts}</select>
+  </div>`;
+}
+
+function checkboxField(path, label, checked) {
+  return `<div class="config-field">
+    <div class="config-toggle">
+      <input type="checkbox" data-path="${path}" ${checked ? 'checked' : ''}>
+      <label>${esc(label)}</label>
+    </div>
+  </div>`;
+}
+
+function sensitiveField(path, label, hasValue) {
+  const placeholder = hasValue && hasValue !== '***' ? '••••••••' : 'Not set';
+  return `<div class="config-field sensitive">
+    <label>${esc(label)}</label>
+    <input type="password" data-path="${path}" placeholder="${placeholder}" data-has-value="${hasValue && hasValue !== '***' ? 'true' : 'false'}">
+    <div class="config-field-hint">Leave empty to keep existing value</div>
+  </div>`;
+}
+
+// JSON schemas for validation
+const jsonSchemas = {
+  'proactive.jobs': {
+    type: 'array',
+    items: {
+      type: 'object',
+      required: ['name', 'schedule', 'prompt', 'user_id'],
+      properties: {
+        name: { type: 'string' },
+        schedule: { type: 'string' },
+        prompt: { type: 'string' },
+        user_id: { type: 'string' },
+        session_id: { type: 'string' },
+        channel: { type: 'string', enum: ['telegram', 'websocket', ''] },
+        timeout: { type: 'string' },
+        max_retries: { type: 'integer', minimum: 0 }
+      }
+    }
+  },
+  'proactive.webhooks': {
+    type: 'array',
+    items: {
+      type: 'object',
+      required: ['name', 'path', 'prompt', 'user_id'],
+      properties: {
+        name: { type: 'string' },
+        path: { type: 'string' },
+        prompt: { type: 'string' },
+        user_id: { type: 'string' },
+        session_id: { type: 'string' },
+        channel: { type: 'string' },
+        secret: { type: 'string' },
+        timeout: { type: 'string' },
+        max_retries: { type: 'integer', minimum: 0 }
+      }
+    }
+  },
+  'proactive.heartbeats': {
+    type: 'array',
+    items: {
+      type: 'object',
+      required: ['name', 'interval', 'prompt', 'user_id'],
+      properties: {
+        name: { type: 'string' },
+        interval: { type: 'string' },
+        prompt: { type: 'string' },
+        user_id: { type: 'string' },
+        session_id: { type: 'string' },
+        channel: { type: 'string' },
+        timeout: { type: 'string' },
+        max_retries: { type: 'integer', minimum: 0 }
+      }
+    }
+  },
+  'databases.connections': {
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      required: ['driver', 'database'],
+      properties: {
+        driver: { type: 'string', enum: ['postgres', 'mysql', 'sqlite'] },
+        host: { type: 'string' },
+        port: { type: 'integer', minimum: 1, maximum: 65535 },
+        user: { type: 'string' },
+        password: { type: 'string' },
+        database: { type: 'string' },
+        ssl_mode: { type: 'string', enum: ['disable', 'require', 'verify-ca', 'verify-full', ''] },
+        read_only: { type: 'boolean' },
+        max_conns: { type: 'integer', minimum: 1 }
+      }
+    }
+  },
+  'mqtt.brokers': {
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      required: ['host'],
+      properties: {
+        host: { type: 'string' },
+        port: { type: 'integer', minimum: 1, maximum: 65535 },
+        username: { type: 'string' },
+        password: { type: 'string' },
+        client_id: { type: 'string' },
+        tls: { type: 'boolean' },
+        skip_verify: { type: 'boolean' }
+      }
+    }
+  },
+  'ssh.hosts': {
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      required: ['host', 'user'],
+      properties: {
+        host: { type: 'string' },
+        port: { type: 'integer', minimum: 1, maximum: 65535 },
+        user: { type: 'string' },
+        use_agent: { type: 'boolean' },
+        private_key: { type: 'string' },
+        passphrase: { type: 'string' },
+        password: { type: 'string' },
+        host_key_check: { type: 'string', enum: ['strict', 'accept-new', 'none', ''] },
+        proxy_jump: { type: 'string' },
+        timeout_secs: { type: 'integer', minimum: 1 },
+        keepalive_secs: { type: 'integer', minimum: 0 }
+      }
+    }
+  },
+  'oauth.providers': {
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      properties: {
+        client_id: { type: 'string' },
+        client_secret: { type: 'string' },
+        auth_url: { type: 'string' },
+        token_url: { type: 'string' },
+        scopes: { type: 'array', items: { type: 'string' } },
+        pkce: { type: 'boolean' }
+      }
+    }
+  },
+  'approval.auto_approve': {
+    type: 'array',
+    items: {
+      type: 'object',
+      required: ['tool'],
+      properties: {
+        tool: { type: 'string' },
+        pattern: { type: 'string' }
+      }
+    }
+  }
+};
+
+function validateJsonField(path, value) {
+  const schema = jsonSchemas[path];
+  if (!schema) return { valid: true, errors: [] };
+
+  const errors = [];
+
+  // Type check
+  if (schema.type === 'array' && !Array.isArray(value)) {
+    return { valid: false, errors: ['Expected an array'] };
+  }
+  if (schema.type === 'object' && (typeof value !== 'object' || Array.isArray(value) || value === null)) {
+    return { valid: false, errors: ['Expected an object'] };
+  }
+
+  // Array items validation
+  if (schema.type === 'array' && schema.items && Array.isArray(value)) {
+    value.forEach((item, i) => {
+      const itemErrors = validateObject(item, schema.items, `[${i}]`);
+      errors.push(...itemErrors);
+    });
+  }
+
+  // Object properties validation (for map types)
+  if (schema.type === 'object' && schema.additionalProperties) {
+    Object.entries(value).forEach(([key, item]) => {
+      if (typeof item === 'object' && item !== null) {
+        const itemErrors = validateObject(item, schema.additionalProperties, `["${key}"]`);
+        errors.push(...itemErrors);
+      }
+    });
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+function validateObject(obj, schema, prefix = '') {
+  const errors = [];
+  if (typeof obj !== 'object' || obj === null) return errors;
+
+  // Check required fields
+  if (schema.required) {
+    for (const field of schema.required) {
+      if (obj[field] === undefined || obj[field] === null || obj[field] === '') {
+        errors.push(`${prefix}.${field} is required`);
+      }
+    }
+  }
+
+  // Check property types and constraints
+  if (schema.properties) {
+    for (const [key, prop] of Object.entries(schema.properties)) {
+      const val = obj[key];
+      if (val === undefined || val === null || val === '') continue;
+
+      // Type check
+      if (prop.type === 'string' && typeof val !== 'string') {
+        errors.push(`${prefix}.${key} must be a string`);
+      }
+      if (prop.type === 'integer' && !Number.isInteger(val)) {
+        errors.push(`${prefix}.${key} must be an integer`);
+      }
+      if (prop.type === 'boolean' && typeof val !== 'boolean') {
+        errors.push(`${prefix}.${key} must be a boolean`);
+      }
+      if (prop.type === 'array' && !Array.isArray(val)) {
+        errors.push(`${prefix}.${key} must be an array`);
+      }
+
+      // Enum check
+      if (prop.enum && !prop.enum.includes(val)) {
+        errors.push(`${prefix}.${key} must be one of: ${prop.enum.filter(e => e).join(', ') || '(empty)'}`);
+      }
+
+      // Range checks
+      if (prop.minimum !== undefined && typeof val === 'number' && val < prop.minimum) {
+        errors.push(`${prefix}.${key} must be >= ${prop.minimum}`);
+      }
+      if (prop.maximum !== undefined && typeof val === 'number' && val > prop.maximum) {
+        errors.push(`${prefix}.${key} must be <= ${prop.maximum}`);
+      }
+    }
+  }
+
+  return errors;
+}
+
+// Collect form data for saving
+function collectConfigData() {
+  const data = {};
+  let hasError = false;
+
+  const elements = document.querySelectorAll('#panel-config [data-path]');
+  for (const el of elements) {
+    if (hasError) break;
+
+    const path = el.dataset.path.split('.');
+    let val;
+    if (el.type === 'checkbox') {
+      val = el.checked;
+    } else if (el.type === 'number') {
+      val = el.value === '' ? undefined : parseFloat(el.value);
+    } else if (el.dataset.type === 'automation') {
+      // Handle automation data from form UI
+      const automationData = collectAutomationData();
+      setNested(data, ['proactive'], automationData);
+      continue;
+    } else if (el.dataset.type === 'json') {
+      const fullPath = el.dataset.path;
+      const defaultVal = fullPath.endsWith('.jobs') || fullPath.endsWith('.webhooks') ||
+                         fullPath.endsWith('.heartbeats') || fullPath.endsWith('.auto_approve') ? '[]' : '{}';
+      try {
+        val = JSON.parse(el.value || defaultVal);
+        // Validate against schema
+        const validation = validateJsonField(fullPath, val);
+        if (!validation.valid) {
+          el.classList.add('validation-error');
+          // Show validation errors
+          let errDiv = el.parentElement.querySelector('.config-validation-errors');
+          if (!errDiv) {
+            errDiv = document.createElement('div');
+            errDiv.className = 'config-validation-errors';
+            el.parentElement.appendChild(errDiv);
+          }
+          errDiv.textContent = validation.errors.slice(0, 5).join('; ') + (validation.errors.length > 5 ? '...' : '');
+          errDiv.classList.add('show');
+          showConfigFeedback(`Validation error in ${fullPath}: ${validation.errors[0]}`, 'error');
+          hasError = true;
+          continue;
+        } else {
+          el.classList.remove('validation-error');
+          const errDiv = el.parentElement.querySelector('.config-validation-errors');
+          if (errDiv) errDiv.classList.remove('show');
+        }
+      } catch (e) {
+        el.classList.add('validation-error');
+        showConfigFeedback(`Invalid JSON in ${fullPath}: ${e.message}`, 'error');
+        hasError = true;
+        continue;
+      }
+    } else if (el.classList.contains('sensitive') || el.closest('.sensitive')) {
+      if (!el.value || el.value === '') continue; // Skip unchanged sensitive fields
+      val = el.value;
+    } else {
+      // Handle comma-separated arrays
+      const numericArrayPaths = ['channels.telegram.allowed_users', 'channels.telegram.allowed_chats', 'trust.owner_telegram'];
+      const stringArrayPaths = ['channels.telegram.allowed_phones', 'channels.whatsapp.allowed_phones', 'channels.whatsapp.allowed_groups', 'trust.owner_phones', 'p2p.transports'];
+      const fullPath = el.dataset.path;
+      if (numericArrayPaths.includes(fullPath)) {
+        val = el.value ? el.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)) : [];
+      } else if (stringArrayPaths.includes(fullPath)) {
+        val = el.value ? el.value.split(',').map(s => s.trim()).filter(s => s) : [];
+      } else {
+        val = el.value;
+      }
+    }
+    if (val !== undefined) {
+      setNested(data, path, val);
+    }
+  }
+  return hasError ? null : data;
+}
+
+function setNested(obj, path, value) {
+  for (let i = 0; i < path.length - 1; i++) {
+    const key = path[i];
+    if (!obj[key] || typeof obj[key] !== 'object') {
+      obj[key] = {};
+    }
+    obj = obj[key];
+  }
+  obj[path[path.length - 1]] = value;
+}
+
+async function saveConfig() {
+  const btn = document.querySelector('.config-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  hideConfigFeedback();
+
+  try {
+    const data = collectConfigData();
+    if (!data) {
+      // Validation failed, error already shown
+      btn.disabled = false;
+      btn.textContent = 'Save Changes';
+      return;
+    }
+    const resp = await fetch('/api/config/update', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const result = await resp.json();
+    if (result.error) {
+      const errMsg = result.error + (result.errors ? ': ' + result.errors.join(', ') : '');
+      showConfigFeedback(errMsg, 'error');
+      showToast(errMsg, 'error', 6000);
+      btn.disabled = false;
+      btn.textContent = 'Save Changes';
+    } else {
+      showToast('Configuration saved successfully!', 'success');
+      hideConfigFeedback();
+      // Reload config to show updated values (also updates button state)
+      await loadConfig();
+    }
+  } catch (e) {
+    // Only show toast if not already shown by validation
+    if (!document.querySelector('.config-feedback.error')) {
+      showToast('Failed to save: ' + e.message, 'error', 6000);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Save Changes';
+  }
+}
+
+function resetConfig() {
+  if (!confirm('Reset all changes to saved values?')) return;
+  loadConfig();
+  hideConfigFeedback();
+  showToast('Changes reset to saved values', 'success');
+}
+
+function showConfigFeedback(message, type) {
+  const el = document.getElementById('config-feedback');
+  el.textContent = message;
+  el.className = 'config-feedback ' + type;
+  if (type === 'success') {
+    setTimeout(hideConfigFeedback, 5000);
+  }
+}
+
+function hideConfigFeedback() {
+  const el = document.getElementById('config-feedback');
+  el.className = 'config-feedback';
+}
+
+function showToast(message, type = 'success', duration = 4000) {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+
+  const icon = type === 'success' ? '✓' : '✕';
+  toast.innerHTML = `
+    <span class="toast-icon">${icon}</span>
+    <span class="toast-message">${esc(message)}</span>
+    <span class="toast-close" onclick="this.parentElement.remove()">×</span>
+  `;
+
+  container.appendChild(toast);
+
+  // Auto-remove after duration
+  setTimeout(() => {
+    toast.classList.add('hiding');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
 }
 
 // --- Logs (SSE) ---
