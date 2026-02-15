@@ -1426,6 +1426,204 @@ Kaggen supports OAuth 2.0 for accessing protected APIs like Gmail, Google Calend
 
 For complete setup including creating Google Cloud credentials, see [docs/OAUTH_GUIDE.md](docs/OAUTH_GUIDE.md).
 
+## Protocol Tools
+
+Kaggen provides protocol-level tools that enable skills to interact with external services securely and declaratively. Skills declare which protocols and credentials they need in their SKILL.md frontmatter, and the tools handle connection lifecycle, authentication injection, and error handling automatically.
+
+### Available Protocol Tools
+
+| Tool | Purpose | Auth Support |
+|------|---------|--------------|
+| `http_request` | REST API calls | OAuth, secrets |
+| `caldav` | Calendar operations (Google, iCloud, Fastmail) | OAuth, Basic auth |
+| `carddav` | Contact operations (Google, iCloud, Fastmail) | OAuth, Basic auth |
+| `websocket` | Real-time bidirectional communication | OAuth, secrets |
+
+### CalDAV (Calendar)
+
+Manage calendar events via CalDAV protocol. Works with Google Calendar, iCloud, Fastmail, and any CalDAV-compatible server.
+
+#### Skill Declaration
+
+```yaml
+---
+tools: [caldav, read]
+oauth_providers: [google]
+---
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `list_calendars` | List available calendars |
+| `list_events` | List events in a calendar |
+| `query_events` | Search events by time range or text |
+| `get_event` | Get a specific event by UID |
+| `create_event` | Create a new event |
+| `update_event` | Update an existing event |
+| `delete_event` | Delete an event |
+| `free_busy` | Query availability/busy times |
+
+#### Example Usage
+
+```json
+{
+  "action": "create_event",
+  "provider": "google",
+  "email": "user@gmail.com",
+  "calendar": "Work",
+  "summary": "Team Standup",
+  "start": "2024-01-15T09:00:00Z",
+  "end": "2024-01-15T09:30:00Z",
+  "attendees": ["colleague@company.com"]
+}
+```
+
+### CardDAV (Contacts)
+
+Manage contacts via CardDAV protocol. Works with Google Contacts, iCloud, Fastmail, and any CardDAV-compatible server.
+
+#### Skill Declaration
+
+```yaml
+---
+tools: [carddav, read]
+oauth_providers: [google]
+---
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `list_addressbooks` | List available address books |
+| `search_contacts` | Search contacts by name, email, phone |
+| `get_contact` | Get a specific contact by UID |
+| `create_contact` | Create a new contact |
+| `update_contact` | Update an existing contact |
+| `delete_contact` | Delete a contact |
+
+#### Example Usage
+
+```json
+{
+  "action": "search_contacts",
+  "provider": "google",
+  "email": "user@gmail.com",
+  "query": "John",
+  "fields": ["name", "email", "phone"]
+}
+```
+
+### WebSocket
+
+Manage WebSocket connections for real-time communication with external services like Slack RTM, Discord gateway, or live data feeds.
+
+#### Skill Declaration
+
+```yaml
+---
+tools: [websocket, read]
+oauth_providers: [slack]
+secrets: [api-token]
+---
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `connect` | Establish WSS/WS connection, returns connection_id |
+| `send` | Send text, JSON, or binary message |
+| `receive` | Wait for messages (with timeout, count, or drain buffer) |
+| `close` | Gracefully close a connection |
+| `list_connections` | Show all active connections |
+
+#### Example Usage
+
+**Connect to a WebSocket API:**
+```json
+{
+  "action": "connect",
+  "url": "wss://api.example.com/stream",
+  "oauth_provider": "slack"
+}
+```
+
+**Send a JSON message:**
+```json
+{
+  "action": "send",
+  "connection_id": "abc123",
+  "message_json": {"type": "subscribe", "channel": "updates"}
+}
+```
+
+**Receive messages with timeout:**
+```json
+{
+  "action": "receive",
+  "connection_id": "abc123",
+  "timeout_seconds": 60,
+  "wait_count": 5
+}
+```
+
+#### Connection Management
+
+| Feature | Value |
+|---------|-------|
+| Max connections | 10 per skill |
+| Message buffer | 100 messages per connection |
+| Ping/pong keepalive | 30 seconds |
+| Auto-cleanup | Idle connections closed after 10 minutes |
+| TLS | WSS supported; insecure only for localhost |
+
+### Authentication
+
+Protocol tools support two authentication methods:
+
+**OAuth Tokens:** Declare `oauth_providers` in skill frontmatter. The tool retrieves tokens automatically and injects them into requests.
+
+```yaml
+---
+oauth_providers: [google, slack]
+---
+```
+
+```json
+{"action": "connect", "url": "wss://api.slack.com/rtm", "oauth_provider": "slack"}
+```
+
+**Secrets:** Declare `secrets` in skill frontmatter. The tool injects secret values without exposing them to the LLM.
+
+```yaml
+---
+secrets: [api-token, webhook-secret]
+---
+```
+
+```json
+{"action": "connect", "url": "wss://api.example.com/stream", "auth_secret": "api-token"}
+```
+
+Both methods use the same patterns as `http_request` — secrets are never visible to the LLM, only secret names are used in tool arguments.
+
+### Error Handling
+
+All protocol tools return consistent error types:
+
+| Error Type | Description |
+|------------|-------------|
+| `auth` | Authentication failed or token expired |
+| `connection` | Cannot reach service |
+| `timeout` | Operation timed out |
+| `not_found` | Resource not found |
+| `protocol` | Protocol-level error |
+
+OAuth errors return user-friendly messages directing to the dashboard for re-authorization.
+
 ## Security Hardening
 
 Kaggen includes multiple security features for production deployments. This section covers authentication, command sandboxing, approval workflows, and security auditing.
