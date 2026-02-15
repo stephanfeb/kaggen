@@ -108,6 +108,7 @@ type skillFrontmatter struct {
 	OAuthProviders []string // OAuth provider names this skill can use (e.g. ["google", "github"])
 	Databases      []string // database connection names this skill can use (e.g. ["personal-postgres", "analytics"])
 	Brokers        []string // MQTT broker names this skill can use (e.g. ["home-assistant", "sensors"])
+	SSHHosts       []string // SSH host names this skill can use (e.g. ["production", "staging"])
 	Delegate       string   // "claude" for subprocess dispatch, empty for LLM agent
 	ClaudeModel    string   // --model flag override
 	ClaudeTools    string   // --allowed-tools override
@@ -378,6 +379,32 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				}
 			}
 
+			// If skill declares "ssh" or "sftp" in tools and has ssh_hosts configured, create ssh/sftp tools
+			if len(fm.SSHHosts) > 0 && (containsString(fm.Tools, "ssh") || containsString(fm.Tools, "sftp")) {
+				sshManager := NewSSHConnectionManager(logger)
+				// Register allowed SSH host configurations
+				for _, hostName := range fm.SSHHosts {
+					hostCfg, ok := cfg.GetSSHHost(hostName)
+					if !ok {
+						logger.Warn("skill ssh host not configured", "skill", summary.Name, "host", hostName)
+						continue
+					}
+					sshManager.RegisterHost(hostName, hostCfg)
+				}
+				if len(sshManager.HostNames()) > 0 {
+					if containsString(fm.Tools, "ssh") {
+						sshTool := NewSSHTool(sshManager)
+						agentTools = append(agentTools, sshTool)
+						logger.Info("skill ssh tool injected", "skill", summary.Name, "hosts", sshManager.HostNames())
+					}
+					if containsString(fm.Tools, "sftp") {
+						sftpTool := NewSFTPTool(sshManager)
+						agentTools = append(agentTools, sftpTool)
+						logger.Info("skill sftp tool injected", "skill", summary.Name, "hosts", sshManager.HostNames())
+					}
+				}
+			}
+
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
 			// which implements proper graph-based pause/resume for approvals.
 			if len(fm.GuardedTools) > 0 && guardedRunner != nil {
@@ -537,6 +564,14 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 				b = strings.TrimSpace(b)
 				if b != "" {
 					fm.Brokers = append(fm.Brokers, b)
+				}
+			}
+		case "ssh_hosts":
+			val = strings.Trim(val, "[]")
+			for _, h := range strings.Split(val, ",") {
+				h = strings.TrimSpace(h)
+				if h != "" {
+					fm.SSHHosts = append(fm.SSHHosts, h)
 				}
 			}
 		}

@@ -378,7 +378,9 @@ brokers: [home-assistant, sensors]
 
 ---
 
-## Priority 7: SSH/SFTP
+## Priority 7: SSH/SFTP (Implemented)
+
+**Status:** Implemented in `internal/agent/ssh_manager.go`, `ssh_tool.go`, `sftp_tool.go`
 
 **Use Cases:**
 - Remote server management
@@ -386,26 +388,99 @@ brokers: [home-assistant, sensors]
 - File transfers
 - Deployment automation
 
+**SSH Actions:**
+- `connect` - Establish SSH connection, return connection_id
+- `exec` - Execute command on established connection
+- `disconnect` - Close SSH connection
+- `list_connections` - Show all active connections
+
+**SFTP Actions:**
+- `upload` - Upload file (from local path or content string)
+- `download` - Download file (to local path or return content)
+- `list` - List directory contents (supports recursive)
+- `mkdir` - Create directory
+- `rm` - Remove file or directory (supports recursive)
+- `stat` - Get file/directory information
+
 **Operations:**
 ```yaml
 tool: ssh
+action: connect
+params:
+  host: "production"
+
+tool: ssh
 action: exec
 params:
-  host: "server.example.com"
+  connection_id: "abc123"
   command: "docker ps"
+  timeout_seconds: 60
 
 tool: sftp
 action: download
 params:
-  host: "server.example.com"
+  connection_id: "abc123"
   remote_path: "/var/log/app.log"
   local_path: "/tmp/app.log"
 ```
 
-**Credential Requirements:**
-- SSH keys (preferred)
-- Password auth (fallback)
-- Jump host / bastion support
+**Skill Declaration:**
+```yaml
+---
+tools: [ssh, sftp, read]
+ssh_hosts: [production, staging]
+guarded_tools: [ssh]
+---
+```
+
+**Config (in ~/.kaggen/config.json):**
+```json
+{
+  "ssh": {
+    "hosts": {
+      "production": {
+        "host": "prod.example.com",
+        "user": "deploy",
+        "use_agent": true,
+        "host_key_check": "strict"
+      },
+      "bastion": {
+        "host": "bastion.example.com",
+        "user": "jump-user",
+        "private_key": "~/.ssh/bastion_key",
+        "passphrase": "secret:bastion-passphrase"
+      },
+      "internal": {
+        "host": "10.0.1.50",
+        "user": "admin",
+        "private_key": "secret:internal-key",
+        "proxy_jump": "bastion"
+      }
+    }
+  }
+}
+```
+
+**Key Management (Priority Order):**
+1. **ssh-agent** (`use_agent: true`) - Most secure, no secrets in config
+2. **Key file + passphrase** - Key on disk, passphrase from secrets store
+3. **Embedded key** (`private_key: "secret:key-name"`) - Full key in secrets store
+4. **Password** (`password: "secret:pass"`) - Fallback only
+
+**Host Key Verification:**
+- `strict` (default) - Reject unknown/changed keys (production)
+- `accept-new` - Accept unknown, reject changed (first-time setup)
+- `none` - Skip verification (localhost only, insecure)
+
+**Implementation Details:**
+- Stateful connection manager with ID-based tracking
+- ssh-agent integration for key management
+- ProxyJump support for bastion/jump hosts
+- Keepalive loop (30s interval)
+- Auto-cleanup of idle connections (10 min)
+- Max 10 connections per skill
+- Dangerous command detection (rm -rf /, shutdown, etc.)
+- Output sanitization (redacts passwords/tokens)
 
 ---
 

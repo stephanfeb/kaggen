@@ -31,6 +31,7 @@ type Config struct {
 	EmailPoller EmailPollerConfig `json:"email_poller,omitempty"`
 	Databases   DatabasesConfig   `json:"databases,omitempty"`
 	MQTT        MQTTConfig        `json:"mqtt,omitempty"`
+	SSH         SSHConfig         `json:"ssh,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -327,6 +328,36 @@ type MQTTBroker struct {
 	ClientKey  string `json:"client_key,omitempty"`  // Path to client key file
 }
 
+// SSHConfig configures named SSH host connections.
+type SSHConfig struct {
+	Hosts map[string]SSHHost `json:"hosts,omitempty"`
+}
+
+// SSHHost defines an SSH host connection configuration.
+type SSHHost struct {
+	// Connection
+	Host string `json:"host"`           // Hostname or IP address
+	Port int    `json:"port,omitempty"` // SSH port (default: 22)
+	User string `json:"user"`           // SSH username
+
+	// Authentication (in priority order: agent, key, password)
+	UseAgent   bool   `json:"use_agent,omitempty"`   // Use ssh-agent for authentication (highest priority)
+	PrivateKey string `json:"private_key,omitempty"` // Path to key file OR "secret:key-name" for embedded key
+	Passphrase string `json:"passphrase,omitempty"`  // Key passphrase: "secret:name" or literal value
+	Password   string `json:"password,omitempty"`    // Password auth (fallback): "secret:name" or literal
+
+	// Host key verification
+	KnownHostsFile string `json:"known_hosts_file,omitempty"` // Path to known_hosts (default: ~/.ssh/known_hosts)
+	HostKeyCheck   string `json:"host_key_check,omitempty"`   // "strict" (default), "accept-new", "none"
+
+	// Jump host / bastion support
+	ProxyJump string `json:"proxy_jump,omitempty"` // Name of another SSHHost to use as jump host
+
+	// Connection settings
+	TimeoutSecs  int `json:"timeout_secs,omitempty"`  // Connection timeout in seconds (default: 30)
+	KeepAliveSec int `json:"keepalive_secs,omitempty"` // Keepalive interval in seconds (default: 60)
+}
+
 // OAuthProvider defines an OAuth 2.0 provider configuration.
 type OAuthProvider struct {
 	ClientID     string            `json:"client_id"`               // secret:key reference supported
@@ -540,6 +571,27 @@ func (c *Config) MQTTBrokerNames() []string {
 	}
 	names := make([]string, 0, len(c.MQTT.Brokers))
 	for name := range c.MQTT.Brokers {
+		names = append(names, name)
+	}
+	return names
+}
+
+// GetSSHHost returns an SSH host configuration by name.
+func (c *Config) GetSSHHost(name string) (SSHHost, bool) {
+	if c.SSH.Hosts == nil {
+		return SSHHost{}, false
+	}
+	host, ok := c.SSH.Hosts[name]
+	return host, ok
+}
+
+// SSHHostNames returns a list of configured SSH host names.
+func (c *Config) SSHHostNames() []string {
+	if c.SSH.Hosts == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.SSH.Hosts))
+	for name := range c.SSH.Hosts {
 		names = append(names, name)
 	}
 	return names

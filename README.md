@@ -1441,6 +1441,8 @@ Kaggen provides protocol-level tools that enable skills to interact with externa
 | `graphql` | GraphQL queries and mutations | OAuth, secrets |
 | `sql` | Database queries (PostgreSQL, MySQL, SQLite) | Config-based |
 | `mqtt` | IoT/home automation messaging (pub/sub) | Config-based |
+| `ssh` | Remote command execution | ssh-agent, keys, password |
+| `sftp` | Secure file transfer | ssh-agent, keys, password |
 
 ### CalDAV (Calendar)
 
@@ -1861,6 +1863,152 @@ Add MQTT brokers to `~/.kaggen/config.json`:
 | QoS levels | 0 (at most once), 1 (at least once), 2 (exactly once) |
 | Topic wildcards | `+` (single level), `#` (multi-level) |
 | TLS | Supported with optional client certificates |
+
+### SSH
+
+Execute commands on remote servers via SSH. Supports multiple authentication methods with ssh-agent as the recommended option.
+
+#### Skill Declaration
+
+```yaml
+---
+tools: [ssh, sftp, read]
+ssh_hosts: [production, staging]
+guarded_tools: [ssh]
+---
+```
+
+#### Host Configuration
+
+Add SSH hosts to `~/.kaggen/config.json`:
+
+```json
+{
+  "ssh": {
+    "hosts": {
+      "production": {
+        "host": "prod.example.com",
+        "user": "deploy",
+        "use_agent": true,
+        "host_key_check": "strict"
+      },
+      "bastion": {
+        "host": "bastion.example.com",
+        "user": "jump-user",
+        "private_key": "~/.ssh/bastion_key",
+        "passphrase": "secret:bastion-passphrase"
+      },
+      "internal": {
+        "host": "10.0.1.50",
+        "user": "admin",
+        "private_key": "secret:internal-key",
+        "proxy_jump": "bastion"
+      }
+    }
+  }
+}
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `connect` | Establish SSH connection, returns connection_id |
+| `exec` | Execute command on established connection |
+| `disconnect` | Close SSH connection |
+| `list_connections` | List all active connections |
+
+#### Example Usage
+
+**Connect and execute command:**
+```json
+{
+  "action": "connect",
+  "host": "production"
+}
+```
+
+```json
+{
+  "action": "exec",
+  "connection_id": "abc123",
+  "command": "docker ps",
+  "timeout_seconds": 60
+}
+```
+
+#### Key Management (Priority Order)
+
+| Priority | Method | Config |
+|----------|--------|--------|
+| 1 | ssh-agent | `use_agent: true` |
+| 2 | Key file + passphrase | `private_key: "path"` + `passphrase: "secret:name"` |
+| 3 | Embedded key | `private_key: "secret:key-name"` |
+| 4 | Password | `password: "secret:name"` |
+
+#### Host Key Verification
+
+| Mode | Behavior |
+|------|----------|
+| `strict` (default) | Reject unknown/changed keys |
+| `accept-new` | Accept unknown, reject changed |
+| `none` | Skip verification (localhost only) |
+
+### SFTP
+
+Transfer files securely via SFTP. Reuses SSH connections for authentication.
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `upload` | Upload file (from local_path or content string) |
+| `download` | Download file (to local_path or return content) |
+| `list` | List directory contents (supports recursive) |
+| `mkdir` | Create directory |
+| `rm` | Remove file or directory (supports recursive) |
+| `stat` | Get file/directory information |
+
+#### Example Usage
+
+**Upload file:**
+```json
+{
+  "action": "upload",
+  "connection_id": "abc123",
+  "local_path": "/tmp/config.json",
+  "remote_path": "/etc/app/config.json"
+}
+```
+
+**Download file:**
+```json
+{
+  "action": "download",
+  "connection_id": "abc123",
+  "remote_path": "/var/log/app.log",
+  "local_path": "/tmp/app.log"
+}
+```
+
+**List directory:**
+```json
+{
+  "action": "list",
+  "connection_id": "abc123",
+  "remote_path": "/var/log",
+  "recursive": false
+}
+```
+
+#### Connection Management
+
+| Feature | Value |
+|---------|-------|
+| Max connections | 10 per skill |
+| Auto-cleanup | Idle connections closed after 10 minutes |
+| Keepalive | 30 seconds |
+| Jump/bastion hosts | Supported via proxy_jump |
 
 ### Authentication
 
