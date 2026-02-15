@@ -106,6 +106,7 @@ type skillFrontmatter struct {
 	NotifyTools    []string // tools that auto-execute but send a notification
 	Secrets        []string // secret names this skill needs (injected into http_request tool)
 	OAuthProviders []string // OAuth provider names this skill can use (e.g. ["google", "github"])
+	Databases      []string // database connection names this skill can use (e.g. ["personal-postgres", "analytics"])
 	Delegate       string   // "claude" for subprocess dispatch, empty for LLM agent
 	ClaudeModel    string   // --model flag override
 	ClaudeTools    string   // --allowed-tools override
@@ -338,6 +339,25 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill graphql tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
 			}
 
+			// If skill declares "sql" in tools and has databases configured, create sql tool
+			if len(fm.Databases) > 0 && containsString(fm.Tools, "sql") {
+				sqlManager := NewSQLConnectionManager()
+				// Register allowed database connections
+				for _, dbName := range fm.Databases {
+					dbCfg, ok := cfg.GetDatabaseConnection(dbName)
+					if !ok {
+						logger.Warn("skill database not configured", "skill", summary.Name, "database", dbName)
+						continue
+					}
+					sqlManager.RegisterConnection(dbName, dbCfg)
+				}
+				if len(sqlManager.ConnectionNames()) > 0 {
+					sqlTool := NewSQLTool(sqlManager)
+					agentTools = append(agentTools, sqlTool)
+					logger.Info("skill sql tool injected", "skill", summary.Name, "databases", sqlManager.ConnectionNames())
+				}
+			}
+
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
 			// which implements proper graph-based pause/resume for approvals.
 			if len(fm.GuardedTools) > 0 && guardedRunner != nil {
@@ -481,6 +501,14 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 				p = strings.TrimSpace(p)
 				if p != "" {
 					fm.OAuthProviders = append(fm.OAuthProviders, p)
+				}
+			}
+		case "databases":
+			val = strings.Trim(val, "[]")
+			for _, d := range strings.Split(val, ",") {
+				d = strings.TrimSpace(d)
+				if d != "" {
+					fm.Databases = append(fm.Databases, d)
 				}
 			}
 		}

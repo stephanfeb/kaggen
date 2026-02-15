@@ -1439,6 +1439,7 @@ Kaggen provides protocol-level tools that enable skills to interact with externa
 | `carddav` | Contact operations (Google, iCloud, Fastmail) | OAuth, Basic auth |
 | `websocket` | Real-time bidirectional communication | OAuth, secrets |
 | `graphql` | GraphQL queries and mutations | OAuth, secrets |
+| `sql` | Database queries (PostgreSQL, MySQL, SQLite) | Config-based |
 
 ### CalDAV (Calendar)
 
@@ -1645,6 +1646,106 @@ secrets: [api-token]
   "auth_secret": "api-token"
 }
 ```
+
+### SQL
+
+Query and modify databases via direct SQL. Supports PostgreSQL, MySQL, and SQLite with parameterized queries to prevent SQL injection.
+
+#### Skill Declaration
+
+```yaml
+---
+tools: [sql, read]
+databases: [personal-postgres, analytics]
+---
+```
+
+#### Database Configuration
+
+Add database connections to `~/.kaggen/config.json`:
+
+```json
+{
+  "databases": {
+    "connections": {
+      "personal-postgres": {
+        "driver": "postgres",
+        "host": "localhost",
+        "port": 5432,
+        "user": "myuser",
+        "password": "secret:postgres-password",
+        "database": "mydb",
+        "ssl_mode": "disable",
+        "read_only": false
+      },
+      "analytics": {
+        "driver": "sqlite",
+        "database": "~/.kaggen/analytics.db",
+        "read_only": true
+      }
+    }
+  }
+}
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `query` | Execute SELECT queries, return rows |
+| `execute` | Execute INSERT/UPDATE/DELETE, return affected count |
+| `tables` | List all tables in database |
+| `describe` | Get table schema (columns, types, keys) |
+
+#### Example Usage
+
+**Query with parameters:**
+```json
+{
+  "action": "query",
+  "connection": "personal-postgres",
+  "query": "SELECT * FROM expenses WHERE date >= $1 AND category = $2",
+  "params": ["2024-01-01", "groceries"]
+}
+```
+
+**Insert data:**
+```json
+{
+  "action": "execute",
+  "connection": "personal-postgres",
+  "query": "INSERT INTO expenses (amount, category, date) VALUES ($1, $2, $3)",
+  "params": [42.50, "groceries", "2024-01-15"]
+}
+```
+
+**List tables:**
+```json
+{
+  "action": "tables",
+  "connection": "analytics"
+}
+```
+
+**Describe table schema:**
+```json
+{
+  "action": "describe",
+  "connection": "analytics",
+  "table": "page_views"
+}
+```
+
+#### Security Features
+
+| Feature | Description |
+|---------|-------------|
+| Parameterized queries | Use `params` array to prevent SQL injection |
+| Read-only mode | Set `read_only: true` to block write operations |
+| Connection pooling | Configurable max connections (default: 5) |
+| Query timeout | Default 30s, max 5 minutes |
+| Row limit | Max 1000 rows per query |
+| Secret passwords | Use `secret:key-name` for secure credential storage |
 
 ### Authentication
 

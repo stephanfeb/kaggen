@@ -204,12 +204,20 @@ secrets: [api-token]
 
 ---
 
-## Priority 5: SQL
+## Priority 5: SQL (Implemented)
+
+**Status:** Implemented in `internal/agent/sql_tool.go`
 
 **Use Cases:**
 - Query personal databases (expense trackers, inventory)
 - Analytics and reporting
 - Data migrations
+
+**Actions:**
+- `query` - Execute SELECT queries, return rows
+- `execute` - Execute INSERT/UPDATE/DELETE, return affected count
+- `tables` - List all tables in database
+- `describe` - Get table schema (columns, types, keys)
 
 **Operations:**
 ```yaml
@@ -228,17 +236,51 @@ params:
   params: [42.50, "groceries"]
 ```
 
-**Supported Databases:**
-- PostgreSQL
-- MySQL
-- SQLite
-- (Others via driver plugins)
+**Skill Declaration:**
+```yaml
+---
+tools: [sql, read]
+databases: [personal-postgres, analytics]
+---
+```
 
-**Security:**
-- Query parameterization (prevent SQL injection)
-- Connection pooling
-- Read-only mode option
-- Query timeouts
+**Config (in ~/.kaggen/config.json):**
+```json
+{
+  "databases": {
+    "connections": {
+      "personal-postgres": {
+        "driver": "postgres",
+        "host": "localhost",
+        "port": 5432,
+        "user": "myuser",
+        "password": "secret:postgres-password",
+        "database": "mydb",
+        "ssl_mode": "disable",
+        "read_only": false
+      },
+      "analytics": {
+        "driver": "sqlite",
+        "database": "~/.kaggen/analytics.db",
+        "read_only": true
+      }
+    }
+  }
+}
+```
+
+**Supported Databases:**
+- PostgreSQL (`driver: "postgres"`)
+- MySQL (`driver: "mysql"`)
+- SQLite (`driver: "sqlite"`)
+
+**Implementation Details:**
+- Query parameterization enforced (prevents SQL injection)
+- Connection pooling (default 5 connections)
+- Read-only mode enforcement
+- Query timeouts (default 30s, max 5m)
+- Row limit (max 1000 rows per query)
+- Password can use `secret:` prefix for secure storage
 
 ---
 

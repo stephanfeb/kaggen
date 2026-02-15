@@ -29,6 +29,7 @@ type Config struct {
 	Trust      TrustConfig      `json:"trust,omitempty"`
 	OAuth       OAuthConfig       `json:"oauth,omitempty"`
 	EmailPoller EmailPollerConfig `json:"email_poller,omitempty"`
+	Databases   DatabasesConfig   `json:"databases,omitempty"`
 }
 
 // SecurityConfig configures security hardening features.
@@ -288,6 +289,24 @@ type EmailPollerConfig struct {
 	Folders  []string `json:"folders,omitempty"`  // IMAP folders to poll (default ["INBOX"])
 }
 
+// DatabasesConfig configures named database connections for the SQL tool.
+type DatabasesConfig struct {
+	Connections map[string]DatabaseConnection `json:"connections,omitempty"`
+}
+
+// DatabaseConnection defines a database connection configuration.
+type DatabaseConnection struct {
+	Driver   string `json:"driver"`             // "postgres", "mysql", "sqlite"
+	Host     string `json:"host,omitempty"`     // Database host (not used for sqlite)
+	Port     int    `json:"port,omitempty"`     // Database port (not used for sqlite)
+	User     string `json:"user,omitempty"`     // Database user (not used for sqlite)
+	Password string `json:"password,omitempty"` // Database password or secret:key reference
+	Database string `json:"database"`           // Database name or path for sqlite
+	SSLMode  string `json:"ssl_mode,omitempty"` // SSL mode: disable, require, verify-ca, verify-full
+	ReadOnly bool   `json:"read_only,omitempty"` // If true, only SELECT queries are allowed
+	MaxConns int    `json:"max_conns,omitempty"` // Max open connections (default: 5)
+}
+
 // OAuthProvider defines an OAuth 2.0 provider configuration.
 type OAuthProvider struct {
 	ClientID     string            `json:"client_id"`               // secret:key reference supported
@@ -462,6 +481,27 @@ func (c *Config) EmailPollerFolders() []string {
 // AttachmentsPath returns the expanded path to the attachments directory.
 func (c *Config) AttachmentsPath() string {
 	return ExpandPath("~/.kaggen/attachments")
+}
+
+// GetDatabaseConnection returns a database connection configuration by name.
+func (c *Config) GetDatabaseConnection(name string) (DatabaseConnection, bool) {
+	if c.Databases.Connections == nil {
+		return DatabaseConnection{}, false
+	}
+	conn, ok := c.Databases.Connections[name]
+	return conn, ok
+}
+
+// DatabaseConnectionNames returns a list of configured database connection names.
+func (c *Config) DatabaseConnectionNames() []string {
+	if c.Databases.Connections == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.Databases.Connections))
+	for name := range c.Databases.Connections {
+		names = append(names, name)
+	}
+	return names
 }
 
 // TLSConfig configures TLS/SSL for secure connections.
