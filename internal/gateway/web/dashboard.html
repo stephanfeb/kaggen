@@ -357,6 +357,14 @@ tr:hover { background: var(--bg-secondary); }
 .db-driver-badge.postgres { background: rgba(51,103,145,0.2); color: #336791; }
 .db-driver-badge.mysql { background: rgba(0,117,143,0.2); color: #00758f; }
 .db-driver-badge.sqlite { background: rgba(0,150,136,0.2); color: #009688; }
+/* Secret selector */
+.secret-selector { display: flex; gap: 8px; align-items: stretch; }
+.secret-selector select { flex: 1; padding: 8px 12px; font-size: 12px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; cursor: pointer; }
+.secret-selector select:focus { outline: none; border-color: var(--accent); }
+.secret-selector .secret-or { color: var(--text-muted); font-size: 11px; display: flex; align-items: center; padding: 0 4px; }
+.secret-selector input { flex: 1; }
+.secret-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(188,140,255,0.15); color: var(--purple); border-radius: 4px; font-size: 11px; }
+.secret-badge::before { content: '🔑'; font-size: 10px; }
 /* Pipeline progress */
 .pipeline-section { margin-bottom: 20px; }
 .pipeline-card {
@@ -1554,11 +1562,82 @@ async function loadSessions() {
 // --- Config ---
 let configData = null;
 
+// Secret keys cache for dropdowns
+let availableSecretKeys = [];
+
+async function loadSecretKeys() {
+  try {
+    const data = await fetchJSON('/api/secrets');
+    availableSecretKeys = data.available && data.keys ? data.keys : [];
+  } catch (e) {
+    availableSecretKeys = [];
+  }
+}
+
 async function loadConfig() {
+  // Load secrets first so dropdowns can be populated
+  await loadSecretKeys();
   configData = await fetchJSON('/api/config');
   renderConfigSections(configData);
   setupConfigTabs();
   setupConfigChangeDetection();
+  updateSaveButtonState();
+}
+
+// Render a secret selector with dropdown + text input option
+function renderSecretSelector(currentValue, onChangeFn, placeholder = 'secret:key-name or literal value') {
+  const isSecretRef = currentValue && currentValue.startsWith('secret:');
+  const secretKey = isSecretRef ? currentValue.slice(7) : '';
+  const literalValue = isSecretRef ? '' : (currentValue || '');
+
+  const options = availableSecretKeys.map(key =>
+    `<option value="secret:${esc(key)}" ${secretKey === key ? 'selected' : ''}>${esc(key)}</option>`
+  ).join('');
+
+  return `<div class="secret-selector">
+    <select onchange="onSecretSelectorChange(this, '${esc(onChangeFn)}')">
+      <option value="">-- Use secret from store --</option>
+      ${options}
+      <option value="__literal__" ${!isSecretRef && currentValue ? 'selected' : ''}>Enter value directly...</option>
+    </select>
+    <input type="password"
+           value="${esc(literalValue)}"
+           placeholder="${esc(placeholder)}"
+           style="${isSecretRef ? 'display:none' : ''}"
+           onchange="onSecretInputChange(this, '${esc(onChangeFn)}')">
+  </div>
+  <div class="config-field-hint">${isSecretRef ? `<span class="secret-badge">${esc(secretKey)}</span>` : 'Select a stored secret or enter value directly'}</div>`;
+}
+
+function onSecretSelectorChange(select, onChangeFn) {
+  const input = select.nextElementSibling;
+  if (select.value === '__literal__' || select.value === '') {
+    input.style.display = '';
+    if (select.value === '') {
+      input.value = '';
+      eval(onChangeFn.replace('VALUE', "''"));
+    } else {
+      // Focus the input for literal entry
+      input.focus();
+    }
+  } else {
+    input.style.display = 'none';
+    input.value = '';
+    eval(onChangeFn.replace('VALUE', `'${select.value}'`));
+  }
+  // Update hint
+  const hint = select.closest('.config-field').querySelector('.config-field-hint');
+  if (hint && select.value && select.value !== '__literal__') {
+    const key = select.value.slice(7);
+    hint.innerHTML = `<span class="secret-badge">${esc(key)}</span>`;
+  } else {
+    hint.textContent = 'Select a stored secret or enter value directly';
+  }
+  updateSaveButtonState();
+}
+
+function onSecretInputChange(input, onChangeFn) {
+  eval(onChangeFn.replace('VALUE', `'${input.value}'`));
   updateSaveButtonState();
 }
 
@@ -2382,13 +2461,11 @@ function renderOAuthProviderForm(name, provider) {
     <div class="automation-form-row">
       <div class="config-field">
         <label>Client ID</label>
-        <input type="text" value="${esc(provider.client_id || '')}" onchange="updateOAuthField('${esc(name)}', 'client_id', this.value)" placeholder="secret:my-client-id">
-        <div class="config-field-hint">Supports secret:key references</div>
+        ${renderSecretSelector(provider.client_id, "updateOAuthField('" + esc(name) + "', 'client_id', VALUE)", 'Enter client ID')}
       </div>
       <div class="config-field sensitive">
         <label>Client Secret</label>
-        <input type="password" value="${esc(provider.client_secret || '')}" onchange="updateOAuthField('${esc(name)}', 'client_secret', this.value)" placeholder="secret:my-client-secret">
-        <div class="config-field-hint">Supports secret:key references</div>
+        ${renderSecretSelector(provider.client_secret, "updateOAuthField('" + esc(name) + "', 'client_secret', VALUE)", 'Enter client secret')}
       </div>
     </div>
     <div class="config-field">
@@ -2783,8 +2860,7 @@ function renderDbConnectionForm(name, conn) {
         </div>
         <div class="config-field sensitive">
           <label>Password</label>
-          <input type="password" value="${esc(conn.password || '')}" onchange="updateDbField('${esc(name)}', 'password', this.value)" placeholder="secret:db-password">
-          <div class="config-field-hint">Supports secret:key references</div>
+          ${renderSecretSelector(conn.password, "updateDbField('" + esc(name) + "', 'password', VALUE)", 'Enter password')}
         </div>
       </div>
     </div>
