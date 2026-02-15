@@ -95,12 +95,21 @@ params:
 
 ---
 
-## Priority 3: WebSocket
+## Priority 3: WebSocket (Implemented)
+
+**Status:** Implemented in `internal/agent/websocket_tool.go` and `websocket_manager.go`
 
 **Use Cases:**
 - Real-time chat integrations (Slack, Discord bots)
 - Live data feeds (stocks, crypto, sensors)
 - Bidirectional communication with services
+
+**Actions:**
+- `connect` - Establish WSS/WS connection, return connection_id
+- `send` - Send text/JSON/binary message
+- `receive` - Wait for messages (with timeout, count, or drain buffer)
+- `close` - Gracefully close connection
+- `list_connections` - Show all active connections
 
 **Operations:**
 ```yaml
@@ -108,27 +117,39 @@ tool: websocket
 action: connect
 params:
   url: "wss://api.example.com/stream"
-  headers:
-    Authorization: "Bearer ${token}"
+  oauth_provider: "slack"  # or auth_secret: "api-token"
 
 tool: websocket
 action: send
 params:
-  connection_id: "ws-123"
-  message: {"type": "subscribe", "channel": "updates"}
+  connection_id: "abc123"
+  message_json: {"type": "subscribe", "channel": "updates"}
 
 tool: websocket
 action: receive
 params:
-  connection_id: "ws-123"
-  timeout: 30s
+  connection_id: "abc123"
+  timeout_seconds: 30
+  wait_count: 5
 ```
 
-**Design Considerations:**
-- Stateful connections (unlike HTTP)
-- Connection lifecycle management
-- Message buffering and backpressure
-- Reconnection strategies
+**Skill Declaration:**
+```yaml
+---
+tools: [websocket, read]
+oauth_providers: [slack]
+secrets: [api-token]
+---
+```
+
+**Implementation Details:**
+- Stateful connection manager with ID-based tracking
+- Per-connection goroutine for read pump with message buffering (100 msgs max)
+- Ping/pong keepalive (30s interval)
+- Auto-cleanup of idle connections (10 min)
+- Max 10 concurrent connections per skill
+- WSS/TLS support (insecure only for localhost)
+- OAuth and secret-based auth injection
 
 ---
 

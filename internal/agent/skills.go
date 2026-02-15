@@ -311,6 +311,21 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill carddav tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
 			}
 
+			// If skill declares "websocket" in tools, create websocket tool with manager
+			if containsString(fm.Tools, "websocket") {
+				// Create a WebSocket manager for this skill
+				wsManager := NewWebSocketManager(logger)
+				wsTool := NewWebSocketTool(
+					"default", // TODO: get user ID from context at runtime
+					fm.OAuthProviders,
+					skillSecrets,
+					getOAuthTokenGetter(),
+					wsManager,
+				)
+				agentTools = append(agentTools, wsTool)
+				logger.Info("skill websocket tool injected", "skill", summary.Name, "oauth_providers", fm.OAuthProviders)
+			}
+
 			// If skill has guarded tools and we have a runner, use GuardedSkillAgent
 			// which implements proper graph-based pause/resume for approvals.
 			if len(fm.GuardedTools) > 0 && guardedRunner != nil {
