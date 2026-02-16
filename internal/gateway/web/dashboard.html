@@ -1582,8 +1582,9 @@ async function loadConfig() {
   updateSaveButtonState();
 }
 
-// Render a secret selector with dropdown + text input option
-function renderSecretSelector(currentValue, onChangeFn, fieldLabel = 'secret') {
+// Render a secret selector with dropdown
+// updateType: 'oauth' or 'db', name: connection/provider name, field: field to update
+function renderSecretSelector(currentValue, updateType, name, field, fieldLabel = 'secret') {
   const isSecretRef = currentValue && currentValue.startsWith('secret:');
   const secretKey = isSecretRef ? currentValue.slice(7) : '';
 
@@ -1603,7 +1604,7 @@ function renderSecretSelector(currentValue, onChangeFn, fieldLabel = 'secret') {
     : '';
 
   return `<div class="secret-selector">
-    <select onchange="onSecretSelectorChange(this, '${esc(onChangeFn)}')" style="width:100%">
+    <select data-update-type="${esc(updateType)}" data-name="${esc(name)}" data-field="${esc(field)}" onchange="onSecretSelectorChange(this)" style="width:100%">
       <option value="">-- Select ${fieldLabel} from secret store --</option>
       ${options}
     </select>
@@ -1613,8 +1614,19 @@ function renderSecretSelector(currentValue, onChangeFn, fieldLabel = 'secret') {
   <div class="config-field-hint">${isSecretRef ? `<span class="secret-badge">${esc(secretKey)}</span>` : 'Store secrets via Settings → Secrets'}</div>`;
 }
 
-function onSecretSelectorChange(select, onChangeFn) {
-  eval(onChangeFn.replace('VALUE', select.value ? `'${select.value}'` : "''"));
+function onSecretSelectorChange(select) {
+  const updateType = select.dataset.updateType;
+  const name = select.dataset.name;
+  const field = select.dataset.field;
+  const value = select.value || '';
+
+  // Call the appropriate update function
+  if (updateType === 'oauth') {
+    updateOAuthField(name, field, value);
+  } else if (updateType === 'db') {
+    updateDbField(name, field, value);
+  }
+
   // Update hint
   const hint = select.closest('.config-field').querySelector('.config-field-hint:last-child');
   if (hint && select.value) {
@@ -2446,11 +2458,11 @@ function renderOAuthProviderForm(name, provider) {
     <div class="automation-form-row">
       <div class="config-field">
         <label>Client ID</label>
-        ${renderSecretSelector(provider.client_id, "updateOAuthField('" + esc(name) + "', 'client_id', VALUE)", 'Enter client ID')}
+        ${renderSecretSelector(provider.client_id, 'oauth', name, 'client_id', 'client ID')}
       </div>
       <div class="config-field sensitive">
         <label>Client Secret</label>
-        ${renderSecretSelector(provider.client_secret, "updateOAuthField('" + esc(name) + "', 'client_secret', VALUE)", 'Enter client secret')}
+        ${renderSecretSelector(provider.client_secret, 'oauth', name, 'client_secret', 'client secret')}
       </div>
     </div>
     <div class="config-field">
@@ -2845,7 +2857,7 @@ function renderDbConnectionForm(name, conn) {
         </div>
         <div class="config-field sensitive">
           <label>Password</label>
-          ${renderSecretSelector(conn.password, "updateDbField('" + esc(name) + "', 'password', VALUE)", 'Enter password')}
+          ${renderSecretSelector(conn.password, 'db', name, 'password', 'password')}
         </div>
       </div>
     </div>
