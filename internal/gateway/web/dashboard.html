@@ -357,6 +357,13 @@ tr:hover { background: var(--bg-secondary); }
 .db-driver-badge.postgres { background: rgba(51,103,145,0.2); color: #336791; }
 .db-driver-badge.mysql { background: rgba(0,117,143,0.2); color: #00758f; }
 .db-driver-badge.sqlite { background: rgba(0,150,136,0.2); color: #009688; }
+/* MQTT badge */
+.mqtt-tls-badge { background: rgba(46,160,67,0.2); color: #2ea043; padding: 2px 6px; border-radius: 8px; font-size: 9px; text-transform: uppercase; }
+/* SSH auth selector */
+.ssh-auth-selector { display: flex; gap: 16px; margin-bottom: 12px; }
+.ssh-auth-option { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.ssh-auth-option input[type="radio"] { accent-color: var(--accent); }
+.ssh-auth-option label { font-size: 12px; color: var(--text); cursor: pointer; }
 /* Secret selector */
 .secret-selector { margin-bottom: 4px; }
 .secret-selector select { width: 100%; padding: 8px 12px; font-size: 12px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; cursor: pointer; }
@@ -1625,6 +1632,10 @@ function onSecretSelectorChange(select) {
     updateOAuthField(name, field, value);
   } else if (updateType === 'db') {
     updateDbField(name, field, value);
+  } else if (updateType === 'mqtt') {
+    updateMqttField(name, field, value);
+  } else if (updateType === 'ssh') {
+    updateSshField(name, field, value);
   }
 
   // Update hint
@@ -1686,9 +1697,21 @@ function hasConfigChanges() {
     return true;
   }
 
+  // Check MQTT broker changes
+  const currentMqtt = collectMqttBrokersData();
+  if (JSON.stringify(currentMqtt) !== JSON.stringify(originalMqttBrokersState)) {
+    return true;
+  }
+
+  // Check SSH host changes
+  const currentSsh = collectSshHostsData();
+  if (JSON.stringify(currentSsh) !== JSON.stringify(originalSshHostsState)) {
+    return true;
+  }
+
   const elements = document.querySelectorAll('#panel-config [data-path]');
   for (const el of elements) {
-    if (el.dataset.type === 'automation' || el.dataset.type === 'oauth' || el.dataset.type === 'database') continue; // Skip form-based hidden fields
+    if (el.dataset.type === 'automation' || el.dataset.type === 'oauth' || el.dataset.type === 'database' || el.dataset.type === 'mqtt' || el.dataset.type === 'ssh') continue; // Skip form-based hidden fields
     const original = el.dataset.originalValue;
     if (original === undefined) continue;
 
@@ -1728,6 +1751,8 @@ function renderConfigSections(cfg) {
   document.getElementById('config-integrations').innerHTML = renderIntegrationsSection(cfg);
   renderOAuthProvidersList();
   renderDbConnectionsList();
+  renderMqttBrokersList();
+  renderSshHostsList();
   document.getElementById('config-network').innerHTML = renderNetworkSection(cfg);
   document.getElementById('config-security').innerHTML = renderSecuritySection(cfg);
 }
@@ -2311,6 +2336,14 @@ let originalOauthState = {};
 let dbConnectionsState = {};
 let originalDbConnectionsState = {};
 
+// MQTT brokers state
+let mqttBrokersState = {};
+let originalMqttBrokersState = {};
+
+// SSH hosts state
+let sshHostsState = {};
+let originalSshHostsState = {};
+
 function renderIntegrationsSection(cfg) {
   // Initialize OAuth state
   oauthProvidersState = JSON.parse(JSON.stringify(cfg.oauth?.providers || {}));
@@ -2320,8 +2353,14 @@ function renderIntegrationsSection(cfg) {
   dbConnectionsState = JSON.parse(JSON.stringify(cfg.databases?.connections || {}));
   originalDbConnectionsState = collectDbConnectionsData();
 
-  const mqtt = JSON.stringify(cfg.mqtt?.brokers || {}, null, 2);
-  const ssh = JSON.stringify(cfg.ssh?.hosts || {}, null, 2);
+  // Initialize MQTT brokers state
+  mqttBrokersState = JSON.parse(JSON.stringify(cfg.mqtt?.brokers || {}));
+  originalMqttBrokersState = collectMqttBrokersData();
+
+  // Initialize SSH hosts state
+  sshHostsState = JSON.parse(JSON.stringify(cfg.ssh?.hosts || {}));
+  originalSshHostsState = collectSshHostsData();
+
   return `
     <div class="config-field-group">
       <div class="config-field-group-title">OAuth Providers</div>
@@ -2337,19 +2376,15 @@ function renderIntegrationsSection(cfg) {
     </div>
     <div class="config-field-group">
       <div class="config-field-group-title">MQTT Brokers</div>
-      <div class="config-field config-json-editor">
-        <label>Brokers (JSON object)</label>
-        <textarea data-path="mqtt.brokers" data-type="json">${esc(mqtt)}</textarea>
-        <div class="config-field-hint">Each: {host, port, username, password, client_id, tls}</div>
-      </div>
+      <div class="automation-list" id="mqtt-brokers-list"></div>
+      <button type="button" class="automation-add-btn" onclick="showAddMqttBroker()">+ Add Broker</button>
+      <input type="hidden" id="mqtt-brokers-data" data-path="mqtt.brokers" data-type="mqtt">
     </div>
     <div class="config-field-group">
       <div class="config-field-group-title">SSH Hosts</div>
-      <div class="config-field config-json-editor">
-        <label>Hosts (JSON object)</label>
-        <textarea data-path="ssh.hosts" data-type="json">${esc(ssh)}</textarea>
-        <div class="config-field-hint">Each: {host, port, user, use_agent, private_key, password}</div>
-      </div>
+      <div class="automation-list" id="ssh-hosts-list"></div>
+      <button type="button" class="automation-add-btn" onclick="showAddSshHost()">+ Add Host</button>
+      <input type="hidden" id="ssh-hosts-data" data-path="ssh.hosts" data-type="ssh">
     </div>
     <div class="config-field-group">
       <div class="config-field-group-title">Email Poller</div>
@@ -2980,6 +3015,387 @@ function collectDbConnectionsData() {
   return result;
 }
 
+// MQTT Brokers functions
+function renderMqttBrokersList() {
+  const list = document.getElementById('mqtt-brokers-list');
+  if (!list) return;
+  const names = Object.keys(mqttBrokersState);
+  if (names.length === 0) {
+    list.innerHTML = '<div class="config-field-hint" style="padding:12px;text-align:center">No MQTT brokers configured. Click "Add Broker" to get started.</div>';
+    return;
+  }
+  list.innerHTML = names.map((name, idx) => renderMqttBrokerItem(name, mqttBrokersState[name], idx)).join('');
+}
+
+function renderMqttBrokerItem(name, broker, idx) {
+  const expanded = broker._expanded ? 'expanded' : '';
+  const port = broker.port || (broker.tls ? 8883 : 1883);
+  const summary = `${broker.host || 'No host'}:${port}`;
+  const tlsBadge = broker.tls ? '<span class="mqtt-tls-badge">TLS</span>' : '';
+  return `<div class="automation-item ${expanded}" data-mqtt-name="${esc(name)}">
+    <div class="automation-item-header" onclick="toggleMqttBroker(this)">
+      <span class="automation-item-toggle">&#9654;</span>
+      <span class="automation-item-name">${esc(name)}</span>
+      ${tlsBadge}
+      <span class="automation-item-summary">${esc(summary)}</span>
+    </div>
+    <div class="automation-item-body">
+      ${renderMqttBrokerForm(name, broker)}
+      <button type="button" class="automation-delete-btn" onclick="deleteMqttBroker('${esc(name)}')">Delete Broker</button>
+    </div>
+  </div>`;
+}
+
+function renderMqttBrokerForm(name, broker) {
+  const tls = broker.tls || false;
+  const defaultPort = tls ? 8883 : 1883;
+  const port = broker.port || defaultPort;
+  return `
+    <div class="config-field">
+      <label>Broker Name</label>
+      <input type="text" value="${esc(name)}" disabled style="opacity:0.7">
+    </div>
+    <div class="automation-form-row">
+      <div class="config-field">
+        <label>Host</label>
+        <input type="text" value="${esc(broker.host || '')}" onchange="updateMqttField('${esc(name)}', 'host', this.value)" placeholder="mqtt.example.com">
+      </div>
+      <div class="config-field">
+        <label>Port</label>
+        <input type="number" value="${port}" min="1" max="65535" onchange="updateMqttField('${esc(name)}', 'port', parseInt(this.value)||${defaultPort})">
+        <div class="config-field-hint">Default: ${defaultPort}</div>
+      </div>
+    </div>
+    <div class="automation-form-row">
+      <div class="config-field">
+        <label>Username</label>
+        <input type="text" value="${esc(broker.username || '')}" onchange="updateMqttField('${esc(name)}', 'username', this.value)" placeholder="Optional">
+      </div>
+      <div class="config-field sensitive">
+        <label>Password</label>
+        ${renderSecretSelector(broker.password, 'mqtt', name, 'password', 'password')}
+      </div>
+    </div>
+    <div class="config-field">
+      <label>Client ID</label>
+      <input type="text" value="${esc(broker.client_id || '')}" onchange="updateMqttField('${esc(name)}', 'client_id', this.value)" placeholder="Auto-generated if empty">
+      <div class="config-field-hint">Leave empty to auto-generate</div>
+    </div>
+    <div class="config-field">
+      <label>
+        <input type="checkbox" ${tls ? 'checked' : ''} onchange="onMqttTlsChange('${esc(name)}', this.checked)"> Enable TLS
+      </label>
+    </div>
+    <div id="mqtt-tls-fields-${esc(name)}" style="${tls ? '' : 'display:none'}">
+      <div class="config-field">
+        <label>
+          <input type="checkbox" ${broker.skip_verify ? 'checked' : ''} onchange="updateMqttField('${esc(name)}', 'skip_verify', this.checked)"> Skip Certificate Verification
+        </label>
+        <div class="config-field-hint" style="color:var(--yellow)">Warning: Insecure, use only for testing</div>
+      </div>
+      <div class="config-field">
+        <label>CA Certificate Path</label>
+        <input type="text" value="${esc(broker.ca_cert || '')}" onchange="updateMqttField('${esc(name)}', 'ca_cert', this.value)" placeholder="/path/to/ca.crt">
+      </div>
+      <div class="automation-form-row">
+        <div class="config-field">
+          <label>Client Certificate Path</label>
+          <input type="text" value="${esc(broker.client_cert || '')}" onchange="updateMqttField('${esc(name)}', 'client_cert', this.value)" placeholder="/path/to/client.crt">
+        </div>
+        <div class="config-field">
+          <label>Client Key Path</label>
+          <input type="text" value="${esc(broker.client_key || '')}" onchange="updateMqttField('${esc(name)}', 'client_key', this.value)" placeholder="/path/to/client.key">
+        </div>
+      </div>
+    </div>`;
+}
+
+function toggleMqttBroker(el) {
+  const item = el.closest('.automation-item');
+  const name = item.dataset.mqttName;
+  mqttBrokersState[name]._expanded = !mqttBrokersState[name]._expanded;
+  item.classList.toggle('expanded');
+}
+
+function showAddMqttBroker() {
+  const name = prompt('Enter a name for the new MQTT broker (e.g., "home_assistant"):');
+  if (!name) return;
+  if (mqttBrokersState[name]) {
+    alert('A broker with this name already exists.');
+    return;
+  }
+  mqttBrokersState[name] = { _expanded: true, host: '', port: 1883 };
+  renderMqttBrokersList();
+  updateSaveButtonState();
+}
+
+function deleteMqttBroker(name) {
+  if (!confirm(`Delete MQTT broker "${name}"?`)) return;
+  delete mqttBrokersState[name];
+  renderMqttBrokersList();
+  updateSaveButtonState();
+}
+
+function updateMqttField(name, field, value) {
+  mqttBrokersState[name][field] = value;
+  updateSaveButtonState();
+}
+
+function onMqttTlsChange(name, enabled) {
+  mqttBrokersState[name].tls = enabled;
+  // Update default port
+  if (enabled && (!mqttBrokersState[name].port || mqttBrokersState[name].port === 1883)) {
+    mqttBrokersState[name].port = 8883;
+  } else if (!enabled && mqttBrokersState[name].port === 8883) {
+    mqttBrokersState[name].port = 1883;
+  }
+  // Clear TLS fields if disabled
+  if (!enabled) {
+    delete mqttBrokersState[name].skip_verify;
+    delete mqttBrokersState[name].ca_cert;
+    delete mqttBrokersState[name].client_cert;
+    delete mqttBrokersState[name].client_key;
+  }
+  renderMqttBrokersList();
+  updateSaveButtonState();
+}
+
+function collectMqttBrokersData() {
+  const result = {};
+  for (const [name, broker] of Object.entries(mqttBrokersState)) {
+    const clean = { ...broker };
+    delete clean._expanded;
+    // Remove empty optional fields
+    if (!clean.port || clean.port === 1883) delete clean.port;
+    if (!clean.username) delete clean.username;
+    if (!clean.password) delete clean.password;
+    if (!clean.client_id) delete clean.client_id;
+    if (!clean.tls) delete clean.tls;
+    if (!clean.skip_verify) delete clean.skip_verify;
+    if (!clean.ca_cert) delete clean.ca_cert;
+    if (!clean.client_cert) delete clean.client_cert;
+    if (!clean.client_key) delete clean.client_key;
+    result[name] = clean;
+  }
+  return result;
+}
+
+// SSH Hosts functions
+function renderSshHostsList() {
+  const list = document.getElementById('ssh-hosts-list');
+  if (!list) return;
+  const names = Object.keys(sshHostsState);
+  if (names.length === 0) {
+    list.innerHTML = '<div class="config-field-hint" style="padding:12px;text-align:center">No SSH hosts configured. Click "Add Host" to get started.</div>';
+    return;
+  }
+  list.innerHTML = names.map((name, idx) => renderSshHostItem(name, sshHostsState[name], idx)).join('');
+}
+
+function renderSshHostItem(name, host, idx) {
+  const expanded = host._expanded ? 'expanded' : '';
+  const port = host.port || 22;
+  const summary = `${host.user || 'user'}@${host.host || 'host'}:${port}`;
+  return `<div class="automation-item ${expanded}" data-ssh-name="${esc(name)}">
+    <div class="automation-item-header" onclick="toggleSshHost(this)">
+      <span class="automation-item-toggle">&#9654;</span>
+      <span class="automation-item-name">${esc(name)}</span>
+      <span class="automation-item-summary">${esc(summary)}</span>
+    </div>
+    <div class="automation-item-body">
+      ${renderSshHostForm(name, host)}
+      <button type="button" class="automation-delete-btn" onclick="deleteSshHost('${esc(name)}')">Delete Host</button>
+    </div>
+  </div>`;
+}
+
+function renderSshHostForm(name, host) {
+  const port = host.port || 22;
+  // Determine auth method: agent > key > password
+  let authMethod = 'agent';
+  if (host.private_key) authMethod = 'key';
+  else if (host.password) authMethod = 'password';
+  if (host.use_agent) authMethod = 'agent';
+
+  // Get list of other SSH hosts for jump host dropdown
+  const otherHosts = Object.keys(sshHostsState).filter(n => n !== name);
+  const jumpHostOptions = otherHosts.map(n =>
+    `<option value="${esc(n)}" ${host.proxy_jump === n ? 'selected' : ''}>${esc(n)}</option>`
+  ).join('');
+
+  return `
+    <div class="config-field">
+      <label>Host Name</label>
+      <input type="text" value="${esc(name)}" disabled style="opacity:0.7">
+    </div>
+    <div class="automation-form-row">
+      <div class="config-field">
+        <label>Host</label>
+        <input type="text" value="${esc(host.host || '')}" onchange="updateSshField('${esc(name)}', 'host', this.value)" placeholder="example.com">
+      </div>
+      <div class="config-field">
+        <label>Port</label>
+        <input type="number" value="${port}" min="1" max="65535" onchange="updateSshField('${esc(name)}', 'port', parseInt(this.value)||22)">
+        <div class="config-field-hint">Default: 22</div>
+      </div>
+    </div>
+    <div class="config-field">
+      <label>User</label>
+      <input type="text" value="${esc(host.user || '')}" onchange="updateSshField('${esc(name)}', 'user', this.value)" placeholder="username">
+    </div>
+    <div class="config-field">
+      <label>Authentication</label>
+      <div class="ssh-auth-selector">
+        <div class="ssh-auth-option">
+          <input type="radio" name="ssh-auth-${esc(name)}" id="ssh-auth-agent-${esc(name)}" value="agent" ${authMethod === 'agent' ? 'checked' : ''} onchange="onSshAuthMethodChange('${esc(name)}', 'agent')">
+          <label for="ssh-auth-agent-${esc(name)}">SSH Agent</label>
+        </div>
+        <div class="ssh-auth-option">
+          <input type="radio" name="ssh-auth-${esc(name)}" id="ssh-auth-key-${esc(name)}" value="key" ${authMethod === 'key' ? 'checked' : ''} onchange="onSshAuthMethodChange('${esc(name)}', 'key')">
+          <label for="ssh-auth-key-${esc(name)}">Private Key</label>
+        </div>
+        <div class="ssh-auth-option">
+          <input type="radio" name="ssh-auth-${esc(name)}" id="ssh-auth-password-${esc(name)}" value="password" ${authMethod === 'password' ? 'checked' : ''} onchange="onSshAuthMethodChange('${esc(name)}', 'password')">
+          <label for="ssh-auth-password-${esc(name)}">Password</label>
+        </div>
+      </div>
+    </div>
+    <div id="ssh-key-fields-${esc(name)}" style="${authMethod === 'key' ? '' : 'display:none'}">
+      <div class="config-field">
+        <label>Private Key Path</label>
+        <input type="text" value="${esc(host.private_key || '')}" onchange="updateSshField('${esc(name)}', 'private_key', this.value)" placeholder="~/.ssh/id_ed25519">
+      </div>
+      <div class="config-field sensitive">
+        <label>Passphrase</label>
+        ${renderSecretSelector(host.passphrase, 'ssh', name, 'passphrase', 'passphrase')}
+      </div>
+    </div>
+    <div id="ssh-password-fields-${esc(name)}" style="${authMethod === 'password' ? '' : 'display:none'}">
+      <div class="config-field sensitive">
+        <label>Password</label>
+        ${renderSecretSelector(host.password, 'ssh', name, 'password', 'password')}
+      </div>
+    </div>
+    <div class="oauth-advanced-section">
+      <div class="oauth-advanced-toggle" onclick="toggleSshAdvanced('${esc(name)}')">
+        <span class="oauth-advanced-icon">${host._advancedExpanded ? '▼' : '▶'}</span>
+        Advanced Settings
+      </div>
+      <div class="oauth-advanced-body" style="${host._advancedExpanded ? '' : 'display:none'}">
+        <div class="automation-form-row">
+          <div class="config-field">
+            <label>Host Key Check</label>
+            <select onchange="updateSshField('${esc(name)}', 'host_key_check', this.value)">
+              <option value="strict" ${(host.host_key_check || 'strict') === 'strict' ? 'selected' : ''}>Strict (recommended)</option>
+              <option value="accept-new" ${host.host_key_check === 'accept-new' ? 'selected' : ''}>Accept New</option>
+              <option value="none" ${host.host_key_check === 'none' ? 'selected' : ''}>None (insecure)</option>
+            </select>
+          </div>
+          <div class="config-field">
+            <label>Known Hosts File</label>
+            <input type="text" value="${esc(host.known_hosts_file || '')}" onchange="updateSshField('${esc(name)}', 'known_hosts_file', this.value)" placeholder="~/.ssh/known_hosts">
+          </div>
+        </div>
+        <div class="config-field">
+          <label>Jump Host (Bastion)</label>
+          <select onchange="updateSshField('${esc(name)}', 'proxy_jump', this.value)">
+            <option value="">-- No jump host --</option>
+            ${jumpHostOptions}
+          </select>
+          <div class="config-field-hint">Connect through another configured SSH host</div>
+        </div>
+        <div class="automation-form-row">
+          <div class="config-field">
+            <label>Connection Timeout</label>
+            <input type="number" value="${host.timeout_secs || 30}" min="1" max="300" onchange="updateSshField('${esc(name)}', 'timeout_secs', parseInt(this.value)||30)">
+            <div class="config-field-hint">Seconds (default: 30)</div>
+          </div>
+          <div class="config-field">
+            <label>Keepalive Interval</label>
+            <input type="number" value="${host.keepalive_secs || 60}" min="0" max="600" onchange="updateSshField('${esc(name)}', 'keepalive_secs', parseInt(this.value)||60)">
+            <div class="config-field-hint">Seconds (default: 60)</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function toggleSshHost(el) {
+  const item = el.closest('.automation-item');
+  const name = item.dataset.sshName;
+  sshHostsState[name]._expanded = !sshHostsState[name]._expanded;
+  item.classList.toggle('expanded');
+}
+
+function toggleSshAdvanced(name) {
+  sshHostsState[name]._advancedExpanded = !sshHostsState[name]._advancedExpanded;
+  renderSshHostsList();
+}
+
+function showAddSshHost() {
+  const name = prompt('Enter a name for the new SSH host (e.g., "production_server"):');
+  if (!name) return;
+  if (sshHostsState[name]) {
+    alert('A host with this name already exists.');
+    return;
+  }
+  sshHostsState[name] = { _expanded: true, host: '', user: '', use_agent: true };
+  renderSshHostsList();
+  updateSaveButtonState();
+}
+
+function deleteSshHost(name) {
+  if (!confirm(`Delete SSH host "${name}"?`)) return;
+  delete sshHostsState[name];
+  renderSshHostsList();
+  updateSaveButtonState();
+}
+
+function updateSshField(name, field, value) {
+  sshHostsState[name][field] = value;
+  updateSaveButtonState();
+}
+
+function onSshAuthMethodChange(name, method) {
+  const host = sshHostsState[name];
+  // Clear all auth fields first
+  delete host.use_agent;
+  delete host.private_key;
+  delete host.passphrase;
+  delete host.password;
+
+  // Set the appropriate field
+  if (method === 'agent') {
+    host.use_agent = true;
+  }
+  // For key and password, fields will be filled in by user
+
+  renderSshHostsList();
+  updateSaveButtonState();
+}
+
+function collectSshHostsData() {
+  const result = {};
+  for (const [name, host] of Object.entries(sshHostsState)) {
+    const clean = { ...host };
+    delete clean._expanded;
+    delete clean._advancedExpanded;
+    // Remove empty optional fields
+    if (!clean.port || clean.port === 22) delete clean.port;
+    if (!clean.use_agent) delete clean.use_agent;
+    if (!clean.private_key) delete clean.private_key;
+    if (!clean.passphrase) delete clean.passphrase;
+    if (!clean.password) delete clean.password;
+    if (!clean.known_hosts_file) delete clean.known_hosts_file;
+    if (!clean.host_key_check || clean.host_key_check === 'strict') delete clean.host_key_check;
+    if (!clean.proxy_jump) delete clean.proxy_jump;
+    if (!clean.timeout_secs || clean.timeout_secs === 30) delete clean.timeout_secs;
+    if (!clean.keepalive_secs || clean.keepalive_secs === 60) delete clean.keepalive_secs;
+    result[name] = clean;
+  }
+  return result;
+}
+
 function renderNetworkSection(cfg) {
   return `
     <div class="config-field-group">
@@ -3338,6 +3754,16 @@ function collectConfigData() {
       // Handle database connections data from form UI
       const dbData = collectDbConnectionsData();
       setNested(data, ['databases', 'connections'], dbData);
+      continue;
+    } else if (el.dataset.type === 'mqtt') {
+      // Handle MQTT brokers data from form UI
+      const mqttData = collectMqttBrokersData();
+      setNested(data, ['mqtt', 'brokers'], mqttData);
+      continue;
+    } else if (el.dataset.type === 'ssh') {
+      // Handle SSH hosts data from form UI
+      const sshData = collectSshHostsData();
+      setNested(data, ['ssh', 'hosts'], sshData);
       continue;
     } else if (el.dataset.type === 'json') {
       const fullPath = el.dataset.path;
