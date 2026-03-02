@@ -101,6 +101,10 @@ type TaskState struct {
 	TimeoutAt       time.Time          `json:"timeout_at,omitempty"`     // auto-fail if no callback by this time
 	ApprovalRequest *ApprovalRequest   `json:"approval_request,omitempty"` // set when status is pending_approval
 	cancelFn        context.CancelFunc `json:"-"`                         // for external cancellation
+
+	// Pipeline context (set at dispatch time for tasks belonging to a pipeline)
+	PipelineName  string `json:"pipeline_name,omitempty"`
+	PipelineStage int    `json:"pipeline_stage,omitempty"` // 1-based stage index
 }
 
 // TaskEventCallback is called when a task event is added, enabling real-time broadcast.
@@ -203,18 +207,20 @@ func (s *InFlightStore) AddEvent(id string, evt *TaskEvent) {
 }
 
 // Register adds a new running task to the store.
-func (s *InFlightStore) Register(id, agentName, task string, policy TriggerPolicy, sessionID, userID string) {
+func (s *InFlightStore) Register(id, agentName, task string, policy TriggerPolicy, sessionID, userID, pipelineName string, pipelineStage int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tasks[id] = &TaskState{
-		ID:        id,
-		AgentName: agentName,
-		Task:      task,
-		Status:    TaskRunning,
-		Policy:    policy,
-		SessionID: sessionID,
-		UserID:    userID,
-		StartedAt: time.Now(),
+		ID:            id,
+		AgentName:     agentName,
+		Task:          task,
+		Status:        TaskRunning,
+		Policy:        policy,
+		SessionID:     sessionID,
+		UserID:        userID,
+		StartedAt:     time.Now(),
+		PipelineName:  pipelineName,
+		PipelineStage: pipelineStage,
 	}
 }
 
@@ -516,6 +522,20 @@ func (s *InFlightStore) PipelineElapsed(sessionID, pipelineName string) time.Dur
 	return time.Since(start)
 }
 
+// PipelineStartedAt returns the start time for a pipeline run, or nil if not started.
+func (s *InFlightStore) PipelineStartedAt(sessionID, pipelineName string) *time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.pipelineStartTimes[sessionID] == nil {
+		return nil
+	}
+	start, ok := s.pipelineStartTimes[sessionID][pipelineName]
+	if !ok {
+		return nil
+	}
+	return &start
+}
+
 // CompletionFunc is called when an async sub-agent finishes.
 // It receives the task ID, result, error, and trigger policy.
 type CompletionFunc func(taskID, result string, err error, policy TriggerPolicy)
@@ -640,8 +660,18 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 	}
 
 	taskID := uuid.New().String()
-	d.store.Register(taskID, req.AgentName, req.Task, policy, sessionID, userID)
-	d.logger.Info("dispatched async task", "task_id", taskID, "agent", req.AgentName, "policy", policy, "session_id", sessionID)
+
+	// Capture pipeline context for task grouping in dashboard.
+	var pipelineName string
+	var pipelineStage int
+	if req.Pipeline != "" {
+		if pa, ok := d.pipelineAgents[req.AgentName]; ok && pa.Pipeline == req.Pipeline {
+			pipelineName = pa.Pipeline
+			pipelineStage = pa.Stage
+		}
+	}
+	d.store.Register(taskID, req.AgentName, req.Task, policy, sessionID, userID, pipelineName, pipelineStage)
+	d.logger.Info("dispatched async task", "task_id", taskID, "agent", req.AgentName, "policy", policy, "session_id", sessionID, "pipeline", pipelineName, "stage", pipelineStage)
 
 	// Send acknowledgment to user before dispatching (best effort, don't block on errors)
 	if sessionID != "" {

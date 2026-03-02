@@ -261,13 +261,19 @@ func (e *Engine) execute(ctx context.Context, name, jobType, prompt, userID, ses
 
 	startedAt := time.Now()
 
+	// Copy metadata and mark as proactive so handler trusts this message.
+	meta := copyMeta(metadata)
+	meta["proactive"] = true
+	meta["proactive_job_name"] = name
+	meta["proactive_job_type"] = jobType
+
 	msg := &channel.Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
 		UserID:    userID,
 		Content:   prompt,
 		Channel:   chName,
-		Metadata:  copyMeta(metadata),
+		Metadata:  meta,
 	}
 
 	var finalContent string

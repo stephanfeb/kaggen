@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package kaggen.p2p;
+
+option go_package = "github.com/yourusername/kaggen/internal/p2p/proto";
+
+// AuthHandshake is sent as the first message on an authenticated P2P stream.
+// The client must send this before any other protocol messages.
+message AuthHandshake {
+  // Authentication token (same format as WebSocket tokens).
+  string token = 1;
+
+  // Optional metadata for protocol-specific context.
+  map<string, string> metadata = 2;
+}
+
+// AuthResponse is sent by the server after validating the handshake.
+message AuthResponse {
+  // True if authentication succeeded.
+  bool success = 1;
+
+  // Error message if authentication failed.
+  string error = 2;
+
+  // Assigned session ID for the authenticated connection.
+  string session_id = 3;
+
+  // User ID derived from the authenticated token.
+  string user_id = 4;
+}

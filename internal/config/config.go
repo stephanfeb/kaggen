@@ -251,6 +251,15 @@ type P2PConfig struct {
 	BootstrapPeers []string `json:"bootstrap_peers,omitempty"` // Bootstrap peer multiaddrs
 	Topics         []string `json:"topics,omitempty"`          // GossipSub topics to join
 	RelayEnabled   bool     `json:"relay_enabled,omitempty"`   // Enable circuit relay v2
+
+	// Security: PeerID allowlist and token authentication
+	AllowedPeerIDs []string `json:"allowed_peer_ids,omitempty"` // PeerIDs allowed to connect (empty = allow all)
+	AuthRequired   bool     `json:"auth_required,omitempty"`    // Require token authentication for P2P streams
+
+	// Resource limits for DoS protection
+	MaxConnections       int `json:"max_connections,omitempty"`        // Max total connections (default 128)
+	MaxStreamsPerPeer    int `json:"max_streams_per_peer,omitempty"`   // Max streams per peer (default 64)
+	MaxConcurrentStreams int `json:"max_concurrent_streams,omitempty"` // Max concurrent streams (default 256)
 }
 
 // TrustConfig configures the trust-tier security system.

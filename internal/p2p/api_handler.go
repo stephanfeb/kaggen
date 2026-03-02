@@ -28,9 +28,10 @@ type MethodHandler func(params json.RawMessage) (any, error)
 
 // APIHandler provides base functionality for P2P API protocol handlers.
 type APIHandler struct {
-	protocolID protocol.ID
-	methods    map[string]MethodHandler
-	logger     *slog.Logger
+	protocolID    protocol.ID
+	methods       map[string]MethodHandler
+	logger        *slog.Logger
+	authenticator *StreamAuthenticator // optional token authenticator
 }
 
 // NewAPIHandler creates a new API handler for a given protocol.
@@ -40,6 +41,11 @@ func NewAPIHandler(protocolID protocol.ID, logger *slog.Logger) *APIHandler {
 		methods:    make(map[string]MethodHandler),
 		logger:     logger,
 	}
+}
+
+// SetAuthenticator sets the token authenticator for API streams.
+func (h *APIHandler) SetAuthenticator(auth *StreamAuthenticator) {
+	h.authenticator = auth
 }
 
 // RegisterMethod registers a handler for a specific method name.
@@ -57,6 +63,18 @@ func (h *APIHandler) HandleStream(stream network.Stream) {
 	h.logger.Debug("API stream opened",
 		"protocol", h.protocolID,
 		"peer", peerID)
+
+	// Perform authentication if configured.
+	if h.authenticator != nil {
+		_, err := h.authenticator.AuthenticateStream(stream)
+		if err != nil {
+			h.logger.Warn("API auth failed",
+				"protocol", h.protocolID,
+				"peer", peerID,
+				"error", err)
+			return
+		}
+	}
 
 	// Read the request.
 	var req pb.APIRequest

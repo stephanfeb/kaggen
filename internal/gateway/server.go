@@ -44,6 +44,7 @@ type Server struct {
 	tgChannel     *channel.TelegramChannel
 	waChannel     *channel.WhatsAppChannel
 	p2pChannel    *p2p.P2PChannel
+	p2pAuth       *p2p.StreamAuthenticator
 	proactive     *proactive.Engine
 	dashboard     *DashboardAPI
 	tunnel        *tunnel.CloudflareTunnel
@@ -242,15 +243,21 @@ func (s *Server) Start(ctx context.Context) error {
 				fmt.Printf("P2P Listen: %s/p2p/%s\n", addr, node.PeerID())
 			}
 
+			// Create P2P stream authenticator if auth is enabled
+			s.p2pAuth = p2p.NewStreamAuthenticator(s.tokenStore, s.config.P2P.AuthRequired, s.logger)
+
 			// Create and register P2P channel for chat protocol.
 			s.p2pChannel = p2p.NewP2PChannel(node, s.logger)
+			s.p2pChannel.SetAuthenticator(s.p2pAuth)
 			s.router.AddChannel(s.p2pChannel)
 
 			// Start the P2P channel.
 			if err := s.p2pChannel.Start(ctx); err != nil {
 				s.logger.Warn("failed to start P2P channel", "error", err)
 			} else {
-				s.logger.Info("P2P chat protocol ready", "protocol", p2p.ChatProtocolID)
+				s.logger.Info("P2P chat protocol ready",
+					"protocol", p2p.ChatProtocolID,
+					"auth_required", s.config.P2P.AuthRequired)
 			}
 
 			// Register P2P API protocols.
@@ -428,6 +435,7 @@ func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
 
 	// Sessions protocol
 	sessionsProto := p2p.NewSessionsProtocol(s.config, s.logger)
+	sessionsProto.SetAuthenticator(s.p2pAuth)
 	host.SetStreamHandler(p2p.SessionsProtocolID, sessionsProto.StreamHandler())
 	s.logger.Info("P2P protocol registered", "protocol", p2p.SessionsProtocolID)
 
@@ -438,6 +446,7 @@ func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
 			s.agentProvider.Pipelines,
 			s.logger,
 		)
+		tasksProto.SetAuthenticator(s.p2pAuth)
 		host.SetStreamHandler(p2p.TasksProtocolID, tasksProto.StreamHandler())
 		s.logger.Info("P2P protocol registered", "protocol", p2p.TasksProtocolID)
 
@@ -448,6 +457,7 @@ func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
 			s.handler,
 			s.logger,
 		)
+		approvalsProto.SetAuthenticator(s.p2pAuth)
 		host.SetStreamHandler(p2p.ApprovalsProtocolID, approvalsProto.StreamHandler())
 		s.logger.Info("P2P protocol registered", "protocol", p2p.ApprovalsProtocolID)
 
@@ -464,23 +474,27 @@ func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
 			s.ClientCount,
 			s.logger,
 		)
+		systemProto.SetAuthenticator(s.p2pAuth)
 		host.SetStreamHandler(p2p.SystemProtocolID, systemProto.StreamHandler())
 		s.logger.Info("P2P protocol registered", "protocol", p2p.SystemProtocolID)
 	}
 
 	// Secrets protocol
 	secretsProto := p2p.NewSecretsProtocol(s.tokenStore, s.logger)
+	secretsProto.SetAuthenticator(s.p2pAuth)
 	host.SetStreamHandler(p2p.SecretsProtocolID, secretsProto.StreamHandler())
 	s.logger.Info("P2P protocol registered", "protocol", p2p.SecretsProtocolID)
 
 	// Files protocol
 	filesProto := p2p.NewFilesProtocol(s.logger)
+	filesProto.SetAuthenticator(s.p2pAuth)
 	host.SetStreamHandler(p2p.FilesProtocolID, filesProto.StreamHandler())
 	s.logger.Info("P2P protocol registered", "protocol", p2p.FilesProtocolID)
 
 	// Third-party browsing protocol (for mobile app to view third-party conversations)
 	if thirdPartyStore := s.handler.ThirdPartyStore(); thirdPartyStore != nil {
 		thirdPartyProto := p2p.NewThirdPartyProtocol(thirdPartyStore, s.handler.AttachmentStore(), s.logger)
+		thirdPartyProto.SetAuthenticator(s.p2pAuth)
 		host.SetStreamHandler(p2p.ThirdPartyProtocolID, thirdPartyProto.StreamHandler())
 		s.logger.Info("P2P protocol registered", "protocol", p2p.ThirdPartyProtocolID)
 	}

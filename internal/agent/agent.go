@@ -364,7 +364,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				if json.Unmarshal(args.Arguments, &ma) == nil && ma.Message != "" {
 					taskDesc = ma.Message
 				}
-				store.Register(taskID, args.ToolName, taskDesc, TriggerAuto, sessionID, userID)
+				store.Register(taskID, args.ToolName, taskDesc, TriggerAuto, sessionID, userID, "", 0)
 				logger.Info("sync member task registered",
 					"task_id", taskID, "agent", args.ToolName, "invocation_id", invID)
 
@@ -408,7 +408,7 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				coordMu.Unlock()
 
 				if _, exists := store.Get(coordTaskID); !exists {
-					store.Register(coordTaskID, "coordinator", desc, TriggerAuto, sessionID, userID)
+					store.Register(coordTaskID, "coordinator", desc, TriggerAuto, sessionID, userID, "", 0)
 					logger.Info("coordinator task registered",
 						"task_id", coordTaskID, "invocation_id", invID)
 				} else {

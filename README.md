@@ -2681,6 +2681,11 @@ Add to `~/.kaggen/config.json`:
 | `bootstrap_peers` | `[]` | Multiaddrs of bootstrap peers to connect on startup |
 | `topics` | `[]` | GossipSub topics to join automatically |
 | `relay_enabled` | `false` | Enable circuit relay v2 for NAT traversal |
+| `allowed_peer_ids` | `[]` | PeerIDs allowed to connect (empty = allow all) |
+| `auth_required` | `false` | Require token authentication for P2P streams |
+| `max_connections` | `128` | Maximum total P2P connections |
+| `max_streams_per_peer` | `64` | Maximum streams per connected peer |
+| `max_concurrent_streams` | `256` | Maximum concurrent streams system-wide |
 
 ### Transports
 
@@ -2720,6 +2725,148 @@ Or via UDX transport:
 ```
 /ip4/<gateway-ip>/udp/4001/udx/p2p/<peer-id>
 ```
+
+### P2P Security
+
+Kaggen provides multiple layers of security for P2P connections:
+
+#### Transport Security (Always On)
+
+All P2P connections use the **Noise protocol** for transport encryption (similar to TLS). This provides:
+- Authenticated key exchange using Ed25519 keypairs
+- Forward secrecy for each connection
+- Protection against man-in-the-middle attacks
+
+#### PeerID Allowlist
+
+Restrict which peers can connect by configuring `allowed_peer_ids`:
+
+```json
+{
+  "p2p": {
+    "enabled": true,
+    "allowed_peer_ids": [
+      "12D3KooWMyMobilePhone...",
+      "12D3KooWMyTablet..."
+    ]
+  }
+}
+```
+
+When configured, connections from peers not in the list are rejected at the transport layer. Leave empty to allow all peers (default).
+
+#### Token Authentication
+
+For application-layer authentication, enable `auth_required`:
+
+```json
+{
+  "p2p": {
+    "enabled": true,
+    "auth_required": true
+  }
+}
+```
+
+When enabled, mobile clients must complete a token handshake before accessing any P2P APIs. The authentication flow:
+
+1. Client opens stream to server
+2. Client sends `AuthHandshake{token}` message
+3. Server validates token against TokenStore (same tokens used for WebSocket auth)
+4. Server sends `AuthResponse{success, session_id}`
+5. If successful, client can proceed with protocol messages
+
+#### Resource Limits
+
+Protect against DoS attacks with configurable resource limits:
+
+```json
+{
+  "p2p": {
+    "enabled": true,
+    "max_connections": 64,
+    "max_streams_per_peer": 32,
+    "max_concurrent_streams": 128
+  }
+}
+```
+
+These replace the default `NullResourceManager` with proper limits.
+
+### Mobile Onboarding (QR Code)
+
+The recommended way to connect mobile clients is via QR code scanning:
+
+#### 1. Generate a Token
+
+From the dashboard, navigate to **Settings > Authentication** and click **Generate Token**. Provide a name (e.g., "My iPhone") and optional expiration.
+
+Or via CLI:
+```bash
+kaggen token generate --name "My iPhone" --expires 7d
+```
+
+#### 2. Display QR Code
+
+The dashboard displays QR codes containing multiaddrs with embedded tokens:
+
+```
+/ip4/192.168.1.100/udp/4001/udx/p2p/12D3KooW...?token=<auth-token>
+```
+
+The QR code includes:
+- IP address (all non-loopback network interfaces are shown)
+- Port number
+- Transport type (UDP/UDX or TCP)
+- PeerID (for libp2p connection)
+- Auth token (for application-layer authentication)
+
+#### 3. Scan and Connect
+
+The mobile app:
+1. Scans the QR code
+2. Parses the multiaddr and extracts the token
+3. Establishes libp2p connection using the multiaddr
+4. Sends `AuthHandshake{token}` on stream open
+5. Receives `AuthResponse` with session info
+6. Proceeds with chat or API calls
+
+#### Security Considerations
+
+- **QR codes are secrets**: Treat them like passwords. They grant full access to your agent.
+- **Token expiration**: Use short-lived tokens (24h-7d) for mobile onboarding.
+- **One token per device**: Generate separate tokens for each mobile device for easy revocation.
+- **Network exposure**: QR codes contain your local IP addresses. Only share on trusted networks.
+
+### P2P Security Configuration Example
+
+Full security configuration:
+
+```json
+{
+  "p2p": {
+    "enabled": true,
+    "port": 4001,
+    "transports": ["udx"],
+    "auth_required": true,
+    "allowed_peer_ids": [],
+    "max_connections": 64,
+    "max_streams_per_peer": 32,
+    "max_concurrent_streams": 128
+  },
+  "security": {
+    "auth": {
+      "enabled": true
+    }
+  }
+}
+```
+
+This configuration:
+- Enables P2P with UDX transport (best for mobile NAT traversal)
+- Requires token authentication for all P2P streams
+- Applies resource limits to prevent DoS
+- Works with the existing token system (same tokens for WebSocket and P2P)
 
 ## Agent Evaluation
 

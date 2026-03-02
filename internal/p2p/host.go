@@ -7,7 +7,6 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
@@ -22,6 +21,22 @@ func CreateHost(cfg *config.P2PConfig, priv crypto.PrivKey, logger *slog.Logger)
 		libp2p.Identity(priv),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),
+	}
+
+	// Configure resource manager for DoS protection
+	rcmgr, err := createResourceManager(cfg, logger)
+	if err != nil {
+		return nil, fmt.Errorf("create resource manager: %w", err)
+	}
+	opts = append(opts, libp2p.ResourceManager(rcmgr))
+
+	// Configure connection gater for PeerID allowlist
+	if len(cfg.AllowedPeerIDs) > 0 {
+		gater, err := NewPeerAllowlistGater(cfg.AllowedPeerIDs, logger)
+		if err != nil {
+			return nil, fmt.Errorf("create connection gater: %w", err)
+		}
+		opts = append(opts, libp2p.ConnectionGater(gater))
 	}
 
 	// Configure transports
@@ -43,7 +58,6 @@ func CreateHost(cfg *config.P2PConfig, priv crypto.PrivKey, logger *slog.Logger)
 				libp2p.NoTransports,
 				libp2p.Transport(udxtransport.NewTransport),
 				libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/udp/%d/udx", port)),
-				libp2p.ResourceManager(&network.NullResourceManager{}),
 			)
 			hasTransport = true
 			logger.Info("configured UDX transport", "port", port)

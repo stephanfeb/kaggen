@@ -158,8 +158,11 @@ func NewHandler(appName string, ag agent.Agent, sessionService session.Service, 
 func (h *Handler) HandleMessage(ctx context.Context, msg *channel.Message, respond func(*channel.Response) error) error {
 	// Internal channel messages (e.g., async task completions) are always trusted.
 	// They originate from the system itself, not from external senders.
+	// Proactive jobs (cron, webhooks, heartbeats) are also owner-trusted since
+	// they are scheduled by the user.
 	var tier trust.TrustTier
-	if msg.Channel == "internal" {
+	isProactive := msg.Metadata != nil && msg.Metadata["proactive"] == true
+	if msg.Channel == "internal" || isProactive {
 		tier = trust.TrustTierOwner
 	} else {
 		// Classify trust tier for this message.

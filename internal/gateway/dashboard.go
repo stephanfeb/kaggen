@@ -666,6 +666,13 @@ func (d *DashboardAPI) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	redactNestedKey(m, "session", "redis", "password")
 	redactNestedKey(m, "session", "postgres", "password")
 	redactNestedKey(m, "proactive", "webhooks") // may contain secrets
+	redactNestedKey(m, "web_search", "api_key")
+	// Redact sensitive fields in maps (databases, mqtt, ssh, oauth)
+	redactMapPasswords(m, "databases", "connections", "password")
+	redactMapPasswords(m, "mqtt", "brokers", "password")
+	redactMapPasswords(m, "ssh", "hosts", "password")
+	redactMapPasswords(m, "ssh", "hosts", "passphrase")
+	redactMapPasswords(m, "oauth", "providers", "client_secret")
 
 	writeJSON(w, m)
 }
@@ -786,6 +793,208 @@ func (d *DashboardAPI) HandleCancelTask(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// HandleGroupedTasks returns tasks grouped by their pipeline context.
+// Active pipelines are returned with their stages and associated tasks.
+// Tasks not belonging to any pipeline are returned as standalone tasks.
+func (d *DashboardAPI) HandleGroupedTasks(w http.ResponseWriter, r *http.Request) {
+	statusFilter := agent.TaskStatus(r.URL.Query().Get("status"))
+	store := d.agentProvider.InFlightStore()
+	pipelines := d.agentProvider.Pipelines()
+	progress := store.PipelineProgress()
+
+	// Build agent → (pipeline, stage) lookup from pipeline definitions.
+	type pipelineAgent struct {
+		pipeline string
+		stage    int // 1-based
+	}
+	agentToPipeline := make(map[string]pipelineAgent)
+	for _, p := range pipelines {
+		for i, s := range p.Stages {
+			agentToPipeline[s.Agent] = pipelineAgent{pipeline: p.Name, stage: i + 1}
+		}
+	}
+
+	// Determine which agents currently have running tasks, keyed by sessionID+agentName.
+	type agentSessionKey struct{ session, agent string }
+	runningBySession := make(map[agentSessionKey]bool)
+	for _, t := range store.List(agent.TaskRunning) {
+		runningBySession[agentSessionKey{t.SessionID, t.AgentName}] = true
+	}
+
+	// Get all tasks (filtered by status if provided).
+	allTasks := store.List(statusFilter)
+	sort.Slice(allTasks, func(i, j int) bool {
+		return allTasks[i].StartedAt.After(allTasks[j].StartedAt)
+	})
+
+	// Group tasks by (sessionID, pipelineName).
+	type groupKey struct{ sessionID, pipeline string }
+	type stageStatus struct {
+		Agent       string `json:"agent"`
+		Description string `json:"description"`
+		Stage       int    `json:"stage"`
+		Status      string `json:"status"` // pending, running, completed
+	}
+	type pipelineGroup struct {
+		Name            string              `json:"name"`
+		Description     string              `json:"description"`
+		TaskDescription string              `json:"task_description,omitempty"`
+		SessionID       string              `json:"session_id"`
+		Stages          []stageStatus       `json:"stages"`
+		Tasks           []*agent.TaskState  `json:"tasks"`
+		StartedAt       *time.Time          `json:"started_at,omitempty"`
+	}
+
+	groups := make(map[groupKey]*pipelineGroup)
+	var standaloneTasks []*agent.TaskState
+
+	for _, t := range allTasks {
+		// Check if task has explicit pipeline context.
+		if t.PipelineName != "" {
+			key := groupKey{sessionID: t.SessionID, pipeline: t.PipelineName}
+			if groups[key] == nil {
+				// Find pipeline definition for stage info.
+				var pDef struct {
+					Name        string
+					Description string
+					Stages      []struct {
+						Agent       string
+						Description string
+					}
+				}
+				for _, p := range pipelines {
+					if p.Name == t.PipelineName {
+						pDef.Name = p.Name
+						pDef.Description = p.Description
+						for _, s := range p.Stages {
+							pDef.Stages = append(pDef.Stages, struct {
+								Agent       string
+								Description string
+							}{Agent: s.Agent, Description: s.Description})
+						}
+						break
+					}
+				}
+
+				// Build stage statuses.
+				completedStages := make(map[int]bool)
+				if sp, ok := progress[t.SessionID]; ok {
+					if stg, ok := sp[t.PipelineName]; ok {
+						completedStages = stg
+					}
+				}
+				stages := make([]stageStatus, len(pDef.Stages))
+				for i, s := range pDef.Stages {
+					status := "pending"
+					if completedStages[i+1] {
+						status = "completed"
+					} else if runningBySession[agentSessionKey{t.SessionID, s.Agent}] {
+						status = "running"
+					}
+					stages[i] = stageStatus{Agent: s.Agent, Description: s.Description, Stage: i + 1, Status: status}
+				}
+
+				taskDesc := store.PipelineDescription(t.SessionID, t.PipelineName)
+				startedAt := store.PipelineStartedAt(t.SessionID, t.PipelineName)
+				groups[key] = &pipelineGroup{
+					Name:            pDef.Name,
+					Description:     pDef.Description,
+					TaskDescription: taskDesc,
+					SessionID:       t.SessionID,
+					Stages:          stages,
+					Tasks:           []*agent.TaskState{},
+					StartedAt:       startedAt,
+				}
+			}
+			groups[key].Tasks = append(groups[key].Tasks, t)
+		} else {
+			standaloneTasks = append(standaloneTasks, t)
+		}
+	}
+
+	// Also check for pipelines with progress but no matching tasks (in case filter excludes them).
+	for sid, pmap := range progress {
+		for pname := range pmap {
+			key := groupKey{sessionID: sid, pipeline: pname}
+			if groups[key] == nil {
+				// Find pipeline definition.
+				var pDef struct {
+					Name        string
+					Description string
+					Stages      []struct {
+						Agent       string
+						Description string
+					}
+				}
+				for _, p := range pipelines {
+					if p.Name == pname {
+						pDef.Name = p.Name
+						pDef.Description = p.Description
+						for _, s := range p.Stages {
+							pDef.Stages = append(pDef.Stages, struct {
+								Agent       string
+								Description string
+							}{Agent: s.Agent, Description: s.Description})
+						}
+						break
+					}
+				}
+				if pDef.Name == "" {
+					continue // Pipeline definition not found, skip.
+				}
+
+				// Build stage statuses.
+				completedStages := pmap[pname]
+				stages := make([]stageStatus, len(pDef.Stages))
+				for i, s := range pDef.Stages {
+					status := "pending"
+					if completedStages[i+1] {
+						status = "completed"
+					} else if runningBySession[agentSessionKey{sid, s.Agent}] {
+						status = "running"
+					}
+					stages[i] = stageStatus{Agent: s.Agent, Description: s.Description, Stage: i + 1, Status: status}
+				}
+
+				taskDesc := store.PipelineDescription(sid, pname)
+				startedAt := store.PipelineStartedAt(sid, pname)
+				groups[key] = &pipelineGroup{
+					Name:            pDef.Name,
+					Description:     pDef.Description,
+					TaskDescription: taskDesc,
+					SessionID:       sid,
+					Stages:          stages,
+					Tasks:           []*agent.TaskState{},
+					StartedAt:       startedAt,
+				}
+			}
+		}
+	}
+
+	// Convert map to slice and sort by start time.
+	pipelineList := make([]pipelineGroup, 0, len(groups))
+	for _, g := range groups {
+		pipelineList = append(pipelineList, *g)
+	}
+	sort.Slice(pipelineList, func(i, j int) bool {
+		if pipelineList[i].StartedAt == nil && pipelineList[j].StartedAt == nil {
+			return pipelineList[i].Name < pipelineList[j].Name
+		}
+		if pipelineList[i].StartedAt == nil {
+			return false
+		}
+		if pipelineList[j].StartedAt == nil {
+			return true
+		}
+		return pipelineList[i].StartedAt.After(*pipelineList[j].StartedAt)
+	})
+
+	writeJSON(w, map[string]any{
+		"pipelines":        pipelineList,
+		"standalone_tasks": standaloneTasks,
+	})
+}
+
 // HandlePlanDetail returns a plan and its children.
 func (d *DashboardAPI) HandlePlanDetail(w http.ResponseWriter, r *http.Request) {
 	if d.backlogStore == nil {
@@ -817,6 +1026,7 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/dashboard", d.ServeHTML)
 	handleFunc("/api/overview", d.HandleOverview)
 	handleFunc("/api/tasks", d.HandleTasks)
+	handleFunc("/api/tasks/grouped", d.HandleGroupedTasks)
 	handleFunc("/api/backlog", d.HandleBacklog)
 	handleFunc("/api/backlog/plan", d.HandlePlanDetail)
 	handleFunc("/api/skills", d.HandleSkills)
@@ -826,6 +1036,7 @@ func (d *DashboardAPI) RegisterRoutes(handleFunc func(pattern string, handler ht
 	handleFunc("/api/sessions/delete", d.HandleSessionDelete)
 	handleFunc("/api/sessions/archive", d.HandleSessionArchive)
 	handleFunc("/api/config", d.HandleConfig)
+	handleFunc("/api/config/update", d.dashboardAuth.RequireAuth(d.HandleConfigUpdate))
 	handleFunc("/api/pipelines", d.HandlePipelines)
 	handleFunc("/api/tasks/cancel", d.HandleCancelTask)
 	handleFunc("/api/logs", d.HandleLogsSSE)
@@ -1071,12 +1282,22 @@ func (d *DashboardAPI) HandleTokenGenerate(w http.ResponseWriter, r *http.Reques
 		}}
 	}
 
+	// Build P2P multiaddrs with token for mobile app QR code
+	var p2pAddrs []P2PMultiaddr
+	if d.config.P2P.Enabled && d.p2pNodeFunc != nil {
+		if node := d.p2pNodeFunc(); node != nil {
+			peerID := node.PeerID().String()
+			p2pAddrs = getP2PMultiaddrs(d.config.P2P.Port, peerID, d.config.P2P.Transports, plaintext)
+		}
+	}
+
 	writeJSON(w, map[string]any{
-		"id":       id,
-		"token":    plaintext,
-		"name":     req.Name,
-		"ws_urls":  wsURLs,
-		"message":  "Save this token now - it cannot be retrieved again!",
+		"id":        id,
+		"token":     plaintext,
+		"name":      req.Name,
+		"ws_urls":   wsURLs,
+		"p2p_addrs": p2pAddrs,
+		"message":   "Save this token now - it cannot be retrieved again!",
 	})
 }
 
@@ -1140,7 +1361,8 @@ func (d *DashboardAPI) HandleSettings(w http.ResponseWriter, r *http.Request) {
 			p2pInfo["topics"] = d.config.P2P.Topics
 
 			// Build multiaddrs for all network interfaces (like WebSocket URLs)
-			p2pInfo["multiaddrs"] = getP2PMultiaddrs(d.config.P2P.Port, peerID, d.config.P2P.Transports)
+			// No auth token here - this is just for display; tokens are added when generating QR codes
+			p2pInfo["multiaddrs"] = getP2PMultiaddrs(d.config.P2P.Port, peerID, d.config.P2P.Transports, "")
 		}
 	}
 
@@ -1410,6 +1632,225 @@ func (d *DashboardAPI) HandleSecretsDelete(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, map[string]string{"status": "deleted", "key": req.Key})
 }
 
+// HandleConfigUpdate handles PUT requests to update configuration.
+// Expects PUT with JSON body containing partial config updates.
+func (d *DashboardAPI) HandleConfigUpdate(w http.ResponseWriter, r *http.Request) {
+	d.setCORSHeaders(w, r)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "PUT, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		http.Error(w, `{"error":"PUT or POST required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Decode the incoming updates
+	var updates map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Marshal current config to map for merging
+	currentData, _ := json.Marshal(d.config)
+	var current map[string]any
+	json.Unmarshal(currentData, &current)
+
+	// Merge updates into current config, preserving sensitive fields if unchanged
+	mergeConfigMaps(current, updates)
+
+	// Validate critical fields
+	if errs := validateConfigMap(current); len(errs) > 0 {
+		writeJSON(w, map[string]any{"error": "validation failed", "errors": errs})
+		return
+	}
+
+	// Marshal merged map back to JSON and unmarshal into Config struct
+	mergedData, _ := json.Marshal(current)
+	var newConfig config.Config
+	if err := json.Unmarshal(mergedData, &newConfig); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to parse config: %v"}`, err), http.StatusBadRequest)
+		return
+	}
+
+	// Update the in-memory config
+	*d.config = newConfig
+
+	// Save to disk
+	if err := d.config.Save(); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed to save config: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "saved"})
+}
+
+// mergeConfigMaps recursively merges src into dst, preserving sensitive fields if src has "***" or empty.
+func mergeConfigMaps(dst, src map[string]any) {
+	sensitiveKeys := map[string]bool{
+		"bot_token": true, "password": true, "passphrase": true,
+		"api_key": true, "client_secret": true, "secret": true,
+	}
+
+	for k, v := range src {
+		if v == nil {
+			continue
+		}
+		// Check if this is a sensitive field that should be preserved
+		if sensitiveKeys[k] {
+			if str, ok := v.(string); ok && (str == "" || str == "***") {
+				continue // preserve existing value
+			}
+		}
+		// If both are maps, merge recursively
+		if srcMap, srcOK := v.(map[string]any); srcOK {
+			if dstMap, dstOK := dst[k].(map[string]any); dstOK {
+				mergeConfigMaps(dstMap, srcMap)
+				continue
+			}
+		}
+		dst[k] = v
+	}
+}
+
+// validateConfigMap performs basic validation on the config map.
+func validateConfigMap(m map[string]any) []string {
+	var errs []string
+
+	// Validate gateway port
+	if gateway, ok := m["gateway"].(map[string]any); ok {
+		if port, ok := gateway["port"].(float64); ok {
+			if port < 1 || port > 65535 {
+				errs = append(errs, "gateway.port must be 1-65535")
+			}
+		}
+	}
+
+	// Validate P2P port if enabled
+	if p2p, ok := m["p2p"].(map[string]any); ok {
+		if enabled, ok := p2p["enabled"].(bool); ok && enabled {
+			if port, ok := p2p["port"].(float64); ok && (port < 1 || port > 65535) {
+				errs = append(errs, "p2p.port must be 1-65535")
+			}
+		}
+	}
+
+	// Validate reasoning threshold
+	if reasoning, ok := m["reasoning"].(map[string]any); ok {
+		if thresh, ok := reasoning["escalation_threshold"].(float64); ok {
+			if thresh < 0 || thresh > 1 {
+				errs = append(errs, "reasoning.escalation_threshold must be 0-1")
+			}
+		}
+	}
+
+	// Validate JSON fields by attempting to unmarshal into target types
+	errs = append(errs, validateJSONFields(m)...)
+
+	return errs
+}
+
+// validateJSONFields validates complex JSON fields by attempting to unmarshal them
+// into their target Go types.
+func validateJSONFields(m map[string]any) []string {
+	var errs []string
+
+	// Validate proactive.jobs
+	if proactive, ok := m["proactive"].(map[string]any); ok {
+		if jobs, ok := proactive["jobs"]; ok && jobs != nil {
+			data, _ := json.Marshal(jobs)
+			var parsed []config.CronJobConfig
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "proactive.jobs: "+simplifyUnmarshalError(err))
+			}
+		}
+		if webhooks, ok := proactive["webhooks"]; ok && webhooks != nil {
+			data, _ := json.Marshal(webhooks)
+			var parsed []config.WebhookConfig
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "proactive.webhooks: "+simplifyUnmarshalError(err))
+			}
+		}
+		if heartbeats, ok := proactive["heartbeats"]; ok && heartbeats != nil {
+			data, _ := json.Marshal(heartbeats)
+			var parsed []config.HeartbeatConfig
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "proactive.heartbeats: "+simplifyUnmarshalError(err))
+			}
+		}
+	}
+
+	// Validate databases.connections
+	if dbs, ok := m["databases"].(map[string]any); ok {
+		if conns, ok := dbs["connections"]; ok && conns != nil {
+			data, _ := json.Marshal(conns)
+			var parsed map[string]config.DatabaseConnection
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "databases.connections: "+simplifyUnmarshalError(err))
+			}
+		}
+	}
+
+	// Validate mqtt.brokers
+	if mqtt, ok := m["mqtt"].(map[string]any); ok {
+		if brokers, ok := mqtt["brokers"]; ok && brokers != nil {
+			data, _ := json.Marshal(brokers)
+			var parsed map[string]config.MQTTBroker
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "mqtt.brokers: "+simplifyUnmarshalError(err))
+			}
+		}
+	}
+
+	// Validate ssh.hosts
+	if ssh, ok := m["ssh"].(map[string]any); ok {
+		if hosts, ok := ssh["hosts"]; ok && hosts != nil {
+			data, _ := json.Marshal(hosts)
+			var parsed map[string]config.SSHHost
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "ssh.hosts: "+simplifyUnmarshalError(err))
+			}
+		}
+	}
+
+	// Validate oauth.providers
+	if oauth, ok := m["oauth"].(map[string]any); ok {
+		if providers, ok := oauth["providers"]; ok && providers != nil {
+			data, _ := json.Marshal(providers)
+			var parsed map[string]config.OAuthProvider
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "oauth.providers: "+simplifyUnmarshalError(err))
+			}
+		}
+	}
+
+	// Validate approval.auto_approve
+	if approval, ok := m["approval"].(map[string]any); ok {
+		if rules, ok := approval["auto_approve"]; ok && rules != nil {
+			data, _ := json.Marshal(rules)
+			var parsed []config.AutoApproveRule
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				errs = append(errs, "approval.auto_approve: "+simplifyUnmarshalError(err))
+			}
+		}
+	}
+
+	return errs
+}
+
+// simplifyUnmarshalError extracts a more readable error message from json unmarshal errors.
+func simplifyUnmarshalError(err error) string {
+	msg := err.Error()
+	// Try to extract the field name and type mismatch from common errors
+	if strings.Contains(msg, "cannot unmarshal") {
+		return msg
+	}
+	return msg
+}
+
 // --- helpers ---
 
 // setCORSHeaders sets the CORS headers based on the configured allowed origins.
@@ -1482,6 +1923,27 @@ func redactNestedKey(m map[string]any, keys ...string) {
 	}
 }
 
+// redactMapPasswords redacts a sensitive field within all entries of a map.
+// e.g., redactMapPasswords(m, "databases", "connections", "password") redacts
+// m["databases"]["connections"]["*"]["password"].
+func redactMapPasswords(m map[string]any, mapKey, entriesKey, fieldKey string) {
+	outer, ok := m[mapKey].(map[string]any)
+	if !ok {
+		return
+	}
+	entries, ok := outer[entriesKey].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, v := range entries {
+		if entry, ok := v.(map[string]any); ok {
+			if _, exists := entry[fieldKey]; exists {
+				entry[fieldKey] = "***"
+			}
+		}
+	}
+}
+
 // InterfaceURL represents a WebSocket URL for a specific network interface.
 type InterfaceURL struct {
 	Name string `json:"name"`
@@ -1531,7 +1993,8 @@ type P2PMultiaddr struct {
 
 // getP2PMultiaddrs returns P2P multiaddrs for all non-loopback network interfaces.
 // Used when the P2P node is bound to 0.0.0.0 to provide routable addresses in QR codes.
-func getP2PMultiaddrs(port int, peerID string, transports []string) []P2PMultiaddr {
+// If authToken is provided, it's appended as a query parameter for mobile auth.
+func getP2PMultiaddrs(port int, peerID string, transports []string, authToken string) []P2PMultiaddr {
 	var addrs []P2PMultiaddr
 
 	if port == 0 {
@@ -1569,6 +2032,10 @@ func getP2PMultiaddrs(port int, peerID string, transports []string) []P2PMultiad
 						multiaddr = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", ip, port, peerID)
 					default:
 						continue
+					}
+					// Append auth token as query parameter if provided
+					if authToken != "" {
+						multiaddr = fmt.Sprintf("%s?token=%s", multiaddr, authToken)
 					}
 					addrs = append(addrs, P2PMultiaddr{
 						Name:      fmt.Sprintf("%s (%s)", iface.Name, transport),

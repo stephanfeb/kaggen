@@ -28,13 +28,14 @@ type p2pClient struct {
 
 // P2PChannel implements channel.Channel for libp2p connections.
 type P2PChannel struct {
-	node     *Node
-	messages chan *channel.Message
-	clients  map[string]*p2pClient // clientID -> client
-	mu       sync.RWMutex
-	logger   *slog.Logger
-	ctx      context.Context
-	cancel   context.CancelFunc
+	node          *Node
+	messages      chan *channel.Message
+	clients       map[string]*p2pClient // clientID -> client
+	mu            sync.RWMutex
+	logger        *slog.Logger
+	ctx           context.Context
+	cancel        context.CancelFunc
+	authenticator *StreamAuthenticator // optional token authenticator
 }
 
 // NewP2PChannel creates a new P2P channel.
@@ -45,6 +46,12 @@ func NewP2PChannel(node *Node, logger *slog.Logger) *P2PChannel {
 		clients:  make(map[string]*p2pClient),
 		logger:   logger,
 	}
+}
+
+// SetAuthenticator sets the token authenticator for P2P streams.
+// If set and auth is required, clients must authenticate before chatting.
+func (c *P2PChannel) SetAuthenticator(auth *StreamAuthenticator) {
+	c.authenticator = auth
 }
 
 // Name returns the channel identifier.
@@ -169,12 +176,32 @@ func (c *P2PChannel) handleStream(stream network.Stream) {
 	if len(defaultSessionID) > 16 {
 		defaultSessionID = defaultSessionID[:16]
 	}
+	defaultUserID := defaultSessionID
+
+	// Perform authentication handshake if configured.
+	authenticated := false
+	if c.authenticator != nil {
+		authResult, err := c.authenticator.AuthenticateStream(stream)
+		if err != nil {
+			c.logger.Warn("P2P auth failed, closing stream",
+				"peer", peerID,
+				"error", err)
+			stream.Close()
+			return
+		}
+		// Use auth result if provided (auth was required and succeeded).
+		if authResult != nil {
+			defaultSessionID = authResult.SessionID
+			defaultUserID = authResult.UserID
+			authenticated = true
+		}
+	}
 
 	client := &p2pClient{
 		id:        clientID,
 		peerID:    peerID,
 		sessionID: defaultSessionID,
-		userID:    defaultSessionID, // Default user ID to session ID
+		userID:    defaultUserID,
 		stream:    stream,
 	}
 
@@ -185,7 +212,8 @@ func (c *P2PChannel) handleStream(stream network.Stream) {
 	c.logger.Info("P2P client connected",
 		"client_id", clientID,
 		"peer_id", peerID,
-		"session_id", defaultSessionID)
+		"session_id", defaultSessionID,
+		"authenticated", authenticated)
 
 	// Send session welcome message.
 	welcome := &pb.ChatResponse{
@@ -199,8 +227,8 @@ func (c *P2PChannel) handleStream(stream network.Stream) {
 		return
 	}
 
-	// Read messages from the stream.
-	c.readLoop(client)
+	// Read messages from the stream, passing auth status.
+	c.readLoop(client, authenticated)
 
 	// Cleanup on disconnect.
 	c.mu.Lock()
@@ -213,7 +241,8 @@ func (c *P2PChannel) handleStream(stream network.Stream) {
 }
 
 // readLoop reads messages from a client stream until it closes.
-func (c *P2PChannel) readLoop(client *p2pClient) {
+// The authenticated parameter indicates if the client completed token auth.
+func (c *P2PChannel) readLoop(client *p2pClient, authenticated bool) {
 	defer client.stream.Close()
 
 	for {
@@ -253,8 +282,9 @@ func (c *P2PChannel) readLoop(client *p2pClient) {
 		}
 
 		// Build channel.Message.
-		// P2P connections are authenticated via libp2p and originate from the user's
-		// mobile app, so they should be treated as trusted (in allowlist).
+		// P2P clients are trusted if: auth was not required (backwards compat),
+		// or auth was required and they authenticated successfully.
+		isAllowed := !c.authenticator.IsAuthRequired() || authenticated
 		msg := &channel.Message{
 			ID:             pbMsg.Id,
 			SessionID:      client.sessionID,
@@ -262,7 +292,7 @@ func (c *P2PChannel) readLoop(client *p2pClient) {
 			Content:        pbMsg.Content,
 			Channel:        "p2p",
 			ReplyToEventID: pbMsg.ReplyToEventId,
-			IsInAllowlist:  true, // P2P clients are trusted by default
+			IsInAllowlist:  isAllowed,
 		}
 
 		// Generate message ID if not provided.
