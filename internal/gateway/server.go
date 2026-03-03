@@ -505,11 +505,14 @@ func (s *Server) registerP2PAPIProtocols(node *p2p.Node) {
 	host.SetStreamHandler(p2p.FilesProtocolID, filesProto.StreamHandler())
 	s.logger.Info("P2P protocol registered", "protocol", p2p.FilesProtocolID)
 
-	// Third-party browsing protocol (for mobile app to view third-party conversations)
-	if thirdPartyStore := s.handler.ThirdPartyStore(); thirdPartyStore != nil {
-		thirdPartyProto := p2p.NewThirdPartyProtocol(thirdPartyStore, s.handler.AttachmentStore(), s.logger)
-		thirdPartyProto.SetAuthenticator(s.p2pAuth)
-		host.SetStreamHandler(p2p.ThirdPartyProtocolID, thirdPartyProto.StreamHandler())
-		s.logger.Info("P2P protocol registered", "protocol", p2p.ThirdPartyProtocolID)
-	}
+	// Third-party browsing protocol (for mobile app to view third-party conversations).
+	// Always register the handler so protocol negotiation succeeds even when the
+	// feature is disabled — individual methods return "not configured" errors via
+	// their nil-store guards. Without this, mobile clients that attempt to call
+	// thirdparty/unread_count hit a multistream negotiation failure, interpret it
+	// as a disconnect, and reconnect in a tight loop.
+	thirdPartyProto := p2p.NewThirdPartyProtocol(s.handler.ThirdPartyStore(), s.handler.AttachmentStore(), s.logger)
+	thirdPartyProto.SetAuthenticator(s.p2pAuth)
+	host.SetStreamHandler(p2p.ThirdPartyProtocolID, thirdPartyProto.StreamHandler())
+	s.logger.Info("P2P protocol registered", "protocol", p2p.ThirdPartyProtocolID)
 }
