@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -345,5 +346,27 @@ func TestConsolidateMessages_PreservesOriginalTask(t *testing.T) {
 			}
 			t.Logf("  %d [%s]: %s", i, msg.Role, preview)
 		}
+	}
+}
+
+func TestIsCallLimitError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"unrelated error", fmt.Errorf("connection refused"), false},
+		{"max LLM calls", fmt.Errorf("max LLM calls (25) exceeded"), true},
+		{"max tool iterations", fmt.Errorf("max tool iterations (50) exceeded"), true},
+		{"embedded in wrapper", fmt.Errorf("agent failed: max LLM calls (25) exceeded"), true},
+		{"token overflow not matched", fmt.Errorf("token count exceeds limit"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCallLimitError(tt.err); got != tt.want {
+				t.Errorf("isCallLimitError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }

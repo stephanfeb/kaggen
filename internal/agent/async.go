@@ -763,9 +763,19 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 
 		events, err := ag.Run(bgCtx, inv)
 		if err != nil {
-			d.store.Fail(taskID, err.Error())
+			errMsg := err.Error()
+			if isCallLimitError(err) {
+				errMsg = fmt.Sprintf(
+					"CALL LIMIT REACHED: agent %q exhausted its call budget. "+
+						"Do NOT retry with the same task scope. Instead: "+
+						"(1) break the task into smaller subtasks and dispatch each separately, or "+
+						"(2) inform the user that the task is too complex for a single agent run. "+
+						"Original error: %s",
+					req.AgentName, err.Error())
+			}
+			d.store.Fail(taskID, errMsg)
 			failBacklogItem()
-			d.getCompleteFn()(taskID, "", err, policy)
+			d.getCompleteFn()(taskID, "", fmt.Errorf("%s", errMsg), policy)
 			return
 		}
 
@@ -835,6 +845,22 @@ func (d *asyncDispatcher) dispatch(ctx context.Context, req asyncDispatchRequest
 
 			if evt.Response.Error != nil {
 				errMsg := evt.Response.Error.Message
+
+				// Check for call-limit errors (non-retryable).
+				if isCallLimitError(fmt.Errorf("%s", errMsg)) {
+					annotated := fmt.Sprintf(
+						"CALL LIMIT REACHED: agent %q exhausted its call budget. "+
+							"Do NOT retry with the same task scope. Instead: "+
+							"(1) break the task into smaller subtasks and dispatch each separately, or "+
+							"(2) inform the user that the task is too complex for a single agent run. "+
+							"Original error: %s",
+						req.AgentName, errMsg)
+					d.store.Fail(taskID, annotated)
+					failBacklogItem()
+					d.getCompleteFn()(taskID, "", fmt.Errorf("%s", annotated), policy)
+					cancel()
+					return
+				}
 
 				// Check for token overflow errors
 				if IsTokenOverflowError(fmt.Errorf("%s", errMsg)) {

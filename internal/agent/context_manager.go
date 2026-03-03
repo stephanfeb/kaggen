@@ -466,3 +466,13 @@ func IsTokenOverflowError(err error) bool {
 		strings.Contains(msg, "context_length_exceeded") ||
 		strings.Contains(msg, "too many tokens")
 }
+
+// isCallLimitError checks if an error is a call-limit StopError from the framework.
+func isCallLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "max LLM calls") ||
+		strings.Contains(msg, "max tool iterations")
+}

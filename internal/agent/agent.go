@@ -524,7 +524,17 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 				}
 
 				if args.Error != nil {
-					store.Fail(taskID, args.Error.Error())
+					errMsg := args.Error.Error()
+					if isCallLimitError(args.Error) {
+						errMsg = fmt.Sprintf(
+							"CALL LIMIT REACHED: agent %q exhausted its call budget. "+
+								"Do NOT retry with the same task scope. Instead: "+
+								"(1) break the task into smaller subtasks and dispatch each separately, or "+
+								"(2) inform the user that the task is too complex for a single agent run. "+
+								"Original error: %s",
+							args.ToolName, args.Error.Error())
+					}
+					store.Fail(taskID, errMsg)
 					logger.Info("sync member task failed", "task_id", taskID, "agent", args.ToolName)
 				} else {
 					result := resultToString(args.Result)
@@ -900,7 +910,10 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "5. After dispatching an async task, STOP and tell the user it's in progress. Do NOT poll `task_status` in a loop — you will be notified automatically via a [Task Completed] message when the task finishes.\n"
 	instruction += "6. Notify the user when you start long-running work and when it completes.\n"
 	instruction += "7. Synthesize results from sub-agents into a coherent response for the user.\n"
-	instruction += "8. If a sub-agent fails, attempt one round of autonomous diagnosis (read logs, check errors) and retry or adjust the task. If the second attempt also fails, inform the user with a summary of what you tried.\n"
+	instruction += "8. When a sub-agent fails, check the error type before acting:\n"
+	instruction += "   - **CALL LIMIT REACHED**: The task was too large for one agent run. Do NOT retry — decompose into smaller subtasks using backlog_decompose, or inform the user.\n"
+	instruction += "   - **Context overflow**: The conversation exceeded the token budget. Summarize and decompose, do not retry.\n"
+	instruction += "   - **Other errors**: Attempt one round of diagnosis (read logs, check errors) and retry with an adjusted task. If the retry also fails, inform the user with a summary of what you tried.\n"
 	instruction += "9. When you receive a [Task Completed] message, summarize the result for the user.\n"
 	instruction += "10. Some tools require human approval before execution. When a tool call returns 'Approval required', note the approval ID and continue with other non-blocked tasks. When you receive a [Task Completed] message about an approval, check if it was approved or rejected and act accordingly — retry the tool if approved, or inform the user and find an alternative if rejected.\n"
 
