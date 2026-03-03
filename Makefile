@@ -29,11 +29,17 @@ build-darwin-amd64:
 .PHONY: build-all
 build-all: build-darwin-arm64 build-darwin-amd64
 
+# Universal (fat) binary combining arm64 + amd64
+.PHONY: build-universal
+build-universal: build-darwin-arm64 build-darwin-amd64
+	lipo -create -output $(DIST)/$(BINARY)-darwin-universal $(DIST)/$(BINARY)-darwin-arm64 $(DIST)/$(BINARY)-darwin-amd64
+
 # Create release tarballs with checksums
 .PHONY: release
-release: build-all
+release: build-universal
 	cd $(DIST) && tar czf $(BINARY)-darwin-arm64.tar.gz $(BINARY)-darwin-arm64
 	cd $(DIST) && tar czf $(BINARY)-darwin-amd64.tar.gz $(BINARY)-darwin-amd64
+	cd $(DIST) && tar czf $(BINARY)-darwin-universal.tar.gz $(BINARY)-darwin-universal
 	cd $(DIST) && shasum -a 256 *.tar.gz > checksums.txt
 
 .PHONY: test
