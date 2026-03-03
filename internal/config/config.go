@@ -3,6 +3,8 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -635,11 +637,65 @@ func DefaultAllowedOrigins() []string {
 }
 
 // GetAllowedOrigins returns the configured allowed origins, or defaults if none configured.
+// When bound to a non-localhost address, the bind address is automatically included
+// so the dashboard works when accessed via that IP.
 func (c *GatewayConfig) GetAllowedOrigins() []string {
 	if len(c.AllowedOrigins) > 0 {
 		return c.AllowedOrigins
 	}
-	return DefaultAllowedOrigins()
+	origins := DefaultAllowedOrigins()
+
+	// Auto-include the bind address so the dashboard works when accessed via IP
+	bind := c.Bind
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	if bind != "127.0.0.1" && bind != "localhost" {
+		if bind == "0.0.0.0" || bind == "::" {
+			// Bound to all interfaces — include all non-loopback IPs
+			for _, ip := range localNonLoopbackIPs() {
+				origins = append(origins,
+					fmt.Sprintf("http://%s", ip),
+					fmt.Sprintf("https://%s", ip))
+			}
+		} else {
+			origins = append(origins,
+				fmt.Sprintf("http://%s", bind),
+				fmt.Sprintf("https://%s", bind))
+		}
+	}
+	return origins
+}
+
+// localNonLoopbackIPs returns all non-loopback IPv4 addresses on the machine.
+func localNonLoopbackIPs() []string {
+	var ips []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ips
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip != nil && ip.To4() != nil && !ip.IsLoopback() {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+	return ips
 }
 
 // PubSubConfig configures the GCP Pub/Sub bridge for receiving external task callbacks.
