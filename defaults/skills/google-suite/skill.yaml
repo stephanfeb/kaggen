@@ -1,0 +1,20 @@
+name: google-suite
+description: A skill to interact with Google Gmail and Google Drive via Service Account or OAuth2 credentials.
+tools:
+  - name: gmail_search
+    description: Search for emails with a specific label.
+    parameters:
+      label_name: string
+  - name: gmail_get_message
+    description: Get the content of a specific email.
+    parameters:
+      message_id: string
+  - name: drive_list_files
+    description: List files in a shared folder.
+    parameters:
+      folder_id: string
+  - name: drive_download_file
+    description: Download a file from Google Drive.
+    parameters:
+      file_id: string
+      dest_path: string
