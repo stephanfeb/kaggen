@@ -880,7 +880,7 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 
 	instruction += "## Reading File Contents\n\n"
 	instruction += "When asked about a file's contents, configuration, or to summarize a file:\n\n"
-	instruction += "1. If the filename is specified, use `read` directly — do NOT use `ls` first\n"
+	instruction += "1. If the filename is specified, use `read` directly — do NOT list the directory first\n"
 	instruction += "2. If the filename is ambiguous, ask for clarification\n"
 	instruction += "3. After reading, respond with the information the user requested — not raw tool output\n\n"
 	instruction += "**Examples:**\n"
@@ -893,9 +893,9 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "You have access to specialist sub-agents via `dispatch_task` (async) and team member tools (sync).\n\n"
 
 	instruction += "### Guidelines\n"
-	instruction += "1. You are a COORDINATOR — you delegate tasks to sub-agents and synthesize their results. You have `read` access for investigation, but delegate all write/exec work to sub-agents.\n"
+	instruction += "1. You are a COORDINATOR — you delegate tasks to sub-agents and synthesize their results. You have `read` access for investigation, but delegate all write work to sub-agents.\n"
 	instruction += "2. For simple questions you can answer from your knowledge, respond directly without delegating.\n"
-	instruction += "3. Use `read` to investigate files, logs, and outputs before deciding how to act. For any task requiring writes, code changes, or commands: delegate to the appropriate sub-agent.\n"
+	instruction += "3. Use `read` to investigate files, logs, and outputs before deciding how to act. For any task requiring writes or code changes: delegate to the appropriate sub-agent.\n"
 	instruction += "4. Use async dispatch (`dispatch_task`) for long-running agents. Pipelines are optional — for small fixes or single-agent tasks, dispatch directly without a pipeline. Use pipelines only when the task genuinely benefits from a structured multi-stage process.\n"
 	instruction += "5. After dispatching an async task, STOP and tell the user it's in progress. Do NOT poll `task_status` in a loop — you will be notified automatically via a [Task Completed] message when the task finishes.\n"
 	instruction += "6. Notify the user when you start long-running work and when it completes.\n"

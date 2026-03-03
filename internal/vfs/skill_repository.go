@@ -121,6 +121,15 @@ func (r *SkillRepository) Path(name string) (string, error) {
 	return dir, nil
 }
 
+// ReadRaw returns the raw SKILL.md bytes for a skill, read through the VFS.
+func (r *SkillRepository) ReadRaw(name string) ([]byte, error) {
+	dir, ok := r.index[name]
+	if !ok {
+		return nil, fmt.Errorf("skill %q not found", name)
+	}
+	return r.filesystem.ReadFile(dir + "/SKILL.md")
+}
+
 func (r *SkillRepository) readDocs(dir string) []skill.Doc {
 	entries, err := r.filesystem.ReadDir(dir)
 	if err != nil {

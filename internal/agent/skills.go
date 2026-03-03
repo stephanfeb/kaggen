@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
@@ -402,12 +403,12 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 		}
 	}
 
-	// Create a general-purpose sub-agent with the standard tools (read, write, exec, etc.).
+	// Create a general-purpose sub-agent with the standard tools.
 	gpOpts := []llmagent.Option{
 		llmagent.WithModel(trackedModel),
 		llmagent.WithTools(generalTools),
 		llmagent.WithInstruction("You are a general-purpose assistant. Use the available tools to complete tasks. Report your results clearly."),
-		llmagent.WithDescription("General-purpose agent with file read/write, exec, and other standard tools. Use for tasks that don't match a specific skill."),
+		llmagent.WithDescription("General-purpose agent with file read/write and other standard tools. Use for tasks that don't match a specific skill."),
 		llmagent.WithMaxLLMCalls(25),
 		llmagent.WithMaxToolIterations(30),
 	}
@@ -428,20 +429,37 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	return agents, guardedTools, notifyTools, nil
 }
 
+// rawReader is implemented by skill repositories that can return raw SKILL.md bytes
+// through the VFS, avoiding direct os.Open calls.
+type rawReader interface {
+	ReadRaw(name string) ([]byte, error)
+}
+
 // parseSkillFrontmatter reads the SKILL.md frontmatter and returns parsed fields.
 func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) skillFrontmatter {
 	var fm skillFrontmatter
-	dir, err := repo.Path(name)
-	if err != nil {
-		return fm
-	}
-	f, err := os.Open(filepath.Join(dir, "SKILL.md"))
-	if err != nil {
-		return fm
-	}
-	defer f.Close()
 
-	rd := bufio.NewReader(f)
+	// Prefer reading through the VFS when the repository supports it.
+	var data []byte
+	if rr, ok := repo.(rawReader); ok {
+		var err error
+		data, err = rr.ReadRaw(name)
+		if err != nil {
+			return fm
+		}
+	} else {
+		// Fallback for repositories without VFS-backed raw access.
+		dir, err := repo.Path(name)
+		if err != nil {
+			return fm
+		}
+		data, err = os.ReadFile(filepath.Join(dir, "SKILL.md"))
+		if err != nil {
+			return fm
+		}
+	}
+
+	rd := bufio.NewReader(bytes.NewReader(data))
 	// Read opening ---
 	line, err := rd.ReadString('\n')
 	if err != nil || strings.TrimSpace(line) != "---" {
