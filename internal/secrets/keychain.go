@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"github.com/zalando/go-keyring"
@@ -35,21 +36,18 @@ func (k *KeychainStore) testAvailability() bool {
 	if err == nil {
 		return true
 	}
-	// Check if error is "not found" (expected) vs access denied
+	// "not found" means the keychain works, we just don't have this key
 	errStr := err.Error()
-	if strings.Contains(errStr, "not found") ||
+	if err == keyring.ErrNotFound ||
+		strings.Contains(errStr, "not found") ||
 		strings.Contains(errStr, "does not exist") ||
 		strings.Contains(errStr, "secret not found") {
 		return true
 	}
-	// On Linux without a keyring service, we get specific errors
-	if strings.Contains(errStr, "service not available") ||
-		strings.Contains(errStr, "cannot open display") ||
-		strings.Contains(errStr, "dbus") {
-		return false
-	}
-	// Assume available if we can't determine otherwise
-	return true
+	// Any other error (exit status 36 on headless macOS, dbus errors on
+	// Linux, etc.) means the keychain is not usable
+	slog.Warn("keychain not available", "error", err)
+	return false
 }
 
 func (k *KeychainStore) Set(key, value string) error {
