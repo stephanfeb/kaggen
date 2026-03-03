@@ -62,6 +62,17 @@ func SetDefaultStore(store SecretStore) {
 	defaultStore = store
 }
 
+// EncryptedFallbackStore returns an encrypted file store directly, bypassing
+// the keychain availability check. Use this when you need a guaranteed
+// non-keychain backend (e.g. for dashboard password storage on headless systems).
+func EncryptedFallbackStore() SecretStore {
+	store, err := NewEncryptedStore("")
+	if err == nil && store.Available() {
+		return store
+	}
+	return NewMemoryStore()
+}
+
 // initDefaultStore initializes the default store with the best available backend.
 func initDefaultStore() {
 	defaultStoreMu.Lock()
