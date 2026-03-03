@@ -60,27 +60,16 @@ func NewEncryptedStore(filePath string) (*EncryptedStore, error) {
 		filePath: filePath,
 	}
 
-	// Try to get master key from environment
-	masterKey := os.Getenv("KAGGEN_MASTER_KEY")
-	if masterKey != "" {
-		store.masterKey = []byte(masterKey)
-		store.available = true
-	} else {
-		// No master key available - store is not usable without it
-		// In a CLI context, we could prompt, but for library use we just mark unavailable
+	// Load master key from file or env var (deprecated)
+	masterKey, err := LoadMasterKey()
+	if err != nil {
 		store.available = false
+		return store, nil
 	}
+	store.masterKey = masterKey
+	store.available = true
 
 	return store, nil
-}
-
-// SetMasterKey sets the master key for encryption/decryption.
-// This allows interactive prompting at a higher level.
-func (e *EncryptedStore) SetMasterKey(key string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.masterKey = []byte(key)
-	e.available = len(key) > 0
 }
 
 func (e *EncryptedStore) Set(key, value string) error {

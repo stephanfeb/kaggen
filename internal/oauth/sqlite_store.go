@@ -15,6 +15,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/argon2"
+
+	"github.com/yourusername/kaggen/internal/secrets"
 )
 
 const (
@@ -44,15 +46,14 @@ type SQLiteStore struct {
 
 // NewSQLiteStore creates a new SQLite-backed token store.
 // The dbPath is the path to the SQLite database file.
-// Tokens are encrypted using the KAGGEN_MASTER_KEY environment variable.
+// Tokens are encrypted using the master key from ~/.kaggen/master.key.
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-	// Get master key from environment
-	masterKey := os.Getenv("KAGGEN_MASTER_KEY")
-	if masterKey == "" {
-		return nil, ErrMasterKeyRequired
+	masterKey, err := secrets.LoadMasterKey()
+	if err != nil {
+		return nil, fmt.Errorf("master key required for OAuth token encryption: %w", err)
 	}
 
-	return NewSQLiteStoreWithKey(dbPath, []byte(masterKey))
+	return NewSQLiteStoreWithKey(dbPath, masterKey)
 }
 
 // NewSQLiteStoreWithKey creates a new SQLite-backed token store with an explicit key.

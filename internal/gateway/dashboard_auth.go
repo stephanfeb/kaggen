@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -12,12 +13,17 @@ import (
 
 	"github.com/zalando/go-keyring"
 	"golang.org/x/crypto/argon2"
+
+	"github.com/yourusername/kaggen/internal/secrets"
 )
 
 const (
 	// Keychain identifiers
-	keychainService      = "kaggen"
-	keychainPasswordKey  = "dashboard-password"
+	keychainService     = "kaggen"
+	keychainPasswordKey = "dashboard-password"
+
+	// Fallback key in encrypted secret store
+	dashboardPasswordSecretKey = "__dashboard_password__"
 
 	// Session settings
 	sessionCookieName = "kaggen_session"
@@ -33,8 +39,9 @@ const (
 
 // DashboardAuth manages dashboard authentication with password and sessions.
 type DashboardAuth struct {
-	sessions map[string]*Session
-	mu       sync.RWMutex
+	sessions    map[string]*Session
+	secretStore secrets.SecretStore // fallback when keychain is unavailable
+	mu          sync.RWMutex
 }
 
 // Session represents an authenticated dashboard session.
@@ -50,32 +57,44 @@ type storedPassword struct {
 }
 
 // NewDashboardAuth creates a new dashboard authentication manager.
-func NewDashboardAuth() *DashboardAuth {
+// The secretStore is used as a fallback when the OS keychain is unavailable
+// (e.g. headless/SSH sessions on macOS).
+func NewDashboardAuth(secretStore secrets.SecretStore) *DashboardAuth {
 	return &DashboardAuth{
-		sessions: make(map[string]*Session),
+		sessions:    make(map[string]*Session),
+		secretStore: secretStore,
 	}
 }
 
 // IsPasswordSet checks if a dashboard password has been configured.
 func (a *DashboardAuth) IsPasswordSet() bool {
+	// Try keychain first
 	_, err := keyring.Get(keychainService, keychainPasswordKey)
 	if err == nil {
 		slog.Debug("dashboard password found in keychain")
 		return true
 	}
-	// Check if it's a "not found" error vs access denied or other error
-	// If we can't access it but it exists, treat as "set" to avoid re-setup prompt
 	if err == keyring.ErrNotFound {
 		slog.Debug("dashboard password not found in keychain")
-		return false
+		// Keychain works but no password — check fallback too
+		return a.isPasswordInFallback()
 	}
-	// For other errors (access denied, etc.), assume password exists
-	// This prevents the setup form from showing when we just can't read it
-	slog.Warn("keychain access error, assuming password exists", "error", err)
-	return true
+	// Keychain inaccessible (headless) — check fallback
+	slog.Debug("keychain inaccessible, checking fallback store", "error", err)
+	return a.isPasswordInFallback()
 }
 
-// SetPassword stores a new dashboard password (hashed) in the keychain.
+// isPasswordInFallback checks the encrypted secret store for the password hash.
+func (a *DashboardAuth) isPasswordInFallback() bool {
+	if a.secretStore == nil || !a.secretStore.Available() {
+		return false
+	}
+	_, err := a.secretStore.Get(dashboardPasswordSecretKey)
+	return err == nil
+}
+
+// SetPassword stores a new dashboard password (hashed).
+// Tries the OS keychain first; falls back to the encrypted secret store.
 func (a *DashboardAuth) SetPassword(password string) error {
 	// Generate salt
 	salt := make([]byte, saltLength)
@@ -86,24 +105,31 @@ func (a *DashboardAuth) SetPassword(password string) error {
 	// Hash password
 	hash := argon2.IDKey([]byte(password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
 
-	// Store as JSON in keychain
-	stored := storedPassword{
-		Hash: hash,
-		Salt: salt,
-	}
+	// Serialize
+	stored := storedPassword{Hash: hash, Salt: salt}
 	data, err := json.Marshal(stored)
 	if err != nil {
 		return err
 	}
 
-	return keyring.Set(keychainService, keychainPasswordKey, string(data))
+	// Try keychain first
+	err = keyring.Set(keychainService, keychainPasswordKey, string(data))
+	if err == nil {
+		return nil
+	}
+
+	// Keychain failed — use fallback
+	slog.Warn("keychain unavailable for password storage, using encrypted file fallback", "error", err)
+	if a.secretStore == nil || !a.secretStore.Available() {
+		return fmt.Errorf("no available store for dashboard password (keychain error: %w)", err)
+	}
+	return a.secretStore.Set(dashboardPasswordSecretKey, string(data))
 }
 
 // ValidatePassword checks if the provided password matches the stored hash.
 func (a *DashboardAuth) ValidatePassword(password string) bool {
-	data, err := keyring.Get(keychainService, keychainPasswordKey)
-	if err != nil {
-		slog.Warn("failed to read dashboard password from keychain", "error", err)
+	data := a.loadPasswordData()
+	if data == "" {
 		return false
 	}
 
@@ -118,6 +144,26 @@ func (a *DashboardAuth) ValidatePassword(password string) bool {
 
 	// Constant-time comparison
 	return subtle.ConstantTimeCompare(computedHash, stored.Hash) == 1
+}
+
+// loadPasswordData retrieves the serialized password hash from keychain or fallback.
+func (a *DashboardAuth) loadPasswordData() string {
+	// Try keychain
+	data, err := keyring.Get(keychainService, keychainPasswordKey)
+	if err == nil {
+		return data
+	}
+
+	// Try fallback
+	if a.secretStore != nil && a.secretStore.Available() {
+		data, err = a.secretStore.Get(dashboardPasswordSecretKey)
+		if err == nil {
+			return data
+		}
+	}
+
+	slog.Warn("dashboard password not found in keychain or fallback", "error", err)
+	return ""
 }
 
 // CreateSession creates a new authenticated session and returns the session token.

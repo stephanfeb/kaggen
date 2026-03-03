@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,6 +14,31 @@ import (
 
 	"github.com/yourusername/kaggen/internal/security"
 )
+
+// sensitiveEnvVars are environment variable names that must never be
+// passed to agent-spawned subprocesses.
+var sensitiveEnvVars = map[string]bool{
+	"KAGGEN_MASTER_KEY":  true,
+	"ANTHROPIC_API_KEY":  true,
+	"GEMINI_API_KEY":     true,
+	"ZAI_API_KEY":        true,
+	"TELEGRAM_BOT_TOKEN": true,
+	"VOYAGE_API_KEY":     true,
+}
+
+// sanitizedEnv returns os.Environ() with sensitive variables removed.
+func sanitizedEnv() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if sensitiveEnvVars[key] {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
 
 const (
 	defaultTimeout = 30 * time.Second
@@ -80,9 +106,10 @@ func executeExec(ctx context.Context, workspace string, args ExecArgs, sandbox *
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Execute command using bash
+	// Execute command using bash with sanitized environment
 	cmd := exec.CommandContext(ctx, "bash", "-c", args.Command)
 	cmd.Dir = workspace
+	cmd.Env = sanitizedEnv()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

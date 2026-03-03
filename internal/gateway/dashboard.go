@@ -66,7 +66,7 @@ func NewDashboardAPI(
 		config:         cfg,
 		logStreamer:    ls,
 		tokenStore:     tokenStore,
-		dashboardAuth:  NewDashboardAuth(),
+		dashboardAuth:  NewDashboardAuth(secrets.DefaultStore()),
 		startTime:      time.Now(),
 		wsClientCount:  clientCount,
 	}
