@@ -41,6 +41,7 @@ type DashboardAPI struct {
 	taskBroadcast  func(data []byte) // broadcasts to all WS clients
 	handler        *Handler          // for approval InjectCompletion; set via SetHandler
 	p2pNodeFunc    func() *p2p.Node  // returns P2P node if available
+	startP2PFunc   func() error      // starts P2P stack at runtime
 }
 
 // NewDashboardAPI creates a new dashboard API.
@@ -85,6 +86,11 @@ func (d *DashboardAPI) SetBroadcastFunc(fn func(data []byte)) {
 // SetP2PNodeFunc sets the function to retrieve the P2P node.
 func (d *DashboardAPI) SetP2PNodeFunc(fn func() *p2p.Node) {
 	d.p2pNodeFunc = fn
+}
+
+// SetStartP2PFunc sets the function to start the P2P stack at runtime.
+func (d *DashboardAPI) SetStartP2PFunc(fn func() error) {
+	d.startP2PFunc = fn
 }
 
 // WireTaskEvents registers a callback on the InFlightStore that broadcasts
@@ -1676,6 +1682,10 @@ func (d *DashboardAPI) HandleConfigUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Check if P2P was just enabled and node is not yet running.
+	p2pNodeRunning := d.p2pNodeFunc != nil && d.p2pNodeFunc() != nil
+	p2pJustEnabled := newConfig.P2P.Enabled && !p2pNodeRunning
+
 	// Update the in-memory config
 	*d.config = newConfig
 
@@ -1685,7 +1695,17 @@ func (d *DashboardAPI) HandleConfigUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, map[string]string{"status": "saved"})
+	// Hot-start P2P if it was just enabled.
+	resp := map[string]any{"status": "saved"}
+	if p2pJustEnabled && d.startP2PFunc != nil {
+		if err := d.startP2PFunc(); err != nil {
+			resp["p2p_error"] = err.Error()
+		} else {
+			resp["p2p_started"] = true
+		}
+	}
+
+	writeJSON(w, resp)
 }
 
 // mergeConfigMaps recursively merges src into dst, preserving sensitive fields if src has "***" or empty.

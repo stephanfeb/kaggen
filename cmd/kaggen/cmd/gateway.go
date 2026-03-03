@@ -446,6 +446,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	dashboardAPI.SetClientCountFunc(server.ClientCount)
 	dashboardAPI.SetBroadcastFunc(server.Broadcast)
 	dashboardAPI.SetP2PNodeFunc(server.P2PNode)
+	dashboardAPI.SetStartP2PFunc(func() error { return server.StartP2P(ctx) })
 	dashboardAPI.WireTaskEvents()
 
 	// Mount callback handler for external tasks.

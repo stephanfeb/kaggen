@@ -3859,7 +3859,13 @@ async function saveConfig() {
       btn.disabled = false;
       btn.textContent = 'Save Changes';
     } else {
-      showToast('Configuration saved successfully!', 'success');
+      if (result.p2p_started) {
+        showToast('Configuration saved — P2P networking started!', 'success', 4000);
+      } else if (result.p2p_error) {
+        showToast('Configuration saved, but P2P failed to start: ' + result.p2p_error, 'error', 6000);
+      } else {
+        showToast('Configuration saved successfully!', 'success');
+      }
       hideConfigFeedback();
       // Reload config to show updated values (also updates button state)
       await loadConfig();

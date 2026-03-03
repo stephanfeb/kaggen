@@ -229,39 +229,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Initialize P2P node and channel if configured.
 	if s.config.P2P.Enabled {
-		node, err := p2p.NewNode(ctx, &s.config.P2P, s.logger)
-		if err != nil {
-			s.logger.Warn("failed to initialize P2P node", "error", err)
-		} else {
-			s.p2pNode = node
-			s.logger.Info("P2P node started",
-				"peer_id", node.PeerID().String(),
-				"addrs", node.Addrs())
-			// Print PeerID to console for visibility
-			fmt.Printf("PeerID: %s\n", node.PeerID().String())
-			for _, addr := range node.Addrs() {
-				fmt.Printf("P2P Listen: %s/p2p/%s\n", addr, node.PeerID())
-			}
-
-			// Create P2P stream authenticator if auth is enabled
-			s.p2pAuth = p2p.NewStreamAuthenticator(s.tokenStore, s.config.P2P.AuthRequired, s.logger)
-
-			// Create and register P2P channel for chat protocol.
-			s.p2pChannel = p2p.NewP2PChannel(node, s.logger)
-			s.p2pChannel.SetAuthenticator(s.p2pAuth)
-			s.router.AddChannel(s.p2pChannel)
-
-			// Start the P2P channel.
-			if err := s.p2pChannel.Start(ctx); err != nil {
-				s.logger.Warn("failed to start P2P channel", "error", err)
-			} else {
-				s.logger.Info("P2P chat protocol ready",
-					"protocol", p2p.ChatProtocolID,
-					"auth_required", s.config.P2P.AuthRequired)
-			}
-
-			// Register P2P API protocols.
-			s.registerP2PAPIProtocols(node)
+		if err := s.StartP2P(ctx); err != nil {
+			s.logger.Warn("failed to initialize P2P", "error", err)
 		}
 	}
 
@@ -393,6 +362,51 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	return s.router.Stop(ctx)
+}
+
+// StartP2P initializes and starts the P2P networking stack. It is safe to call
+// at runtime (e.g. after enabling P2P via the dashboard config). It is a no-op
+// if the P2P node is already running.
+func (s *Server) StartP2P(ctx context.Context) error {
+	if s.p2pNode != nil {
+		return nil // already running
+	}
+
+	node, err := p2p.NewNode(ctx, &s.config.P2P, s.logger)
+	if err != nil {
+		return fmt.Errorf("create P2P node: %w", err)
+	}
+
+	s.p2pNode = node
+	s.logger.Info("P2P node started",
+		"peer_id", node.PeerID().String(),
+		"addrs", node.Addrs())
+	fmt.Printf("PeerID: %s\n", node.PeerID().String())
+	for _, addr := range node.Addrs() {
+		fmt.Printf("P2P Listen: %s/p2p/%s\n", addr, node.PeerID())
+	}
+
+	// Create P2P stream authenticator if auth is enabled
+	s.p2pAuth = p2p.NewStreamAuthenticator(s.tokenStore, s.config.P2P.AuthRequired, s.logger)
+
+	// Create and register P2P channel for chat protocol.
+	s.p2pChannel = p2p.NewP2PChannel(node, s.logger)
+	s.p2pChannel.SetAuthenticator(s.p2pAuth)
+	s.router.AddChannel(s.p2pChannel)
+
+	// Start the P2P channel.
+	if err := s.p2pChannel.Start(ctx); err != nil {
+		s.logger.Warn("failed to start P2P channel", "error", err)
+	} else {
+		s.logger.Info("P2P chat protocol ready",
+			"protocol", p2p.ChatProtocolID,
+			"auth_required", s.config.P2P.AuthRequired)
+	}
+
+	// Register P2P API protocols.
+	s.registerP2PAPIProtocols(node)
+
+	return nil
 }
 
 // Handler returns the server's message handler, allowing external components
