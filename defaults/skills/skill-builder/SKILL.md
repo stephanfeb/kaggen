@@ -1,146 +1,163 @@
 ---
 name: skill-builder
-description: Scaffold, validate, and install new Kaggen skills from descriptions or templates
+description: Create, validate, and install new Kaggen skills by writing SKILL.md files to the workspace VFS
+tools: [read, write, reload_skills]
 ---
 
-# Skill Builder — Create New Kaggen Skills
+# Skill Builder
 
-Use this skill when the user asks to create, build, or add a new skill to Kaggen. This skill helps you scaffold a complete skill directory with proper conventions, validate it, and install it.
+Use this skill when the coordinator asks you to create a new skill for Kaggen. You will scaffold a complete skill directory on the VFS, write a valid SKILL.md, and reload the skill registry.
+
+## How Skills Work
+
+A skill is a directory under `skills/` containing a `SKILL.md` file. The SKILL.md has two parts:
+
+1. **YAML frontmatter** — declares metadata and tool/resource access
+2. **Markdown body** — LLM instructions that become the sub-agent's system prompt
+
+When loaded, each skill becomes a specialist sub-agent on the coordinator's team. The coordinator routes tasks to skills based on the `description` field.
 
 ## Workflow
 
-1. **Understand** what the skill needs to do and which agent type fits
-2. **Scaffold** the directory structure with `scaffold.sh`
-3. **Write** the SKILL.md and (for LLM skills) bash scripts using your file tools
-4. **Validate** the result with `validate.sh`
-5. **Install** into `~/.kaggen/skills/` with `install.sh`
-6. **Remind** the user to reload skills with `kill -HUP $(pgrep kaggen)`
+1. **Understand** — Read the specification from the coordinator. Clarify what the skill should do, what external systems it needs, and what tools it requires.
+2. **Check for conflicts** — Use `read` on `skills/` to see existing skills. Avoid name collisions.
+3. **Write SKILL.md** — Use `write` to create `skills/<name>/SKILL.md` with valid frontmatter and a clear instruction body.
+4. **Verify** — Use `read` to confirm the file was written correctly.
+5. **Reload** — Call `reload_skills` to hot-reload the skill registry. The new skill becomes available immediately.
 
-## Available Commands
+## SKILL.md Format
 
-### scaffold.sh — Create skill skeleton
+```markdown
+---
+name: <lowercase-hyphenated-name>
+description: <one-line summary for the coordinator to route tasks>
+tools: [<tool-list>]
+# Optional fields below — only include what the skill needs:
+guarded_tools: [<tools-requiring-human-approval>]
+notify_tools: [<tools-that-notify-on-execution>]
+secrets: [<secret-names>]
+oauth_providers: [<provider-names>]
+databases: [<database-connection-names>]
+brokers: [<mqtt-broker-names>]
+ssh_hosts: [<ssh-host-names>]
+---
 
-```bash
-bash scripts/scaffold.sh <name> [output_dir]
-bash scripts/scaffold.sh <name> [output_dir] --delegate
+# Instruction body here (markdown)
+
+Describe the agent's role, capabilities, and workflow.
 ```
 
-Creates a directory with a template SKILL.md and empty scripts/ folder. Default output_dir is the current working directory.
+## Frontmatter Reference
 
-Use `--delegate` to generate a `delegate: claude` template instead of the default LLM agent template.
+### Required Fields
 
-### validate.sh — Lint a skill directory
+| Field | Description |
+|-------|-------------|
+| `name` | Lowercase, hyphen-separated. Must match the directory name. |
+| `description` | One-line summary. The coordinator reads this to decide when to dispatch to this skill. Make it specific and actionable. |
 
-```bash
-bash scripts/validate.sh <skill_dir>
+### Tool Access
+
+| Field | Description |
+|-------|-------------|
+| `tools` | List of tools the skill can use. If omitted, the skill gets all default tools (read, write). Protocol tools must be explicitly listed to be injected. |
+| `guarded_tools` | Subset of `tools` that require human approval before execution. Execution pauses until approved. Use for destructive or costly operations. |
+| `notify_tools` | Subset of `tools` that auto-execute but send a notification to the user. Use for mutations where visibility is enough. |
+
+### Available Tools
+
+**Default tools** (always available unless filtered):
+- `read` — Read files and list directories on the VFS
+- `write` — Write/append files on the VFS
+
+**Protocol tools** (must be listed in `tools` and have matching resource config):
+- `http_request` — HTTP calls (REST, webhooks). Requires `secrets` or `oauth_providers`.
+- `email` — Send/read email via IMAP/SMTP. Requires `oauth_providers`.
+- `caldav` — Calendar operations. Requires `oauth_providers` or `secrets`.
+- `carddav` — Contact operations. Requires `oauth_providers` or `secrets`.
+- `websocket` — WebSocket connections for real-time data.
+- `graphql` — GraphQL queries/mutations. Requires `oauth_providers` or `secrets`.
+- `sql` — Database queries. Requires `databases`.
+- `mqtt` — Publish/subscribe to MQTT topics. Requires `brokers`.
+- `ssh` — Remote command execution. Requires `ssh_hosts`.
+- `sftp` — Remote file transfer. Requires `ssh_hosts`.
+
+**System tools** (available in gateway mode):
+- `reload_skills` — Trigger hot-reload of the skill registry.
+
+### Resource Declarations
+
+These fields connect the skill to operator-configured external systems in `kaggen.yaml`:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `secrets` | Named secrets from the secret store. Injected into HTTP/CalDAV/CardDAV tools as auth headers. | `[github-token, stripe-key]` |
+| `oauth_providers` | OAuth provider names. Enables token-based auth for HTTP, email, CalDAV, CardDAV. | `[google, github]` |
+| `databases` | Database connection names. Enables the `sql` tool with scoped access. | `[analytics-postgres, app-mysql]` |
+| `brokers` | MQTT broker names. Enables the `mqtt` tool with scoped access. | `[home-assistant, sensors]` |
+| `ssh_hosts` | SSH host names. Enables `ssh` and `sftp` tools with scoped access. | `[production, staging]` |
+
+## Writing Good Instructions
+
+The markdown body becomes the sub-agent's system prompt. Write it as direct instructions to an LLM:
+
+1. **Open with role and purpose** — "You manage calendar events using CalDAV. Use the caldav tool to..."
+2. **Document the workflow** — Step-by-step what the agent should do for typical requests.
+3. **Explain tool usage** — Which tool to use for what, expected inputs/outputs, error handling.
+4. **Add constraints** — What the agent should NOT do, edge cases to watch for.
+5. **Keep it focused** — One skill, one domain. If a skill tries to do too much, split it.
+
+### Good Example
+
+```markdown
+You manage the user's Google Calendar. When asked about schedule, events, or availability:
+
+1. Use `caldav` tool with action "list" to fetch events for the relevant date range
+2. Summarize results clearly with times, titles, and locations
+3. For creating events, confirm details with the user before calling "create"
+
+Always use ISO 8601 dates. Default to the user's local timezone.
+Do not delete events without explicit confirmation.
 ```
 
-Checks:
-- SKILL.md exists with valid `name:` and `description:` frontmatter
-- For LLM skills: scripts/*.sh have a shebang, pass `bash -n` syntax check, and respond to `--help`
-- For delegate skills: `claude_model` is set, body starts with a role statement
+### Bad Example
 
-Exits 0 on pass, 1 on failure with diagnostics.
-
-### install.sh — Install to ~/.kaggen/skills/
-
-```bash
-bash scripts/install.sh <skill_dir> [--force]
+```markdown
+You are a helpful assistant that can do many things including calendar management,
+email, and general tasks. Try your best to help the user.
 ```
 
-Copies the skill directory into `~/.kaggen/skills/`, sets executable permissions, and warns on name collisions (use `--force` to overwrite).
+(Too vague. The coordinator won't know when to route to this skill, and the agent won't know what tools to use.)
 
-## Two Agent Types
+## Guarded vs Notify Tools
 
-### 1. LLM Agent (default)
+**Guarded tools** pause execution and wait for human approval:
+- Use for: deployments, financial transactions, destructive operations, sending external messages
+- The task suspends until the user approves or rejects via the dashboard or Telegram
 
-When `delegate` is omitted, the skill runs as an in-process LLM agent. The body documents available CLI commands and scripts for the agent to call.
-
-**Best for:** Wrapping CLI tools, simple automation, tasks needing specific tool access.
-
-**Template structure:**
-- "Use this skill when..." paragraph
-- `## Available Commands` with one section per script
-- `## Tips` with gotchas
-
-### 2. Claude Agent (`delegate: claude`)
-
-When `delegate: claude` is set, the skill runs as a `claude -p` subprocess. The body is a direct prompt for Claude Code — NOT meta-instructions about calling `claude -p`.
-
-**Best for:** Complex multi-step workflows, code generation, architecture, QA — tasks requiring deep reasoning and autonomous tool use.
-
-**Template structure:**
-- "You are a [Role]. Your job is to..." opening
-- Numbered workflow steps with exact bash commands
-- `## Rules` section with constraints
-
-**Important:** Do NOT include `exec:` prefixes, `claude -p` invocations, CLI flags, or state management in delegate skill bodies. The subprocess dispatch handles all of that.
-
-## Skill Conventions
-
-### SKILL.md Frontmatter
+**Notify tools** execute immediately but send a notification:
+- Use for: file writes, non-destructive API calls, data fetches where visibility matters
 
 ```yaml
----
-name: <lowercase-hyphenated-name>       # Required. Must match directory name.
-description: <one-line description>      # Required. Coordinator reads this to route tasks.
-delegate: claude                         # Optional. Set to "claude" for subprocess agent.
-claude_model: sonnet                     # Optional. opus, sonnet, or haiku. Default: sonnet.
-claude_tools: Bash,Read,Edit,Write,Glob,Grep  # Optional. Tools for subprocess.
-tools: [browser, memory_search]          # Optional. Tool filter for LLM agent mode.
-guarded_tools: [Bash]                    # Optional. Tools requiring human approval before execution.
-notify_tools: [Write]                    # Optional. Tools that auto-execute but send a notification.
-work_dir: ~/projects/foo                 # Optional. Extra working directory for subprocess.
----
+# Example: a deploy skill with approval gates
+guarded_tools: [ssh]
+notify_tools: [http_request]
 ```
 
-### Script Conventions (LLM skills only)
+## Naming Conventions
 
-Every bash script MUST:
+- **Skill name**: lowercase, hyphens for words (e.g. `github-issues`, `home-automation`)
+- **Match directory**: `skills/github-issues/SKILL.md` must have `name: github-issues`
+- **Be specific**: `calendar-manager` not `google-stuff`; `postgres-analytics` not `database`
 
-1. Start with `#!/usr/bin/env bash` and `set -euo pipefail`
-2. Support `--help` flag (print usage and exit 0)
-3. Validate inputs and print errors to stderr (`>&2`)
-4. Report results to stdout (filename, size, counts)
-5. Exit 0 on success, 1 on failure
+## Validation Checklist
 
-### Naming
+Before calling `reload_skills`, verify:
 
-- Skill name: lowercase, hyphens for word separation (e.g. `ffmpeg-video`, `aws-s3`)
-- Script names: lowercase, underscores, descriptive (e.g. `convert.sh`, `batch_process.sh`)
-- Keep script count to 3-6 per skill — each script should do one thing well
-
-### Guarded Tools (Maker-Checker)
-
-Use `guarded_tools` in frontmatter to require human approval before specific tools execute. When a guarded tool is called, execution suspends for that task while the agent continues other work. The user approves or rejects via the mobile approval queue or Telegram inline buttons.
-
-```yaml
----
-name: deploy
-description: Deploy services to production
-tools: [Bash, Read]
-guarded_tools: [Bash]
----
-```
-
-For lower-risk tools that should still be visible to the user, use `notify_tools` — these auto-execute but send a notification:
-
-```yaml
----
-name: deploy
-description: Deploy services to production
-tools: [Bash, Read, Write]
-guarded_tools: [Bash]
-notify_tools: [Write]
----
-```
-
-Only add `guarded_tools` for skills that perform side-effects where a mistake is costly (deployments, destructive operations, financial transactions). Use `notify_tools` for lower-risk mutations where visibility is enough. The tools listed must be a subset of the tools available to the skill.
-
-### Model Selection (delegate skills)
-
-| Model | Cost | Use When |
-|-------|------|----------|
-| `opus` | High | Complex reasoning: architecture, code generation, product analysis |
-| `sonnet` | Medium | Balanced tasks, general-purpose (default) |
-| `haiku` | Low | Validation, linting, simple checks, high-volume tasks |
+- [ ] `name` is lowercase-hyphenated and matches the directory name
+- [ ] `description` is a single clear sentence
+- [ ] `tools` only lists tools that exist (see Available Tools above)
+- [ ] `guarded_tools` and `notify_tools` are subsets of `tools`
+- [ ] Resource fields (`secrets`, `databases`, etc.) reference names that the operator has configured
+- [ ] The instruction body is clear, specific, and actionable
+- [ ] No references to bash, shell commands, exec, or subprocess delegation

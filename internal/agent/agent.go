@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/yourusername/kaggen/internal/vfs"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -239,8 +239,8 @@ func NewAgent(m model.Model, tools []tool.Tool, mem *memory.FileMemory, subAgent
 	// Coordinator gets routing tools plus read-only investigation tools.
 	// Write and exec remain on sub-agents to prevent the coordinator from
 	// bypassing specialists for mutating operations.
-	readTool := newCoordinatorReadTool(mem.Workspace())
-	lsTool := newCoordinatorLsTool(mem.Workspace())
+	readTool := newCoordinatorReadTool(mem.FS())
+	lsTool := newCoordinatorLsTool(mem.FS())
 	coordinatorTools := []tool.Tool{dispatchTool, statusTool, pipelineStatusTool, cancelTaskTool, readTool, lsTool}
 	coordinatorTools = append(coordinatorTools, ao.extraCoordTools...)
 
@@ -922,13 +922,13 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "- A new tool or integration would genuinely be needed\n\n"
 	instruction += "Then you have identified a SKILL GAP. Do NOT simply tell the user \"I don't have a skill for that.\" Instead, offer to acquire the capability.\n\n"
 	instruction += "**Acquisition Workflow:**\n"
-	instruction += "1. **Research** — Dispatch `researcher` with: \"Research how to [capability]. Find installation steps, CLI usage, configuration, and examples.\"\n"
+	instruction += "1. **Research** — Dispatch `researcher` with: \"Research how to [capability]. Find APIs, protocols, configuration, and examples.\"\n"
 	instruction += "2. **Analyze** — Based on findings, determine:\n"
-	instruction += "   - Skill type: LLM agent (wrapping CLI tools) vs delegate (complex reasoning)\n"
-	instruction += "   - Required tools: what tools the skill needs access to\n"
-	instruction += "   - Model: haiku for simple, sonnet for balanced, opus for complex\n"
+	instruction += "   - Which protocol tools the skill needs (http_request, caldav, sql, ssh, mqtt, etc.)\n"
+	instruction += "   - What resource declarations are required (secrets, oauth_providers, databases, brokers, ssh_hosts)\n"
+	instruction += "   - Clear instructions for the sub-agent's system prompt\n"
 	instruction += "3. **Build** — Dispatch `skill-builder` with the specification and research findings as context\n"
-	instruction += "4. **Reload** — Use `reload_skills` tool to hot-reload the new skill immediately\n"
+	instruction += "4. **Reload** — The skill-builder calls `reload_skills` to hot-reload the new skill immediately\n"
 	instruction += "5. **Retry** — Re-attempt the original task with the new skill\n\n"
 	instruction += "**When to Acquire Skills:**\n"
 	instruction += "- Task requires a tool/API you don't have access to\n"
@@ -1123,7 +1123,8 @@ type coordinatorReadResult struct {
 }
 
 // newCoordinatorReadTool creates a read-only file tool for the coordinator.
-func newCoordinatorReadTool(workspace string) tool.Tool {
+// All I/O goes through the VFS — no direct os.* calls.
+func newCoordinatorReadTool(filesystem vfs.FS) tool.Tool {
 	return function.NewFunctionTool(
 		func(_ context.Context, args coordinatorReadArgs) (*coordinatorReadResult, error) {
 			path := args.Path
@@ -1134,35 +1135,21 @@ func newCoordinatorReadTool(workspace string) tool.Tool {
 			if args.MaxLines != nil {
 				maxLines = *args.MaxLines
 			}
-			// Resolve path.
-			resolved := path
-			if !filepath.IsAbs(path) {
-				if strings.HasPrefix(path, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						resolved = filepath.Join(home, path[2:])
-					}
-				} else {
-					resolved = filepath.Join(workspace, path)
-				}
-			}
 
 			// Check if path exists and if it's a directory
-			info, err := os.Stat(resolved)
+			info, err := filesystem.Stat(path)
 			if err != nil {
-				if os.IsNotExist(err) {
-					// Return file-not-found as a clear message, not an error
-					// This allows the LLM to inform the user instead of retrying
-					return &coordinatorReadResult{
-						Content: "",
-						Message: fmt.Sprintf("File not found: %s does not exist", path),
-					}, nil
-				}
-				return nil, fmt.Errorf("failed to stat path: %w", err)
+				// Return file-not-found as a clear message, not an error.
+				// This allows the LLM to inform the user instead of retrying.
+				return &coordinatorReadResult{
+					Content: "",
+					Message: fmt.Sprintf("File not found: %s does not exist", path),
+				}, nil
 			}
 
 			// Handle directories by listing contents
 			if info.IsDir() {
-				entries, err := os.ReadDir(resolved)
+				entries, err := filesystem.ReadDir(path)
 				if err != nil {
 					return nil, fmt.Errorf("failed to read directory: %w", err)
 				}
@@ -1186,7 +1173,7 @@ func newCoordinatorReadTool(workspace string) tool.Tool {
 				}, nil
 			}
 
-			data, err := os.ReadFile(resolved)
+			data, err := filesystem.ReadFile(path)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read file: %w", err)
 			}
@@ -1222,26 +1209,16 @@ type coordinatorLsResult struct {
 }
 
 // newCoordinatorLsTool creates a directory listing tool for the coordinator.
-func newCoordinatorLsTool(workspace string) tool.Tool {
+// All I/O goes through the VFS — no direct os.* calls.
+func newCoordinatorLsTool(filesystem vfs.FS) tool.Tool {
 	return function.NewFunctionTool(
 		func(_ context.Context, args coordinatorLsArgs) (*coordinatorLsResult, error) {
 			path := args.Path
 			if path == "" {
 				path = "."
 			}
-			// Resolve path.
-			resolved := path
-			if !filepath.IsAbs(path) {
-				if strings.HasPrefix(path, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						resolved = filepath.Join(home, path[2:])
-					}
-				} else {
-					resolved = filepath.Join(workspace, path)
-				}
-			}
 
-			info, err := os.Stat(resolved)
+			info, err := filesystem.Stat(path)
 			if err != nil {
 				return nil, fmt.Errorf("failed to stat path: %w", err)
 			}
@@ -1250,7 +1227,7 @@ func newCoordinatorLsTool(workspace string) tool.Tool {
 				return nil, fmt.Errorf("path is not a directory: %s", path)
 			}
 
-			entries, err := os.ReadDir(resolved)
+			entries, err := filesystem.ReadDir(path)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read directory: %w", err)
 			}

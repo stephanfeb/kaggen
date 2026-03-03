@@ -21,6 +21,7 @@ import (
 	"github.com/yourusername/kaggen/internal/model/gemini"
 	"github.com/yourusername/kaggen/internal/model/zai"
 	"github.com/yourusername/kaggen/internal/tools"
+	"github.com/yourusername/kaggen/internal/vfs"
 )
 
 var (
@@ -281,11 +282,17 @@ func runEval(cmd *cobra.Command, args []string) error {
 	}
 	logger.Info("Loaded system instruction from bootstrap files", "workspace", workspace)
 
+	// Create VFS-sandboxed tools for eval
+	evalFS, err := vfs.NewScopedFS(workspace)
+	if err != nil {
+		return fmt.Errorf("create eval VFS: %w", err)
+	}
+
 	// Create runner
 	runner := eval.NewRunner(
 		eval.WithModel(evalModel),
 		eval.WithJudgeModel(judgeModel),
-		eval.WithTools(tools.DefaultTools(workspace)),
+		eval.WithTools(tools.DefaultTools(evalFS)),
 		eval.WithSystemInstruction(systemInstruction),
 		eval.WithConfig(eval.RunConfig{
 			ModelName: evalModel.Info().Name,

@@ -37,6 +37,7 @@ import (
 	kaggenModel "github.com/yourusername/kaggen/internal/model"
 	kaggenSession "github.com/yourusername/kaggen/internal/session"
 	"github.com/yourusername/kaggen/internal/tools"
+	"github.com/yourusername/kaggen/internal/vfs"
 )
 
 var logLevel string
@@ -187,8 +188,12 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	modelAdapter = kaggenModel.NewRateLimitedModel(modelAdapter, maxConc)
 	logger.Info("LLM concurrency limit", "max", maxConc)
 
-	// Create tools
-	toolList := tools.DefaultTools(workspace)
+	// Create VFS-sandboxed tools
+	agentFS, err := vfs.NewScopedFS(workspace)
+	if err != nil {
+		return fmt.Errorf("create agent VFS: %w", err)
+	}
+	toolList := tools.DefaultTools(agentFS)
 
 	// Declare variables for Tier 2 model (used by reasoning and deliberation tools)
 	var tier2ModelLimited model.Model

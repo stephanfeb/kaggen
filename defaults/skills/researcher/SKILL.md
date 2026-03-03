@@ -1,10 +1,7 @@
 ---
 name: researcher
 description: Conducts multi-source web research with synthesis and citations for documentation, tools, and APIs
-delegate: claude
-claude_model: sonnet
-claude_tools: Bash,Read,Write,Glob,Grep
-tools: [web_search, browser]
+tools: [read, write, web_search, browser]
 ---
 
 # Researcher — Multi-Source Web Research Agent

@@ -3,19 +3,17 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 
-	"github.com/yourusername/kaggen/internal/security"
+	"github.com/yourusername/kaggen/internal/vfs"
 )
 
 // ReadArgs defines the input arguments for the read tool.
 type ReadArgs struct {
-	Path     string `json:"path" jsonschema:"required,description=The path to the file to read. Can be absolute or relative to the workspace."`
+	Path     string `json:"path" jsonschema:"required,description=The path to the file to read relative to the workspace."`
 	MaxLines *int   `json:"max_lines,omitempty" jsonschema:"description=Maximum number of lines to read. Defaults to 1000 if not specified."`
 }
 
@@ -25,28 +23,24 @@ type ReadResult struct {
 	Message string `json:"message"`
 }
 
-// NewReadTool creates a new read tool using trpc-agent-go's function tool.
+// NewReadTool creates a new read tool backed by the given VFS.
 // Exported so the coordinator can use it directly for investigation.
-func NewReadTool(workspace string) tool.CallableTool {
-	return newReadTool(workspace)
+func NewReadTool(filesystem vfs.FS) tool.CallableTool {
+	return newReadTool(filesystem)
 }
 
-func newReadTool(workspace string) tool.CallableTool {
-	return newReadToolWithValidator(workspace, nil)
-}
-
-func newReadToolWithValidator(workspace string, validator *security.PathValidator) tool.CallableTool {
+func newReadTool(filesystem vfs.FS) tool.CallableTool {
 	return function.NewFunctionTool(
 		func(ctx context.Context, args ReadArgs) (*ReadResult, error) {
-			return executeRead(workspace, args, validator)
+			return executeRead(filesystem, args)
 		},
 		function.WithName("read"),
-		function.WithDescription("Read the contents of a file. Returns the file content as text. Use this to examine files in the workspace or filesystem."),
+		function.WithDescription("Read the contents of a file. Returns the file content as text. Use this to examine files in the workspace."),
 	)
 }
 
 // executeRead performs the actual file read operation.
-func executeRead(workspace string, args ReadArgs, validator *security.PathValidator) (*ReadResult, error) {
+func executeRead(filesystem vfs.FS, args ReadArgs) (*ReadResult, error) {
 	result := &ReadResult{}
 
 	if args.Path == "" {
@@ -54,25 +48,13 @@ func executeRead(workspace string, args ReadArgs, validator *security.PathValida
 		return result, fmt.Errorf("path is required")
 	}
 
-	// Validate path against security policy
-	if validator != nil {
-		validation := validator.ValidatePath(workspace, args.Path)
-		if !validation.Allowed {
-			result.Message = fmt.Sprintf("Access denied: %s", validation.Reason)
-			return result, fmt.Errorf("path blocked by security policy: %s", validation.Reason)
-		}
-	}
-
 	maxLines := 1000
 	if args.MaxLines != nil {
 		maxLines = *args.MaxLines
 	}
 
-	// Resolve path
-	resolvedPath := resolvePath(workspace, args.Path)
-
 	// Check if path exists and get info
-	info, err := os.Stat(resolvedPath)
+	info, err := filesystem.Stat(args.Path)
 	if err != nil {
 		result.Message = fmt.Sprintf("Error: %v", err)
 		return result, fmt.Errorf("stat path: %w", err)
@@ -80,7 +62,7 @@ func executeRead(workspace string, args ReadArgs, validator *security.PathValida
 
 	// Handle directories by listing contents
 	if info.IsDir() {
-		entries, err := os.ReadDir(resolvedPath)
+		entries, err := filesystem.ReadDir(args.Path)
 		if err != nil {
 			result.Message = fmt.Sprintf("Error: failed to read directory: %v", err)
 			return result, fmt.Errorf("read directory: %w", err)
@@ -106,7 +88,7 @@ func executeRead(workspace string, args ReadArgs, validator *security.PathValida
 	}
 
 	// Read file
-	data, err := os.ReadFile(resolvedPath)
+	data, err := filesystem.ReadFile(args.Path)
 	if err != nil {
 		result.Message = fmt.Sprintf("Error: failed to read file: %v", err)
 		return result, fmt.Errorf("failed to read file: %w", err)
@@ -125,19 +107,4 @@ func executeRead(workspace string, args ReadArgs, validator *security.PathValida
 	result.Content = content
 	result.Message = fmt.Sprintf("Successfully read %s (%d lines)", args.Path, min(totalLines, maxLines))
 	return result, nil
-}
-
-// resolvePath converts a path to an absolute path.
-func resolvePath(workspace, path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	// Expand ~ if present
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return filepath.Join(workspace, path)
 }

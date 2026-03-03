@@ -15,6 +15,7 @@ import (
 	"github.com/yourusername/kaggen/internal/agent"
 	"github.com/yourusername/kaggen/internal/memory"
 	"github.com/yourusername/kaggen/internal/tools"
+	"github.com/yourusername/kaggen/internal/vfs"
 )
 
 // SystemUnderTest wraps the production-equivalent agent system for eval testing.
@@ -75,8 +76,12 @@ func New(cfg Config) (*SystemUnderTest, error) {
 	// Create file memory
 	fileMemory := memory.NewFileMemory(workspace)
 
-	// Create tools
-	agentTools := tools.DefaultTools(workspace)
+	// Create VFS-sandboxed tools
+	agentFS, err := vfs.NewScopedFS(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("create agent VFS: %w", err)
+	}
+	agentTools := tools.DefaultTools(agentFS)
 
 	// Collect skill directories - resolve to absolute paths
 	var skillDirs []string

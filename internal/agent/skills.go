@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -109,10 +108,6 @@ type skillFrontmatter struct {
 	Databases      []string // database connection names this skill can use (e.g. ["personal-postgres", "analytics"])
 	Brokers        []string // MQTT broker names this skill can use (e.g. ["home-assistant", "sensors"])
 	SSHHosts       []string // SSH host names this skill can use (e.g. ["production", "staging"])
-	Delegate       string   // "claude" for subprocess dispatch, empty for LLM agent
-	ClaudeModel    string   // --model flag override
-	ClaudeTools    string   // --allowed-tools override
-	WorkDir        string   // --add-dir override
 }
 
 // BuildSubAgents creates a specialist sub-agent for each skill in the repository,
@@ -134,18 +129,8 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	// Log callback status at entry
 	logger.Info("SKILLS BuildSubAgents called", "hasCallbacks", callbacks != nil, "callbacks_ptr", fmt.Sprintf("%p", callbacks))
 
-	// Load default claude config for sub-agents.
+	// Load config for skill tool injection.
 	cfg, _ := config.Load()
-	defaultClaudeModel := "sonnet"
-	defaultClaudeTools := "Bash,Read,Edit,Write,Glob,Grep"
-	if cfg != nil {
-		if cfg.Agent.ClaudeModel != "" {
-			defaultClaudeModel = cfg.Agent.ClaudeModel
-		}
-		if cfg.Agent.ClaudeTools != "" {
-			defaultClaudeTools = cfg.Agent.ClaudeTools
-		}
-	}
 
 	// Create a sub-agent for each skill.
 	if skillsRepo != nil {
@@ -174,32 +159,7 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill tool gates", "skill", summary.Name, "guarded", fm.GuardedTools, "notify", fm.NotifyTools)
 			}
 
-			// If skill delegates to claude, create a ClaudeAgent (subprocess).
-			if fm.Delegate == "claude" {
-				claudeModel := defaultClaudeModel
-				if fm.ClaudeModel != "" {
-					claudeModel = fm.ClaudeModel
-				}
-				claudeTools := defaultClaudeTools
-				if fm.ClaudeTools != "" {
-					claudeTools = fm.ClaudeTools
-				}
-				workDir := fm.WorkDir
-
-				sa := NewClaudeAgent(summary.Name, summary.Description,
-					WithClaudeModel(claudeModel),
-					WithClaudeTools(claudeTools),
-					WithClaudeWorkDir(workDir),
-					WithClaudeInstruction(instruction),
-					WithClaudeTimeout(30*time.Minute),
-					WithClaudeLogger(logger),
-				)
-				agents = append(agents, sa)
-				logger.Info("created claude sub-agent", "name", summary.Name, "model", claudeModel)
-				continue
-			}
-
-			// Standard LLM agent path.
+			// All skills use LLM agents with scoped tools — no subprocess delegation.
 			agentTools := generalTools
 			if len(fm.Tools) > 0 {
 				agentTools = filterTools(generalTools, fm.Tools)
@@ -526,14 +486,6 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 					fm.NotifyTools = append(fm.NotifyTools, t)
 				}
 			}
-		case "delegate":
-			fm.Delegate = val
-		case "claude_model":
-			fm.ClaudeModel = val
-		case "claude_tools":
-			fm.ClaudeTools = val
-		case "work_dir":
-			fm.WorkDir = config.ExpandPath(val)
 		case "secrets":
 			val = strings.Trim(val, "[]")
 			for _, s := range strings.Split(val, ",") {
