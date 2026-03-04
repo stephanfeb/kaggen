@@ -772,7 +772,14 @@ func (h *Handler) handleApprovalActionLegacy(ctx context.Context, approvalID, ac
 // session, triggering a new reasoning turn. The coordinator sees the completion
 // as an internal message and can synthesize/communicate the result to the user.
 func (h *Handler) InjectCompletion(ctx context.Context, sessionID, userID, taskID, agentName, result string) error {
+	// Enrich completion with original task context for session continuity.
+	// If first-turn events were lost to compaction, this ensures the coordinator
+	// still sees the original user request in its context.
 	content := fmt.Sprintf("[Task Completed: %s (agent: %s)]\n\n%s", taskID, agentName, result)
+	if state, ok := h.inFlight.Get(taskID); ok && state.Task != "" {
+		content = fmt.Sprintf("[Task Completed: %s (agent: %s)]\nOriginal request: %s\n\n%s",
+			taskID, agentName, state.Task, result)
+	}
 
 	respond, metadata, ok := h.responders.Get(sessionID)
 	if !ok {

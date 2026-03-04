@@ -411,6 +411,12 @@ func (s *FileService) AppendEvent(ctx context.Context, sess *trpcsession.Session
 	// Update the in-memory session (mirrors inmemory behavior)
 	sess.UpdateUserSession(evt, opts...)
 
+	slog.Info("session event appended",
+		"session_id", sess.ID,
+		"author", evt.Author,
+		"filter_key", evt.FilterKey,
+	)
+
 	// Append event to JSONL
 	if err := AppendEventJSONL(s.eventsPath(key), evt); err != nil {
 		return fmt.Errorf("append event: %w", err)
@@ -976,7 +982,16 @@ func (s *FileService) CreateSessionSummary(ctx context.Context, sess *trpcsessio
 	}
 
 	// Truncate events file to keep only recent events.
-	keptEvents := events[len(events)-compactKeepEvents:]
+	// Preserve user message events from the dropped range so the original
+	// question is never lost to compaction.
+	dropped := events[:len(events)-compactKeepEvents]
+	var preserved []event.Event
+	for _, evt := range dropped {
+		if evt.Author == "user" {
+			preserved = append(preserved, evt)
+		}
+	}
+	keptEvents := append(preserved, events[len(events)-compactKeepEvents:]...)
 	eventsPath := s.eventsPath(key)
 	tmpPath := eventsPath + ".compact.tmp"
 
@@ -1014,6 +1029,8 @@ func (s *FileService) CreateSessionSummary(ctx context.Context, sess *trpcsessio
 		"session_id", sess.ID,
 		"events_before", len(events),
 		"events_after", len(keptEvents),
+		"user_msgs_preserved", len(preserved),
+		"events_dropped", len(dropped)-len(preserved),
 		"summary_length", len(summaryText),
 	)
 
