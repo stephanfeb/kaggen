@@ -1,6 +1,6 @@
 # Kaggen
 
-Kaggen is a personal AI assistant platform with multi-model support (Anthropic Claude, Google Gemini, ZAI GLM). It provides an interactive CLI agent, a WebSocket gateway, and messaging channel integrations (Telegram, WhatsApp) -- all with persistent conversation sessions and tool execution capabilities.
+Kaggen is a personal AI assistant platform with multi-model support (Anthropic Claude, Google Gemini, ZAI GLM). It provides an interactive CLI agent, a WebSocket gateway, and messaging channel integrations (Telegram, WhatsApp) -- all with persistent conversation sessions, VFS-sandboxed file I/O, and Lua scripting for procedural automation.
 
 Named after the mantis deity of the San people, associated with creativity and trickster wisdom.
 
@@ -10,7 +10,7 @@ Named after the mantis deity of the San people, associated with creativity and t
 - **WebSocket gateway** for real-time multi-client communication
 - **Telegram bot** with access control and rate limiting
 - **WhatsApp bot** with QR code pairing and multi-device support
-- **Tool execution** -- read/write files, run shell commands
+- **Tool execution** -- VFS-sandboxed file I/O, Lua scripting, protocol tools (HTTP, SQL, MQTT, SSH, etc.)
 - **File-backed sessions** for conversation history across restarts
 - **Bootstrap memory** -- customizable personality, identity, and instructions via Markdown files
 - **Semantic memory search** -- vector similarity search over stored memories using sqlite-vec with pluggable embedding providers (Gemini, Voyage AI, Ollama)
@@ -18,7 +18,7 @@ Named after the mantis deity of the San people, associated with creativity and t
 
 ## Prerequisites
 
-- Go 1.23+
+- Go 1.24+
 - At least one LLM API key (see [Supported Models](#supported-models))
 
 ## Installation
@@ -243,7 +243,7 @@ Context management uses a tiered pruning strategy:
 
 | Threshold | Action | Impact |
 |-----------|--------|--------|
-| **60%** | Truncate tool outputs | Large tool results (file reads, bash output) are shortened |
+| **60%** | Truncate tool outputs | Large tool results (file reads, Lua output) are shortened |
 | **75%** | Consolidate messages | Keep first 2 + last 8 messages, drop middle |
 | **90%** | Emergency pruning | Aggressive reduction with task re-injection |
 
@@ -306,7 +306,7 @@ The Tier 2 model returns structured analysis:
       "strategy": "How this approach works",
       "pros": ["advantage 1", "advantage 2"],
       "cons": ["disadvantage 1"],
-      "skills_required": ["coder", "researcher"],
+      "skills_required": ["general", "researcher"],
       "effort": "medium"
     }
   ],
@@ -351,7 +351,7 @@ The `deliberation_id` returned by `plan_deliberate` can be passed to `backlog_de
       "strategy": "How this approach works",
       "pros": ["advantage 1", "advantage 2"],
       "cons": ["disadvantage 1"],
-      "skills_required": ["coder", "researcher"],
+      "skills_required": ["general", "researcher"],
       "effort": "medium"
     },
     {
@@ -359,7 +359,7 @@ The `deliberation_id` returned by `plan_deliberate` can be passed to `backlog_de
       "strategy": "Alternative strategy",
       "pros": ["different advantage"],
       "cons": ["different trade-off"],
-      "skills_required": ["coder"],
+      "skills_required": ["general"],
       "effort": "low"
     }
   ],
@@ -1426,6 +1426,54 @@ Kaggen supports OAuth 2.0 for accessing protected APIs like Gmail, Google Calend
 
 For complete setup including creating Google Cloud credentials, see [docs/OAUTH_GUIDE.md](docs/OAUTH_GUIDE.md).
 
+## Core Tools
+
+All agent file I/O is sandboxed through a Virtual File System (VFS) scoped to the workspace directory. Agents cannot access files outside the workspace, follow symlinks that escape the sandbox, or execute shell commands. Error messages are rewritten to use virtual paths, preventing real filesystem path leakage.
+
+### Default Tools
+
+These tools are available to all agents by default:
+
+| Tool | Purpose |
+|------|---------|
+| `read` | Read file contents or list directories within the VFS |
+| `write` | Write or create files within the VFS (atomic writes, auto-creates parent directories) |
+| `run_lua` | Execute Lua 5.1 scripts in a sandboxed VM with VFS-backed I/O |
+
+### Lua Scripting (`run_lua`)
+
+Agents can execute procedural logic via a sandboxed Lua 5.1 VM ([gopher-lua](https://github.com/yuin/gopher-lua)). This is preferred over multiple sequential read/write tool calls for batch processing, data transformation, and computation.
+
+**Available in the sandbox:**
+- **File I/O**: `io.open(path, mode)`, `io.lines(path)`, `os.rename()`, `os.remove()` — all routed through VFS
+- **Standard libraries**: `string`, `table`, `math`, `coroutine`, base globals
+- **Agent tool bridge**: `agent.call(tool_name, {args})` — invoke other agent tools from Lua
+- **Safe OS functions**: `os.time()`, `os.date()`, `os.clock()`, `os.difftime()`
+
+**Blocked for security:**
+- No `require`, `dofile`, `loadfile` (no module loading)
+- No `os.execute`, `os.exit`, `os.getenv` (no shell access)
+- No `debug` or `package` libraries
+- No recursive `run_lua` calls
+- Execution timeout: 30s default, 120s maximum
+- Output capped at 64KB
+
+**Example:**
+
+```lua
+-- Read all .csv files and produce a summary
+local summary = {}
+for line in io.lines("data/manifest.txt") do
+  local f = io.open("data/" .. line, "r")
+  local content = f:read("*a")
+  f:close()
+  table.insert(summary, line .. ": " .. #content .. " bytes")
+end
+local out = io.open("data/report.txt", "w")
+out:write(table.concat(summary, "\n"))
+out:close()
+```
+
 ## Protocol Tools
 
 Kaggen provides protocol-level tools that enable skills to interact with external services securely and declaratively. Skills declare which protocols and credentials they need in their SKILL.md frontmatter, and the tools handle connection lifecycle, authentication injection, and error handling automatically.
@@ -2197,63 +2245,13 @@ server {
 
 ---
 
-### Command Sandbox
-
-Block dangerous shell commands before execution. The sandbox uses regex pattern matching to reject destructive operations.
-
-#### Enable the Sandbox
-
-```json
-{
-  "security": {
-    "command_sandbox": {
-      "enabled": true,
-      "blocked_patterns": []
-    }
-  }
-}
-```
-
-#### Default Blocked Patterns
-
-The sandbox blocks 25+ dangerous patterns by default:
-
-| Category | Examples |
-|----------|----------|
-| **Destructive filesystem** | `rm -rf /`, `rm -rf ~`, `mkfs`, `dd if=/dev/zero of=/dev/sda` |
-| **Fork bombs** | `:(){ :\|:& };:` |
-| **Privilege escalation** | `sudo`, `su`, `chmod 777`, `chown root` |
-| **Remote code execution** | `curl \| sh`, `wget \| sh`, `nc -e`, `bash -i` |
-| **Credential access** | `cat ~/.ssh/`, `cat ~/.aws/credentials`, `cat /etc/shadow` |
-| **System modification** | `> /etc/`, `systemctl stop`, `shutdown`, `reboot` |
-
-#### Custom Blocked Patterns
-
-Add additional regex patterns to block:
-
-```json
-{
-  "security": {
-    "command_sandbox": {
-      "enabled": true,
-      "blocked_patterns": [
-        "docker\\s+run.*--privileged",
-        "kubectl\\s+delete\\s+namespace"
-      ]
-    }
-  }
-}
-```
-
----
-
 ### Guarded Skills & Approval System
 
-Require human approval for dangerous operations before execution. The agent pauses and waits for approval via the dashboard or Telegram.
+Require human approval for sensitive operations before execution. The agent pauses and waits for approval via the dashboard or Telegram.
 
 #### How It Works
 
-1. Agent attempts to execute a guarded tool (e.g., Bash command)
+1. Agent attempts to execute a guarded tool (e.g., `http_request`, `sql`, `ssh`)
 2. Execution pauses, approval request sent to dashboard/Telegram
 3. Human reviews the operation and approves or rejects
 4. Agent resumes with approval or finds alternative approach
@@ -2261,26 +2259,6 @@ Require human approval for dangerous operations before execution. The agent paus
 #### Approve via Dashboard
 
 Navigate to the Approvals panel in the web dashboard to see pending requests with full context (tool name, arguments, description).
-
-#### Auto-Approve Rules
-
-Skip approval for safe operations:
-
-```json
-{
-  "approval": {
-    "auto_approve": [
-      {"tool": "Read", "pattern": ""},
-      {"tool": "Bash", "pattern": "^(ls|cat|grep|find)\\s"}
-    ]
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `tool` | Tool name: `Bash`, `Read`, `Write`, `Edit` |
-| `pattern` | Regex matched against operation description (empty = match all) |
 
 #### Audit Database
 
@@ -3067,10 +3045,10 @@ For coordinator testing, create minimal test skills in `testdata/eval/skills/`:
 ---
 name: calculator
 description: Performs mathematical calculations
-tools: [exec]
+tools: [run_lua]
 ---
 
-Perform calculations using Python or bc.
+Perform calculations using Lua scripting.
 ```
 
 ```markdown
@@ -3251,7 +3229,9 @@ internal/
   secrets/           Secure credential storage (keychain, encrypted file)
   security/          Command sandbox and validation
   session/           File-backed session service
-  tools/             Tool definitions (read, write, exec, memory, external tasks)
+  vfs/               Virtual filesystem sandbox (ScopedFS, MemFS, skill repository)
+  lua/               Sandboxed Lua 5.1 VM (sandbox, VFS bridge, tool bridge)
+  tools/             Tool definitions (read, write, run_lua, memory, external tasks)
   tunnel/            Cloudflare Tunnel manager
 ```
 
