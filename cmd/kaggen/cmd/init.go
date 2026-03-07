@@ -235,27 +235,28 @@ const defaultAgents = `# Operating Instructions
 
 ### Choosing the Right Tool
 
-- **Software development** (HTML, CSS, JS, dashboards, code, reports with styling): Delegate to the ` + "`" + `coder` + "`" + ` sub-agent. Use ` + "`" + `dispatch_task` + "`" + ` for non-trivial work.
-- **Document format conversion** (md→pdf, html→docx): Use the pandoc skill.
-- **Database queries**: Use the sqlite3 skill.
-- **Image processing**: Use the imagemagick skill.
-- **Simple file operations**: Use read/write directly.
+- **File operations** (reading, writing, listing): Use ` + "`" + `read` + "`" + ` and ` + "`" + `write` + "`" + ` directly.
+- **Batch processing, data transformation, computation**: Use ` + "`" + `run_lua` + "`" + ` to write a Lua script that handles the work in one call.
+- **Complex or multi-step tasks**: Delegate to a specialist sub-agent via ` + "`" + `dispatch_task` + "`" + `.
+- **Missing capability**: Use the self-improvement workflow below to acquire new skills.
 
-### Delegating to the Coder
+### Using Lua for Procedural Work
 
-For any software engineering task — building pages, writing code, debugging, refactoring, running tests — delegate to the ` + "`" + `coder` + "`" + ` sub-agent rather than calling Claude Code directly.
+For tasks involving loops, conditionals, data processing, or multi-file operations, prefer ` + "`" + `run_lua` + "`" + ` over multiple sequential read/write calls. A single Lua script is faster and uses fewer resources than multiple LLM turns.
 
-1. **Before dispatching:** Tell the user what you're about to build and that it may take a moment. Example: *"I'm going to build your team dashboard now. This may take a few minutes — I'll let you know as soon as it's ready."*
-2. **After completion:** Notify the user with a summary of what was created and where the files are located. Always use absolute paths (not ` + "`" + `~` + "`" + `). Example: *"Your dashboard is ready! I've created it at ` + "`" + `/Users/you/claude-projects/team-dashboard/index.html` + "`" + `. You can open it in your browser to take a look."*
-
-If the task fails, report the error clearly and suggest next steps.
+Good candidates for Lua:
+- Reading multiple files and producing a summary or report
+- Parsing, filtering, or reformatting structured data (CSV, JSON, logs)
+- Text processing: pattern matching, find-and-replace, template expansion
+- Computation: math, statistics, aggregation
+- Conditional workflows: read → decide → write in one step
 
 ### Feedback & Iteration
 
 When the user provides feedback on something you built:
 
-- **Minor adjustments** (typos, color changes, small tweaks): fix immediately without asking.
-- **Significant reworks** (new features, architectural changes, major redesigns): propose the changes first and wait for confirmation before starting a new build.
+- **Minor adjustments** (typos, small tweaks): fix immediately without asking.
+- **Significant reworks** (new features, architectural changes): propose the changes first and wait for confirmation.
 
 ## Autonomous Work
 
@@ -314,6 +315,9 @@ Read file contents or list directories on the VFS. Use for examining files, code
 
 ### write
 Write or create files on the VFS. Use for saving work, creating documents, or modifying files.
+
+### run_lua
+Execute a sandboxed Lua 5.1 script. Use for batch file operations, data transformation, computation, text processing, and any procedural logic that would otherwise require multiple tool calls. Scripts can access the VFS via io.open/io.lines and call other agent tools via agent.call(). Prefer this over repeated read/write calls when the task involves loops, conditionals, or data processing.
 
 ## Protocol Tools (available via skills)
 
