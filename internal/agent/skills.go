@@ -167,6 +167,11 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 				logger.Info("skill tool filter", "skill", summary.Name, "allowed", fm.Tools)
 			}
 
+			// Append Lua scripting guidance if the sub-agent has run_lua.
+			if hasRunLua(agentTools) {
+				instruction += luaGuidance
+			}
+
 			// Prepare skill secrets (used by http_request, caldav, carddav tools)
 			skillSecrets := make(map[string]string)
 			if len(fm.Secrets) > 0 {
@@ -404,10 +409,14 @@ func BuildSubAgents(m model.Model, skillsRepo skill.Repository, generalTools []t
 	}
 
 	// Create a general-purpose sub-agent with the standard tools.
+	gpInstruction := "You are a general-purpose assistant. Use the available tools to complete tasks. Report your results clearly."
+	if hasRunLua(generalTools) {
+		gpInstruction += luaGuidance
+	}
 	gpOpts := []llmagent.Option{
 		llmagent.WithModel(trackedModel),
 		llmagent.WithTools(generalTools),
-		llmagent.WithInstruction("You are a general-purpose assistant. Use the available tools to complete tasks. Report your results clearly."),
+		llmagent.WithInstruction(gpInstruction),
 		llmagent.WithDescription("General-purpose agent with file read/write and other standard tools. Use for tasks that don't match a specific skill."),
 		llmagent.WithMaxLLMCalls(25),
 		llmagent.WithMaxToolIterations(30),
@@ -549,6 +558,39 @@ func parseSkillFrontmatter(repo skill.Repository, name string, _ *slog.Logger) s
 	return fm
 }
 
+// luaGuidance is appended to sub-agent instructions when run_lua is available.
+const luaGuidance = `
+
+## Lua Scripting Preference
+
+You have access to run_lua, a sandboxed Lua 5.1 VM. PREFER Lua over multiple read/write tool calls when:
+
+**Use Lua when:**
+- Processing multiple files (loop in Lua vs. N separate read calls)
+- Transforming data: parsing, filtering, reformatting, extracting fields
+- Computation: math, statistics, counting, aggregation
+- Conditional file workflows: read → decide → write in one script
+- Text processing: pattern matching, find-and-replace, template expansion
+- Any task that would take 3+ sequential read/write tool calls
+
+**Use direct read/write when:**
+- Reading or writing a single file with no transformation
+- Simple one-shot operations
+
+**Example — BAD (5 tool calls, 5 LLM turns):**
+  read("data/a.csv") → reason → read("data/b.csv") → reason → write("report.txt")
+
+**Example — GOOD (1 tool call, 1 LLM turn):**
+  run_lua with script that reads both files, processes them, writes the report
+
+**Key APIs in the sandbox:**
+- io.open(path, mode), file:read("*a"), file:write(data), file:close()
+- io.lines(path) for line-by-line iteration
+- os.rename(old, new), os.remove(path)
+- agent.call(tool_name, {args}) to invoke other tools from Lua
+- string, table, math libraries are fully available
+`
+
 // filterTools returns only tools whose Declaration().Name is in the allowed list.
 func filterTools(all []tool.Tool, allowed []string) []tool.Tool {
 	set := make(map[string]bool, len(allowed))
@@ -562,6 +604,16 @@ func filterTools(all []tool.Tool, allowed []string) []tool.Tool {
 		}
 	}
 	return filtered
+}
+
+// hasRunLua returns true if the tool set includes the run_lua tool.
+func hasRunLua(tools []tool.Tool) bool {
+	for _, t := range tools {
+		if t.Declaration().Name == "run_lua" {
+			return true
+		}
+	}
+	return false
 }
 
 // containsString checks if a slice contains a string.

@@ -1021,6 +1021,16 @@ func buildInstruction(mem *memory.FileMemory, subAgents []agent.Agent, extConfig
 	instruction += "- explore_approaches returned multiple viable options to combine\n"
 	instruction += "- User asks to 'put it all together' or 'combine these'\n\n"
 
+	instruction += "\n### Lua Scripting\n\n"
+	instruction += "Sub-agents have access to `run_lua`, a sandboxed Lua 5.1 VM for procedural work.\n"
+	instruction += "When delegating tasks, mention that Lua is preferred when the work involves:\n"
+	instruction += "- Batch operations (processing multiple files, bulk transformations)\n"
+	instruction += "- Data transformation (parsing, filtering, reformatting, aggregation)\n"
+	instruction += "- Computation (math, statistics, generating sequences)\n"
+	instruction += "- Multi-step file workflows (read → transform → write in one step)\n"
+	instruction += "- Conditional logic that would otherwise require many LLM turns\n\n"
+	instruction += "Example delegation: \"Process all .csv files in data/ — use run_lua to read each file, extract the 'total' column, and write a summary to data/report.txt\"\n\n"
+
 	// Add channel availability section so agent knows what communication options exist.
 	instruction += "\n### Available Communication Channels\n\n"
 	instruction += "The following channels are currently configured and available:\n\n"
