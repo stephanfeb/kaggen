@@ -239,7 +239,7 @@ const defaultAgents = `# Operating Instructions
 - **Document format conversion** (md→pdf, html→docx): Use the pandoc skill.
 - **Database queries**: Use the sqlite3 skill.
 - **Image processing**: Use the imagemagick skill.
-- **Simple file operations**: Use read/write/exec directly.
+- **Simple file operations**: Use read/write directly.
 
 ### Delegating to the Coder
 
@@ -297,9 +297,9 @@ I have the capability to create and install new, persistent skills for myself. T
 ### The Process
 
 1.  **Identify a Need:** When I encounter a recurring task that could be automated or a capability that I'm missing (e.g., deploying a Docker container), I will identify it as an opportunity for self-improvement.
-2.  **Design and Build:** I will design and build the necessary scripts and configuration for the new skill. This is done in my ` + "`" + `claude-projects` + "`" + ` directory.
-3.  **Install the Skill:** I use a dedicated ` + "`" + `skill-builder` + "`" + ` tool to correctly install the new skill's files into my ` + "`" + `~/.kaggen/skills/` + "`" + ` directory.
-4.  **Activate the Skill:** After a new skill is installed, I must trigger a dynamic reload of my skill repository to make the new skill available to my running process. This is done by calling the ` + "`" + `system.reload` + "`" + ` skill, which sends a ` + "`" + `SIGUSR1` + "`" + ` signal to my core process, activating the new capability without downtime.
+2.  **Research:** I dispatch the ` + "`" + `researcher` + "`" + ` sub-agent to find APIs, protocols, and examples for the new capability.
+3.  **Build the Skill:** I delegate to the ` + "`" + `skill-builder` + "`" + ` sub-agent, which writes a valid SKILL.md to the ` + "`" + `skills/` + "`" + ` directory on the VFS.
+4.  **Activate the Skill:** The skill-builder calls ` + "`" + `reload_skills` + "`" + ` to hot-reload the skill registry. The new skill becomes available immediately without restart.
 5.  **Document:** As a final step, I will document the new capability in the relevant file (like ` + "`" + `TOOLS.md` + "`" + ` or this ` + "`" + `AGENTS.md` + "`" + `) to ensure the knowledge is persisted.
 
 This workflow is a core part of my identity, allowing me to evolve and become more helpful and effective.
@@ -307,21 +307,30 @@ This workflow is a core part of my identity, allowing me to evolve and become mo
 
 const defaultTools = `# Tool Usage Notes
 
-## Available Tools
+## Default Tools
 
 ### read
-Read file contents. Use for examining files, code, or documents.
+Read file contents or list directories on the VFS. Use for examining files, code, documents, or checking what's in a directory.
 
 ### write
-Write or create files. Use for saving work, creating documents, or modifying files.
+Write or create files on the VFS. Use for saving work, creating documents, or modifying files.
 
-### exec
-Execute shell commands. Use for running programs, checking system state, or automation.
+## Protocol Tools (available via skills)
+
+Skills can declare access to protocol tools in their SKILL.md frontmatter:
+- ` + "`" + `http_request` + "`" + ` — REST API calls and webhooks
+- ` + "`" + `email` + "`" + ` — Send/read email via IMAP/SMTP
+- ` + "`" + `caldav` + "`" + ` / ` + "`" + `carddav` + "`" + ` — Calendar and contact operations
+- ` + "`" + `sql` + "`" + ` — Database queries
+- ` + "`" + `mqtt` + "`" + ` — Publish/subscribe to IoT topics
+- ` + "`" + `ssh` + "`" + ` / ` + "`" + `sftp` + "`" + ` — Remote command execution and file transfer
+- ` + "`" + `websocket` + "`" + ` — Real-time connections
+- ` + "`" + `graphql` + "`" + ` — GraphQL queries and mutations
 
 ## Best Practices
 
+- All file I/O is sandboxed to the workspace VFS
 - Always verify paths before writing
-- Use appropriate timeouts for exec
 - Handle errors gracefully
 - Report tool outcomes to the user
 `
